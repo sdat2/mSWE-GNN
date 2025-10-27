@@ -31,3 +31,7 @@ Also contains the output of the hydrodynamic simulations (**raw_datasets**: for 
 ## Environment setup
 
 The required libraries are in requirements.txt.
+
+```bash
+micromamba create -n mswegnn -f env.yml
+```
