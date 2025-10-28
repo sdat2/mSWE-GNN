@@ -1,0 +1,19 @@
+# The features in your final 'Data' object
+node_features:
+  - DEM         # Static
+  - slopex      # Static
+  - slopey      # Static
+  - area        # Static
+  - node_type   # Static (0=internal, 1=boundary)
+  - WX          # Dynamic (windx)
+  - WY          # Dynamic (windy)
+  - P           # Dynamic (pressure)
+
+edge_features:
+  - face_distance  # Static
+  - edge_slope     # Static
+
+target_variables:
+  - WD          # Water Depth
+  - VX          # u-velocity
+  - VY          # v-velocity
