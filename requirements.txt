@@ -15,3 +15,6 @@ PyYAML
 wandb
 torch==1.13.1
 torch_geometric==2.2
+xarray
+torch_sparse
+torch_scatter
