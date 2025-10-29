@@ -27,12 +27,14 @@ print(f"Training on {len(train_files)} files, validating on {len(val_files)} fil
 try:
     train_dataset = AdforceLazyDataset(
         root="data_processed/train",
-        nc_files=train_files
+        nc_files=train_files,
+        previous_t=1,
     )
 
     val_dataset = AdforceLazyDataset(
         root="data_processed/val",
-        nc_files=val_files
+        nc_files=val_files,
+        previous_t=1,
     )
 
     # 4. Create DataLoaders

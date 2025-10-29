@@ -212,7 +212,7 @@ class AdforceLazyDataset(Dataset):
         required_static_vars = [
             'edge_index', 'face_distance', 'edge_slope',
             'DEM', 'slopex', 'slopey', 'area',
-            'node_BC'
+            'node_BC', 'edge_BC_length'
         ]
         required_dynamic_vars = ['WX', 'WY', 'P', 'WD', 'VX', 'VY']
         all_required_vars = set(required_static_vars + required_dynamic_vars)
@@ -322,7 +322,6 @@ class AdforceLazyDataset(Dataset):
             slopey = torch.tensor(ds_static['slopey'].values, dtype=torch.float)
             area = torch.tensor(ds_static['area'].values, dtype=torch.float)
 
-            # --- MODIFICATION: Store node_BC indices ---
             num_real_nodes = ds_static.dims['num_nodes']
             node_type = torch.zeros(num_real_nodes, dtype=torch.float)
             boundary_face_indices = torch.tensor([], dtype=torch.long) # Default empty tensor
@@ -332,18 +331,22 @@ class AdforceLazyDataset(Dataset):
                 boundary_face_indices = torch.tensor(ds_static['face_BC'].values, dtype=torch.long)
                 if boundary_face_indices.numel() > 0:
                     node_type[boundary_face_indices] = 1.0 # Mark as boundary
-            # --- End Modification ---
 
             static_node_features = torch.stack([
                 dem, slopex, slopey, area, node_type
             ], dim=1) # Shape [num_nodes, 5]
+
+            edge_bc_length = torch.tensor([], dtype=torch.float) # Default empty tensor
+            if 'edge_BC_length' in ds_static:
+                edge_bc_length = torch.tensor(ds_static['edge_BC_length'].values, dtype=torch.float)
 
             # --- MODIFICATION: Return node_BC as well ---
             return {
                 'edge_index': edge_index,
                 'static_node_features': static_node_features,
                 'static_edge_attr': static_edge_attr,
-                'node_BC': boundary_face_indices
+                'node_BC': boundary_face_indices,
+                'edge_BC_length': edge_bc_length
             }
 
     def len(self):
@@ -354,20 +357,17 @@ class AdforceLazyDataset(Dataset):
         """
         Loads a single (t, t+1) sample from disk.
         """
-        # 1. Load static data if not already cached
         if self._static_data is None:
             self._static_data = self._load_static_data(self.nc_files[0])
             if self.total_nodes is None:
                  self.total_nodes = self._static_data['static_node_features'].shape[0]
 
-        # ... (Steps 2 & 3: Find file and open handle are unchanged) ...
         nc_path, t_start = self.index_map[idx]
         if nc_path not in self._file_handles:
             self._file_handles[nc_path] = xr.open_dataset(nc_path, cache=True)
         ds = self._file_handles[nc_path]
 
         try:
-            # ... (Steps 4 & 5: Load input/output slices are unchanged) ...
             in_start = t_start
             in_end = t_start + self.previous_t
             dyn_node_features_t_raw = torch.tensor(
@@ -392,13 +392,13 @@ class AdforceLazyDataset(Dataset):
                 dyn_node_features_t
             ], dim=1)
 
-            # --- MODIFICATION: Add node_BC to the Data object ---
             return Data(x=x_t,
                         edge_index=self._static_data['edge_index'],
                         edge_attr=self._static_data['static_edge_attr'],
                         y=y_tplus1,
-                        node_BC=self._static_data['node_BC']) # Add this line
-            # --- End Modification ---
+                        node_BC=self._static_data['node_BC'],
+                        edge_BC_length=self._static_data['edge_BC_length']
+                        )
 
         except Exception as e:
             raise IOError(f"Error loading sample {idx} (file: {nc_path}, time_idx: {t_start}): {e}")
