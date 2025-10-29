@@ -125,14 +125,13 @@ variables:
                 :description = "Dual graph formatted for mSWE-GNN input pipeline" ;
 }
 """
-import torch
-import xarray as xr
-from torch_geometric.data import Dataset, Data
-from tqdm import tqdm
+from typing import Dict
 import warnings
 import numpy as np
-import os
-from typing import Dict, Any, List, Tuple
+import xarray as xr
+import torch
+from torch_geometric.data import Dataset, Data
+from tqdm import tqdm
 
 
 # ----------------------------------------------------------------------------
@@ -618,11 +617,9 @@ def run_forcing_rollout(model: torch.nn.Module, nc_path: str, previous_t: int) -
     >>> import torch
     >>> import tempfile
     >>> import os
-    >>>
     >>> # Mock data: 2 nodes, 5 time steps
     >>> N_NODES, N_TIME, N_VARS = 2, 5, 3
     >>> P_T = 2 # previous_t
-    >>>
     >>> # --- Mock Model ---
     >>> # A real nn.Module is required for .parameters() and .device
     >>> class MockModel(torch.nn.Module):
@@ -634,7 +631,6 @@ def run_forcing_rollout(model: torch.nn.Module, nc_path: str, previous_t: int) -
     ...         return torch.zeros(batch.x.shape[0], 3, dtype=torch.float32)
     >>> mock_model = MockModel()
     >>> # --- End Mock Model ---
-    >>>
     >>> with tempfile.TemporaryDirectory() as tmpdir:
     ...     test_nc_path = os.path.join(tmpdir, "test.nc")
     ...     mock_ds = xr.Dataset(
@@ -720,7 +716,8 @@ def run_forcing_rollout(model: torch.nn.Module, nc_path: str, previous_t: int) -
                 # Get just the *next* timestep's forcing data
                 # This corresponds to t_start = t + 1
                 # The history window starts at (t + 1) - previous_t
-                next_history_start_idx = t - previous_t + 1
+                # ERROR: this is not used
+                # next_history_start_idx = t - previous_t + 1
 
                 # Get just the single *newest* forcing slice to append
                 next_forcing_slice = _get_forcing_slice(ds, t, 1).to(device)
@@ -728,9 +725,10 @@ def run_forcing_rollout(model: torch.nn.Module, nc_path: str, previous_t: int) -
                 # Update history: drop oldest step, append newest step
                 # current_forcing_history shape is [N, 3 * previous_t]
                 # We drop the first 3 features (WX, WY, P from oldest step)
+                num_forcing_vars = next_forcing_slice.shape[1]
                 current_forcing_history = torch.cat([
-                    current_forcing_history[:, 3:], # All but the oldest step
-                    next_forcing_slice           # The newest step
+                    current_forcing_history[:, num_forcing_vars:], # Drop oldest N_forcing columns
+                    next_forcing_slice                          # Add newest N_forcing columns
                 ], dim=1)
 
     if not predictions:
@@ -746,7 +744,7 @@ if __name__ == '__main__':
     Run doctests for this module.
 
     From the command line, run:
-    python -m doctest sdat2/mswe-gnn/mSWE-GNN-sdat2/utils/adforce_dataset.py
+    python utils/adforce_dataset.py
     """
     import doctest
     doctest.testmod(verbose=True) # Set verbose=True to see all tests
