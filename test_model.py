@@ -6,11 +6,11 @@ import lightning as L
 from torch_geometric.data import DataLoader
 from lightning.pytorch.loggers import WandbLogger
 
-from utils.dataset import create_model_dataset, to_temporal_dataset
-from utils.dataset import get_temporal_test_dataset_parameters
-from utils.load import read_config
-from utils.miscellaneous import get_numerical_times, get_speed_up, get_model, SpatialAnalysis, fix_dict_in_config
-from training.train import LightningTrainer
+from mswegnn.utils.dataset import create_model_dataset, to_temporal_dataset
+from mswegnn.utils.dataset import get_temporal_test_dataset_parameters
+from mswegnn.utils.load import read_config
+from mswegnn.utils.miscellaneous import get_numerical_times, get_speed_up, get_model, SpatialAnalysis, fix_dict_in_config
+from mswegnn.training.train import LightningTrainer
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = True
@@ -64,18 +64,18 @@ def main(config):
     plmodule = LightningTrainer(model, lr_info, trainer_options, temporal_test_dataset_parameters)
 
     # Load trained model
-    plmodule_kwargs = {'model': model, 
-                       'lr_info': lr_info, 
-                       'trainer_options': trainer_options, 
+    plmodule_kwargs = {'model': model,
+                       'lr_info': lr_info,
+                       'trainer_options': trainer_options,
                        'temporal_test_dataset_parameters': temporal_test_dataset_parameters}
 
     model = plmodule.load_from_checkpoint(config.saved_model, map_location=device, **plmodule_kwargs)
-    model = plmodule.model.to(device)    
+    model = plmodule.model.to(device)
 
     # Numerical simulation times
     maximum_time = test_dataset[0].WD.shape[1]
-    numerical_times = get_numerical_times(test_dataset_name+'_test', 
-                    test_size, temporal_res, maximum_time, 
+    numerical_times = get_numerical_times(test_dataset_name+'_test',
+                    test_size, temporal_res, maximum_time,
                     **temporal_test_dataset_parameters,
                     overview_file='database/overview.csv')
 
@@ -88,12 +88,12 @@ def main(config):
     prediction_times = prediction_times/len(temporal_test_dataset)
     predicted_rollout = [item for roll in predicted_rollout for item in roll]
 
-    spatial_analyser = SpatialAnalysis(predicted_rollout, prediction_times, 
+    spatial_analyser = SpatialAnalysis(predicted_rollout, prediction_times,
                                    test_dataset, **temporal_test_dataset_parameters)
-    
+
     rollout_loss = spatial_analyser._get_rollout_loss(type_loss='MAE')
     model_times = spatial_analyser.prediction_times
-                                        
+
     print('test roll loss WD:',rollout_loss.mean(0)[0].item())
     print('test roll loss V:',rollout_loss.mean(0)[1:].mean().item())
 
@@ -103,7 +103,7 @@ def main(config):
     print(f'test CSI_005: {spatial_analyser._get_CSI(water_threshold=0.05).nanmean().item()}')
     print(f'test CSI_03: {spatial_analyser._get_CSI(water_threshold=0.3).nanmean().item()}')
     print(f'mean speed-up: {avg_speedup:.2f}\nstd speed-up: {std_speedup:.3f}')
-    
+
     print('Testing finished!')
 
 if __name__ == '__main__':
