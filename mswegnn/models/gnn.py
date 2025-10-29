@@ -1,7 +1,7 @@
 # Libraries
 import torch
 import torch.nn as nn
-from models.models import BaseFloodModel, make_mlp, activation_functions
+from mswegnn.models.models import BaseFloodModel, make_mlp, activation_functions
 from torch_geometric.nn import ChebConv, TAGConv, GATConv
 from torch import Tensor
 from torch_geometric.utils import scatter
@@ -21,8 +21,8 @@ class GNN(BaseFloodModel):
     n_GNN_layers: int, number of GNN layers
     dropout: float, add dropout layer in decoder
     type_GNN: str (default='SWEGNN'), specifies the type of GNN model
-        options: 
-            "GNN_A" : Adjacency as graph shift operator 
+        options:
+            "GNN_A" : Adjacency as graph shift operator
             "GNN_L" : Laplacian as graph shift operator
             "GAT"   : Graph Attention, i.e., learned shift operator
             "SWEGNN": learned graph shift operator
@@ -36,8 +36,8 @@ class GNN(BaseFloodModel):
     with_gradient: bool (default=True), adds the gradient of the water variables in the GNN processor
     base_model_kwargs: dict, additional arguments for the BaseFloodModel, e.g., learned_residuals, seed, residuals_base, etc.
     '''
-    def __init__(self, num_node_features, num_edge_features, hid_features=32, K=2, n_GNN_layers=2, type_GNN="SWEGNN", 
-                 mlp_layers=1, mlp_activation='prelu', gnn_activation='prelu', dropout=0, 
+    def __init__(self, num_node_features, num_edge_features, hid_features=32, K=2, n_GNN_layers=2, type_GNN="SWEGNN",
+                 mlp_layers=1, mlp_activation='prelu', gnn_activation='prelu', dropout=0,
                  with_WL=True, normalize=True, with_filter_matrix=True, edge_mlp=True,
                  with_gradient=True, **base_model_kwargs):
         super(GNN, self).__init__(**base_model_kwargs)
@@ -51,33 +51,33 @@ class GNN(BaseFloodModel):
         self.gnn_activation = gnn_activation
         self.dynamic_node_features = self.previous_t*self.out_dim
         self.static_node_features = num_node_features - self.dynamic_node_features + self.with_WL
-        
+
         # Edge encoder
         if type_GNN == "SWEGNN" and edge_mlp:
             self.num_edge_features = hid_features
             self.edge_encoder = make_mlp(num_edge_features, hid_features, hid_features, n_layers=mlp_layers, bias=True,
                                          activation=mlp_activation, device=self.device)
-        
+
         # Node encoder
         if type_GNN == "SWEGNN":
             self.dynamic_node_encoder = make_mlp(self.dynamic_node_features, hid_features, hid_features, n_layers=mlp_layers,
                                         activation=mlp_activation, device=self.device)
-    
+
             self.static_node_encoder = make_mlp(
                 self.static_node_features, hid_features, hid_features, n_layers=2, bias=True,
                 activation=mlp_activation, device=self.device)
         else:
             self.node_encoder = make_mlp(num_node_features + self.with_WL, hid_features, hid_features, n_layers=mlp_layers, bias=True,
                                         activation=mlp_activation, device=self.device)
-        
+
         # GNN
-        self.gnn_processor = self._make_gnn(hid_features, K_hops=K, n_GNN_layers=n_GNN_layers, n_layers=mlp_layers, 
-                                            activation=mlp_activation, bias=True, type_GNN=type_GNN, 
+        self.gnn_processor = self._make_gnn(hid_features, K_hops=K, n_GNN_layers=n_GNN_layers, n_layers=mlp_layers,
+                                            activation=mlp_activation, bias=True, type_GNN=type_GNN,
                                             normalize=normalize, with_filter_matrix=with_filter_matrix,
                                             with_gradient=with_gradient)
 
         self.gnn_activation = activation_functions(gnn_activation, device=self.device)
-        
+
         # Decoder
         self.node_decoder = make_mlp(hid_features, self.out_dim, hid_features, n_layers=mlp_layers, dropout=dropout,
                                      activation=mlp_activation, device=self.device)
@@ -93,22 +93,22 @@ class GNN(BaseFloodModel):
             elif type_GNN == "GAT":
                 convs.append(GATConv(hidden_size, hidden_size, heads=1))
             elif type_GNN == "SWEGNN":
-                convs.append(SWEGNN(hidden_size, hidden_size, self.num_edge_features, K=K_hops, 
+                convs.append(SWEGNN(hidden_size, hidden_size, self.num_edge_features, K=K_hops,
                             device=self.device, **swegnn_kwargs))
             else:
                 raise("Only 'GNN_A', 'GNN_L', 'GAT', and 'SWEGNN' are valid for now")
         return convs
-    
+
     def forward(self, graph):
-        """Build encoder-decoder block"""    
+        """Build encoder-decoder block"""
         x = graph.x.clone()
         edge_index = graph.edge_index
         edge_attr = graph.edge_attr
-        
+
         # 1. Node and edge encoder
         if self.type_GNN == "SWEGNN" and self.edge_mlp:
             edge_attr = self.edge_encoder(edge_attr)
-        
+
         x0 = x
         x_s = x[:,:self.static_node_features-self.with_WL]
         x_d = x[:,self.static_node_features-self.with_WL:]
@@ -117,14 +117,14 @@ class GNN(BaseFloodModel):
             # Add water level as static input
             WL = x_s[:,-1] + x_d[:,-self.out_dim]
             x_s = torch.cat((x_s, WL.unsqueeze(-1)), 1)
-        
+
         if self.type_GNN == "SWEGNN":
             x_s = self.static_node_encoder(x_s)
             x = x_d = self.dynamic_node_encoder(x_d)
         else:
             x = self.node_encoder(torch.cat((x_s, x_d), 1))
 
-        # 2. Processor 
+        # 2. Processor
         for i, conv in enumerate(self.gnn_processor):
             if self.type_GNN == "SWEGNN":
                 x = conv(x_s, x_d, edge_index, edge_attr)
@@ -139,10 +139,10 @@ class GNN(BaseFloodModel):
 
         # 3. Decoder
         x = self.node_decoder(x)
-                    
+
         # Add residual connections
         x = x + self._add_residual_connection(x0)
-        
+
         # ReLU because of negative water depth or discharge
         x = torch.relu(x)
 
@@ -150,7 +150,7 @@ class GNN(BaseFloodModel):
         x = self._mask_small_WD(x, epsilon=0.0001)
 
         return x
-    
+
 class MSGNN(BaseFloodModel):
     '''
     Multi-Scale GNN encoder-processor-decoder
@@ -178,8 +178,8 @@ class MSGNN(BaseFloodModel):
 
     base_model_kwargs: dict, additional arguments for the BaseFloodModel, e.g., learned_residuals, seed, residuals_base, etc.
     '''
-    def __init__(self, num_node_features, num_edge_features, num_scales, hid_features=32, K=2, 
-                 mlp_layers=2, mlp_activation='prelu', gnn_activation='tanh', 
+    def __init__(self, num_node_features, num_edge_features, num_scales, hid_features=32, K=2,
+                 mlp_layers=2, mlp_activation='prelu', gnn_activation='tanh',
                  learned_pooling=False, skip_connections=True,
                  with_WL=False, normalize=True, with_filter_matrix=True, edge_mlp=True,
                  with_gradient=True, **base_model_kwargs):
@@ -189,7 +189,7 @@ class MSGNN(BaseFloodModel):
         self.num_node_features = num_node_features
         self.edge_mlp = edge_mlp
         self.with_WL = with_WL
-        self.num_scales = num_scales        
+        self.num_scales = num_scales
         self.gnn_activation = gnn_activation
         self.dynamic_node_features = self.previous_t*self.NUM_WATER_VARS
         self.static_node_features = num_node_features - self.dynamic_node_features + self.with_WL
@@ -198,50 +198,50 @@ class MSGNN(BaseFloodModel):
         self.K = [K]*num_scales if isinstance(K, int) else K
         self.K = self.K + self.K[::-1][1:] # add reverse K_hops for the coarse to fine
         assert len(self.K) == num_scales*2-1, "K must be an int or a list of length num_scales or num_scales*2-1"
-        
+
         # Edge encoder
         if edge_mlp:
             self.edge_encoder = make_mlp(num_edge_features, hid_features, hid_features, n_layers=mlp_layers, bias=True,
                                          activation=mlp_activation, device=self.device)
             num_edge_features = hid_features
-        
+
         # Node encoders
         self.dynamic_node_encoder = make_mlp(self.dynamic_node_features, hid_features, hid_features, n_layers=mlp_layers,
                                     activation=mlp_activation, device=self.device)
 
-        self.static_node_encoder = make_mlp(self.static_node_features, hid_features, hid_features, 
+        self.static_node_encoder = make_mlp(self.static_node_features, hid_features, hid_features,
                                             n_layers=mlp_layers, bias=True, activation=mlp_activation, device=self.device)
-                
+
         # Intra-scale GNN
         self.intra_scale_gnn = nn.ModuleList([
-            SWEGNN(hid_features, hid_features, 0, K=1, n_layers=mlp_layers, 
-                    activation=mlp_activation, bias=True, normalize=True, 
+            SWEGNN(hid_features, hid_features, 0, K=1, n_layers=mlp_layers,
+                    activation=mlp_activation, bias=True, normalize=True,
                     with_filter_matrix=False, with_gradient=False,
                     device=self.device) for _ in range(num_scales-1)])
 
         # learnable pooling
         if learned_pooling:
-            self.pooling_mlp = make_mlp(hid_features*2, hid_features, hid_features, 
+            self.pooling_mlp = make_mlp(hid_features*2, hid_features, hid_features,
                                         n_layers=mlp_layers, activation=mlp_activation, device=self.device)
-        
-        # Processor  
+
+        # Processor
         # GNN (1 per each scale)
         self.gnn_processor = nn.ModuleList([
-            SWEGNN(hid_features, hid_features, num_edge_features, K=K, 
-                    n_layers=mlp_layers, activation=mlp_activation, bias=True, 
-                    normalize=normalize, with_filter_matrix=with_filter_matrix, 
+            SWEGNN(hid_features, hid_features, num_edge_features, K=K,
+                    n_layers=mlp_layers, activation=mlp_activation, bias=True,
+                    normalize=normalize, with_filter_matrix=with_filter_matrix,
                     with_gradient=with_gradient)
                     for K in self.K])
 
         self.gnn_activation = activation_functions(gnn_activation, device=self.device)
-        
+
         # Decoder
         self.node_decoder = make_mlp(hid_features, self.out_dim, hid_features, n_layers=mlp_layers, dropout=0,
                                      activation=mlp_activation, device=self.device)
-        
+
     def _pooling(self, x, row_fine, col_coarse, reduce='mean', learnable=False):
         """Pool multiscale attributes from finest to coarsest scale
-        
+
         Args:
             x (Tensor): node features
             row_fine (Tensor): row indices of the finest scale
@@ -255,32 +255,32 @@ class MSGNN(BaseFloodModel):
         else:
             x = scatter(src=x[row_fine], index=col_coarse, dim=0, dim_size=x.shape[0], reduce=reduce)
         return x
-    
+
     def _create_scale_mask(self, data):
         """Creates a mask of shape N with entry i for each scale i
-        
+
         mask = e.g., [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, ...]
         """
         num_nodes = data.x.size(0)
         return create_scale_mask(num_nodes, self.num_scales, data.node_ptr, data, device=self.device)
-    
+
     def forward(self, graph):
-        """Multiscale encoder-processor-decoder"""    
+        """Multiscale encoder-processor-decoder"""
         x = graph.x.clone()
         edge_index = graph.edge_index
         edge_attr = graph.edge_attr
-        
+
         edge_ptr = graph.edge_ptr
         intra_mesh_edge_index = graph.intra_mesh_edge_index
         intra_edge_ptr = graph.intra_edge_ptr
-        
+
         # Create scale mask
         mask = self._create_scale_mask(graph)
-        
+
         # 1. Node and edge encoder
         if self.edge_mlp:
             edge_attr = self.edge_encoder(edge_attr)
-        
+
         x0 = x
         x_s = x[:,:self.static_node_features-self.with_WL]
         x_d = x[:,self.static_node_features-self.with_WL:]
@@ -289,7 +289,7 @@ class MSGNN(BaseFloodModel):
             # Add water level as static input
             WL = x_s[:,-1] + x_d[:,-self.out_dim]
             x_s = torch.cat((x_s, WL.unsqueeze(-1)), 1)
-        
+
         x_s = self.static_node_encoder(x_s)
         x_d = self.dynamic_node_encoder(x_d)
 
@@ -305,7 +305,7 @@ class MSGNN(BaseFloodModel):
 
             # keep in memory the last operation before pooling (which would be overwritten otherwise)
             x_down = x_down + x_d * (mask==i)[:,None]
-                
+
             # Pool multiscale attributes from finest to coarsest scale
             col_coarse, row_fine = intra_mesh_edge_index[:,intra_edge_ptr[i]:intra_edge_ptr[i+1]]
             x_d = self._pooling(x_d, row_fine, col_coarse, reduce='mean', learnable=self.learned_pooling)
@@ -317,7 +317,7 @@ class MSGNN(BaseFloodModel):
             gnn_id = self.num_scales-1+i
             # upgoing GNN pass
             x_d = self.gnn_processor[gnn_id](x_s, x_d, edge_index[:,edge_ptr[-i-2]:edge_ptr[-i-1]], edge_attr[edge_ptr[-i-2]:edge_ptr[-i-1]])
-                
+
             # save GNN output before pooling
             x_up = x_up + x_d * (mask==self.num_scales-i-1)[:,None]
 
@@ -337,13 +337,13 @@ class MSGNN(BaseFloodModel):
 
         # 3. Decoder
         x = self.node_decoder(x)
-                    
+
         # Add residual connections
         x = x + self._add_residual_connection(x0)
-        
+
         # ReLU because of negative water depth or discharge
         x = torch.relu(x)
-        
+
         # Mask very small water depth
         x = self._mask_small_WD(x, epsilon=0.0001)
 
@@ -353,14 +353,14 @@ class SWEGNN(nn.Module):
     r"""Shallow Water Equations inspired Graph Neural Network
 
     .. math::
-        \mathbf{x}^{\prime}_{di} = \mathbf{x}_{di} + \sum_{j \in \mathcal{N}(i)} 
+        \mathbf{x}^{\prime}_{di} = \mathbf{x}_{di} + \sum_{j \in \mathcal{N}(i)}
         \mathbf{s}_{ij} \odot (\mathbf{x}_{dj} - \mathbf{x}_{di})
 
         \mathbf{s}_{ij} = MLP \left(\mathbf{x}_{si}, \mathbf{x}_{sj},
         \mathbf{x}_{di}, \mathbf{x}_{dj},
         \mathbf{e}_{ij}\right)
     """
-    def __init__(self, static_node_features: int, dynamic_node_features: int, edge_features: int, 
+    def __init__(self, static_node_features: int, dynamic_node_features: int, edge_features: int,
                  K: int = 2, normalize=True, with_filter_matrix=True, with_gradient=True,
                  upwind_mode=False, device='cpu', **mlp_kwargs):
         super().__init__()
@@ -374,7 +374,7 @@ class SWEGNN(nn.Module):
         self.device = device
         self.with_gradient = with_gradient
         self.upwind_mode = upwind_mode
-        
+
         self.edge_mlp = make_mlp(self.edge_input_size, self.edge_output_size,
                                 hidden_size=hidden_size, device=device, **mlp_kwargs)
 
@@ -384,10 +384,10 @@ class SWEGNN(nn.Module):
             ])
 
 
-    def forward(self, 
-                x_s: Tensor, 
-                x_d: Tensor, 
-                edge_index: Tensor, 
+    def forward(self,
+                x_s: Tensor,
+                x_d: Tensor,
+                edge_index: Tensor,
                 edge_attr: Optional[Tensor]=None) -> Tensor:
         '''
         x_s: static node features
@@ -402,7 +402,7 @@ class SWEGNN(nn.Module):
             out = self.filter_matrix[0].forward(x_d.clone())
         else:
             out = x_d.clone()
-        
+
         for k in range(self.K):
             # Filter out zero values
             mask = out.sum(1) != 0
@@ -411,16 +411,16 @@ class SWEGNN(nn.Module):
             edge_index_mask = mask_row + mask_col
 
             # Edge update
-            e_ij = torch.cat([x_s[row][edge_index_mask], 
-                                x_s[col][edge_index_mask], 
-                                x_d[row][edge_index_mask], 
+            e_ij = torch.cat([x_s[row][edge_index_mask],
+                                x_s[col][edge_index_mask],
+                                x_d[row][edge_index_mask],
                                 x_d[col][edge_index_mask]], 1)
-            
+
             if self.edge_features > 0:
                 e_ij = torch.cat([e_ij, edge_attr[edge_index_mask]], 1)
 
             s_ij = self.edge_mlp(e_ij)
-            
+
             if self.normalize:
                 s_ij = s_ij/vector_norm(s_ij, dim=1, keepdim=True)
                 s_ij.masked_fill_(torch.isnan(s_ij), 0)
@@ -434,18 +434,18 @@ class SWEGNN(nn.Module):
             else:
                 shift_sum = s_ij*out[row][edge_index_mask]
 
-            scattered = scatter(shift_sum, col[edge_index_mask], reduce='sum', 
+            scattered = scatter(shift_sum, col[edge_index_mask], reduce='sum',
                           dim=0, dim_size=num_nodes)
 
             if self.with_filter_matrix:
                 scattered = self.filter_matrix[k+1].forward(scattered)
 
             out = out + scattered
-        
+
         return out
 
     def __repr__(self):
         return '{}(node_features={}, edge_features={}, K={}, with_filter_matrix={}, with_gradient={})'.format(
-            self.__class__.__name__, self.edge_output_size, 
+            self.__class__.__name__, self.edge_output_size,
             self.edge_features, self.K, self.with_filter_matrix,
             self.with_gradient)

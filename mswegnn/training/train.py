@@ -6,7 +6,7 @@ import lightning as L
 from torch_geometric.loader import DataLoader
 from torch_geometric.data.batch import Batch
 
-from training.loss import loss_function
+from mswegnn.training.loss import loss_function
 # Removed imports: get_rollout_loss, get_CSI, use_prediction, apply_boundary_condition
 
 # Define constants for the new data format

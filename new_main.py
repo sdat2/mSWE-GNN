@@ -5,7 +5,7 @@ import glob
 import os
 from sklearn.model_selection import train_test_split
 from torch_geometric.loader import DataLoader
-from utils.adforce_dataset import AdforceLazyDataset # Import your new class
+from mswegnn.utils.adforce_dataset import AdforceLazyDataset # Import your new class
 
 # 1. Find all your NetCDF files
 data_dir = "/Volumes/s/tcpips/swegnn_5sec/"

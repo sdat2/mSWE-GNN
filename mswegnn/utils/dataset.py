@@ -4,11 +4,10 @@ from torch_geometric.data import Data
 from torch_geometric.utils import scatter
 import numpy as np
 import os
-
-from database.graph_creation import MultiscaleMesh, rotate_mesh
-from utils.load import load_dataset
-from utils.scaling import get_scalers
 from sklearn.model_selection import train_test_split
+from mswegnn.database.graph_creation import MultiscaleMesh, rotate_mesh
+from mswegnn.utils.load import load_dataset
+from mswegnn.utils.scaling import get_scalers
 
 NUM_WATER_VARS = 2  # number of water variables (water depth and discharge)
 
@@ -16,13 +15,13 @@ def process_attr(attribute, scaler=None, to_min=False, device='cpu'):
     '''
     processes an attribute for dataset creation (shift to min, shape, scale)
     ------
-    scaler: 
+    scaler:
         if present, used to scale the attribute
     to_min: bool
         if True, shifts minimum to zero before scaling
     '''
     assert isinstance(attribute, torch.Tensor), "Input attribute is not a tensor"
-    
+
     if attribute.dim() == 1:
         attribute = attribute.reshape(-1,1)
 
@@ -36,7 +35,7 @@ def process_attr(attribute, scaler=None, to_min=False, device='cpu'):
 
     assert attribute.shape == attr.shape, "Shape has changed during processing: \n"\
         f"Before it was {attribute.shape}, now it is {attr.shape}"
-        
+
     return attr.to(device)
 
 def slopes_from_DEM_grid(DEM):
@@ -50,7 +49,7 @@ def slopes_from_DEM_mesh(mesh, edge_index):
     edge_relative_distance = mesh.face_xy[edge_index[1]] - mesh.face_xy[edge_index[0]]
     edge_slope = (mesh.DEM[edge_index[0]] - mesh.DEM[edge_index[1]])/np.linalg.norm(edge_relative_distance, axis=1)
     directed_slope = torch.FloatTensor(mesh.edge_outward_normal[mesh.edge_type < 3].T) * edge_slope * 1000
-    
+
     slopex = scatter(directed_slope[1,:], edge_index[0], reduce='mean')
     slopey = scatter(directed_slope[0,:], edge_index[0], reduce='mean')
 
@@ -68,10 +67,10 @@ def get_temporal_res(matrix, temporal_res=60, original_temporal_res=60):
         temporal resolution of the input matrix
     '''
     selected_times = torch.arange(0, matrix.shape[-1], temporal_res/original_temporal_res, dtype=int)
-        
+
     return matrix[:, selected_times]
 
-def get_node_features(data, scalers=None, slopes=False, slope=False, 
+def get_node_features(data, scalers=None, slopes=False, slope=False,
                       area=False, DEM=False, device='cpu'):
     '''Return the static node features
 
@@ -89,32 +88,32 @@ def get_node_features(data, scalers=None, slopes=False, slope=False,
         DEM: digital elevation model of the topography (default=False)
     '''
     node_features = {}
-    
+
     if scalers is None:
         scalers = {
-            'DEM_scaler'  : None, 
+            'DEM_scaler'  : None,
             'slope_scaler': None,
             'area_scaler' : None,
         }
-    
+
 
     # x and y slopes
     if slopes:
         node_features['slopes'] = process_attr(torch.stack((data.slopex, data.slopey),-1).to(torch.float32), scaler=scalers['slope_scaler'], device=device)
-    
+
     # absolute value of slope
     if slope:
-        node_features['slope'] = process_attr(torch.sqrt(data.slopex**2 + data.slopey**2).to(torch.float32), 
+        node_features['slope'] = process_attr(torch.sqrt(data.slopex**2 + data.slopey**2).to(torch.float32),
                                                scaler=scalers['slope_scaler'], device=device)
 
     # mesh cell area
     if area:
         if isinstance(data.mesh, MultiscaleMesh):
-            node_features['area'] = torch.cat([process_attr(data.area[data.node_ptr[i]:data.node_ptr[i+1]], device=device, scaler=scaler) 
+            node_features['area'] = torch.cat([process_attr(data.area[data.node_ptr[i]:data.node_ptr[i+1]], device=device, scaler=scaler)
                                                for i, scaler in enumerate(scalers['area_scaler'])])
         else:
             node_features['area'] = process_attr(data.area, device=device, scaler=scalers['area_scaler'])
-    
+
     # digital elevation model (DEM)
     if DEM:
         node_features['DEM'] = process_attr(data.DEM, scaler=scalers['DEM_scaler'], to_min=True, device=device)
@@ -122,12 +121,12 @@ def get_node_features(data, scalers=None, slopes=False, slope=False,
     selected_node_features = locals()
 
     selected_nodes = [node_features[key] for key, value in selected_node_features.items() if value==True]
-    
+
     if len(selected_nodes) == 0:
         node_features = torch.ones(data.num_nodes, 1).to(device)
     else:
         node_features = torch.cat(selected_nodes, 1).to(device)
-    
+
     return node_features
 
 def get_edge_features(data, scalers=None, edge_length=False, edge_relative_distance=False,
@@ -149,30 +148,30 @@ def get_edge_features(data, scalers=None, edge_length=False, edge_relative_dista
     if scalers is None:
         scalers = {'edge_length_scaler' : None,
                    'edge_slope_scaler'  : None}
-        
+
     edge_features = {}
 
     if edge_length:
         if isinstance(data.mesh, MultiscaleMesh):
             if scalers['edge_length_scaler'] is not None:
                 edge_features['edge_length'] = torch.cat(
-                    [process_attr(data.face_distance[data.edge_ptr[i]:data.edge_ptr[i+1]], device=device, scaler=scaler) 
+                    [process_attr(data.face_distance[data.edge_ptr[i]:data.edge_ptr[i+1]], device=device, scaler=scaler)
                      for i, scaler in enumerate(scalers['edge_length_scaler'])])
             else:
                 edge_features['edge_length'] = torch.cat(
-                    [process_attr(data.face_distance[data.edge_ptr[i]:data.edge_ptr[i+1]], device=device, scaler=None) 
+                    [process_attr(data.face_distance[data.edge_ptr[i]:data.edge_ptr[i+1]], device=device, scaler=None)
                      for i in range(data.mesh.num_meshes)])
         else:
             edge_features['edge_length'] = process_attr(data.face_distance, scaler=scalers['edge_length_scaler'], device=device)
-        
+
     if edge_relative_distance:
         if isinstance(data.mesh, MultiscaleMesh):
             edge_features['edge_relative_distance'] = torch.cat(
-                    [process_attr((data.face_relative_distance/data.face_distance[:,None])[data.edge_ptr[i]:data.edge_ptr[i+1]], device=device, scaler=None) 
+                    [process_attr((data.face_relative_distance/data.face_distance[:,None])[data.edge_ptr[i]:data.edge_ptr[i+1]], device=device, scaler=None)
                      for i in range(data.mesh.num_meshes)])
         else:
             edge_features['edge_relative_distance'] = process_attr(data.face_relative_distance/data.face_distance[:,None], scaler=scalers['edge_length_scaler'], device=device)
-        
+
     if edge_slope:
         if isinstance(data.mesh, MultiscaleMesh):
             if scalers['edge_slope_scaler'] is not None:
@@ -180,7 +179,7 @@ def get_edge_features(data, scalers=None, edge_length=False, edge_relative_dista
                                                          for i, scaler in enumerate(scalers['edge_slope_scaler'])])
             else:
                 edge_features['edge_slope'] = torch.cat(
-                    [process_attr(data.edge_slope[data.edge_ptr[i]:data.edge_ptr[i+1]], device=device, scaler=None) 
+                    [process_attr(data.edge_slope[data.edge_ptr[i]:data.edge_ptr[i+1]], device=device, scaler=None)
                                   for i in range(data.mesh.num_meshes)])
         else:
             edge_features['edge_slope'] = process_attr(data.edge_slope, scaler=scalers['edge_slope_scaler'], device=device)
@@ -188,15 +187,15 @@ def get_edge_features(data, scalers=None, edge_length=False, edge_relative_dista
     selected_edge_features = locals()
 
     selected_edges = [edge_features[key].to(device) for key, value in selected_edge_features.items() if value==True]
-    
+
     if len(selected_edges) == 0:
         edge_features = torch.ones(data.num_edges, 1).to(device)
     else:
         edge_features = torch.cat(selected_edges, 1).float().to(device)
-    
+
     return edge_features
 
-def process_WD_VX_VY(data, temporal_res=60, 
+def process_WD_VX_VY(data, temporal_res=60,
                      scalers=None, device='cpu'):
     '''Processes dynamic features that will be used to create output node features
 
@@ -212,7 +211,7 @@ def process_WD_VX_VY(data, temporal_res=60,
     '''
     if scalers is None:
         scalers = {
-            'WD_scaler' : None, 
+            'WD_scaler' : None,
             'V_scaler' : None
         }
 
@@ -229,7 +228,7 @@ def process_WD_VX_VY(data, temporal_res=60,
 
     return temp
 
-def create_data_attr(datasets, scalers=None, temporal_res=60,  
+def create_data_attr(datasets, scalers=None, temporal_res=60,
                      device='cpu', **selected_features):
     '''
     Creates x, y, and edge_attr from Data object
@@ -248,11 +247,11 @@ def create_data_attr(datasets, scalers=None, temporal_res=60,
     '''
     new_dataset = []
     selected_node_features = {
-        key:selected_features[key] for key in 
+        key:selected_features[key] for key in
         ['slopes', 'slope', 'area', 'DEM']}
 
     selected_edge_features = {
-        key:selected_features[key] for key in 
+        key:selected_features[key] for key in
         ['edge_length', 'edge_relative_distance', 'edge_slope']}
 
     for data in datasets:
@@ -273,7 +272,7 @@ def create_data_attr(datasets, scalers=None, temporal_res=60,
             temp.type_BC = data.type_BC
             temp.edge_BC_length = data.edge_BC_length.to(device)
             temp.BC = temp.BC.to(device)/temp.edge_BC_length
-        
+
         if 'mesh' in data.keys():
             temp.mesh = data.mesh
             if isinstance(temp.mesh, MultiscaleMesh):
@@ -285,11 +284,11 @@ def create_data_attr(datasets, scalers=None, temporal_res=60,
             temp.pos = data.pos
 
         new_dataset.append(temp)
-    
+
     return new_dataset
 
 
-def create_model_dataset(train_dataset_name='grid', train_size=100, val_prcnt=0.3, 
+def create_model_dataset(train_dataset_name='grid', train_size=100, val_prcnt=0.3,
                          test_dataset_name='grid', dataset_folder='database/datasets',
                          scalers=None, seed=42, device='cpu', **dataset_parameters):
     '''
@@ -325,32 +324,32 @@ def create_model_dataset(train_dataset_name='grid', train_size=100, val_prcnt=0.
     else:
         print("The validation dataset you are using is the training one. Careful!")
         val_dataset = train_dataset
-        
+
     # Normalization using only training
     scalers = get_scalers(train_dataset, scalers)
-    
+
     # Create x, edge_attr, y
     train_dataset = create_data_attr(train_dataset, scalers=scalers, device=device, **dataset_parameters)
     val_dataset = create_data_attr(val_dataset, scalers=scalers, device=device, **dataset_parameters)
     test_dataset = create_data_attr(test_dataset, scalers=scalers, device=device, **dataset_parameters)
-    
+
     return train_dataset, val_dataset, test_dataset, scalers
 
 def aggregate_WD_V(WD, V, init_time):
     '''Create a tensor that concatenates water depth and velocity (module)
-    
+
     WD and V are taken for a interval [init_time:init_time+1]
-    
+
     Output shape: [num_nodes, 2]
     '''
-    return torch.cat((WD[:,init_time:init_time+1], 
+    return torch.cat((WD[:,init_time:init_time+1],
                       V[:,init_time:init_time+1]), 1)
 
 def aggregate_BC(BC, previous_t, init_time):
     '''Create a tensor that returns boundary conditions
-    
+
     BC is taken for a interval [init_time:init_time+1]
-    
+
     Output shape: [num_BC, previous_t]
     '''
     return BC[:,init_time:init_time+previous_t]
@@ -362,8 +361,8 @@ def get_previous_steps(aggregate_function, init_time, previous_t, *water_variabl
 
 def get_next_steps(aggregate_function, init_time, rollout_steps, *water_variables_args):
     '''Return tensor with output time steps'''
-    next_steps = torch.stack([torch.cat([aggregate_function(*water_variables_args, step_f+step_r) 
-                            for step_f in range(init_time,init_time+1)], -1) 
+    next_steps = torch.stack([torch.cat([aggregate_function(*water_variables_args, step_f+step_r)
+                            for step_f in range(init_time,init_time+1)], -1)
                             for step_r in range(0,rollout_steps)], -1)
     assert next_steps.shape[-1] == rollout_steps, f"The output dimension is wrong: {next_steps.shape}"
     return next_steps
@@ -409,7 +408,7 @@ def get_temporal_samples_size(maximum_time, time_start=0, time_stop=-1, rollout_
 
 def to_temporal(data, previous_t=2, time_start=0, time_stop=-1, rollout_steps=1):
     '''Converts Data object with temporal signal on graph into multiple graphs
-    
+
     previous_t: int (default=2)
         number of previous time steps given as input
     time_start: int (default=0)
@@ -432,14 +431,14 @@ def to_temporal(data, previous_t=2, time_start=0, time_stop=-1, rollout_steps=1)
 
     for init_time in range(time_start, time_start+temporal_samples_size):
         temp = Data()
-        
+
         temp.edge_index = data.edge_index
         temp.edge_attr = data.edge_attr
         temp.pos = data.pos
         temp.area = data.area
         temp.temporal_res = data.temporal_res
-        
-    
+
+
         prev_steps = get_previous_steps(aggregate_WD_V, init_time, previous_t, WD, V)
         next_steps = get_next_steps(aggregate_WD_V, init_time+previous_t, rollout_steps, WD, V)
 
@@ -448,18 +447,18 @@ def to_temporal(data, previous_t=2, time_start=0, time_stop=-1, rollout_steps=1)
         assert next_steps.shape[2] == rollout_steps, f"The output dimension is wrong: {next_steps.shape}"
         if (prev_steps[:,-NUM_WATER_VARS:] != 0).all(): # Except when everything is zero, then no problem
             assert ~torch.isclose(prev_steps[:,-NUM_WATER_VARS:], next_steps[:,:,0]).all(), "You're copying last time step and output"
-        
+
         # current_time = (init_time+previous_t)*data.temporal_res/60
         temp.x = torch.cat((data.x, prev_steps.to(device)), 1)
         temp.y = next_steps.to(device)
-        
+
         temp.BC = get_next_steps(aggregate_BC, init_time, rollout_steps+1, BC, previous_t)[:,::1].to(device)
         temp.time = init_time
         temp.edge_BC_length = data.edge_BC_length
         temp.previous_t = previous_t
         temp.node_BC = data.node_BC
         temp.type_BC = data.type_BC
-        
+
         if 'mesh' in data.keys() and isinstance(data.mesh, MultiscaleMesh):
             temp.node_ptr = data.node_ptr
             temp.edge_ptr = data.edge_ptr
@@ -467,7 +466,7 @@ def to_temporal(data, previous_t=2, time_start=0, time_stop=-1, rollout_steps=1)
             temp.intra_mesh_edge_index = data.intra_mesh_edge_index
 
         temporal_data.append(temp)
-        
+
     return temporal_data
 
 def to_temporal_dataset(datasets, **temporal_dataset_parameters):
@@ -477,7 +476,7 @@ def to_temporal_dataset(datasets, **temporal_dataset_parameters):
         new_dataset += to_temporal(data, **temporal_dataset_parameters)
 
     return new_dataset
-    
+
 def get_edge_BC(node_BC, edge_index):
     '''Returns the edge index id where the boundary conditionare applied'''
     edge_BC = torch.cat([torch.where(node == edge_index)[1] for node in node_BC])
@@ -487,11 +486,11 @@ def apply_boundary_condition(x_d, BC, node_BC, type_BC=2):
     '''
     Apply inflow boundary condition BC to nodes node_BC
     type_BC:
-        1: Inflow water depth h 
+        1: Inflow water depth h
         2: Inflow discharge |q|
-    '''    
+    '''
     check_type_BC(type_BC, NUM_WATER_VARS)
-    
+
     x_d[node_BC, (type_BC-1)::NUM_WATER_VARS] = BC
 
     return x_d
@@ -534,7 +533,7 @@ def get_real_rollout(dataset, time_start, time_stop):
         real_rollout = dataset.y[:,:,time_start+1:].clone()
     else:
         real_rollout = dataset.y[:,:,time_start+1:time_stop+1].clone()
-    
+
     return real_rollout
 
 def get_input_water(dataset):
@@ -576,19 +575,19 @@ def convert_to_velocity(rollout):
 
 def get_inflow_volume(data, BC):
     '''Determine input flood volume based on input boundary condition on unit discharge [m^2/s] as:
-    
+
     V = \sum |q| * L_bc
 
     where |q| is the absolute value of the discharge and L_bc is the length of the boundary condition.
 
-    This function works for a given interval of time which should be implicit in BC. 
-    For example, if your BC spans 40 time steps, you hould sum it before passing it to this function.    
+    This function works for a given interval of time which should be implicit in BC.
+    For example, if your BC spans 40 time steps, you hould sum it before passing it to this function.
     '''
     sec_in_min = 60 #seconds in a minute
     inflow_nodes = BC * data.edge_BC_length  # [m^2/s * m = m^3/s]
 
     inflow_volume = inflow_nodes.sum() * (sec_in_min * data.temporal_res) #[m^3]
-    return inflow_volume 
+    return inflow_volume
 
 def get_breach_coordinates(WD, pos):
     '''Returns the coordinates of the breach identified from where the water depth is non-zero at time 0'''
@@ -600,7 +599,7 @@ def get_breach_coordinates(WD, pos):
 
 def separate_multiscale_node_features(x, node_ptr):
     """Separates multiscale node features into a list of node features at each scale.
-    
+
     x (torch.tensor): node features of a multiscale mesh
     node_ptr (torch.tensor): partition of the multiscale mesh into scales
     """
@@ -614,7 +613,7 @@ def separate_multiscale_node_features(x, node_ptr):
 from torch_geometric.data import Batch
 def create_scale_mask(num_nodes, num_scales, node_ptr, data_type, device='cpu'):
     """Creates a mask of shape num_nodes with entry i for each scale i (defined by node_ptr)
-    
+
     mask = e.g., [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, ...]
 
     num_nodes: int
@@ -627,7 +626,7 @@ def create_scale_mask(num_nodes, num_scales, node_ptr, data_type, device='cpu'):
         Data type of the mesh
     device: str
         Device to store the mask
-    """                
+    """
     mask = torch.zeros(num_nodes, dtype=torch.int, device=device)
     for i in range(num_scales):
         if isinstance(data_type, Batch):
@@ -640,7 +639,7 @@ def create_scale_mask(num_nodes, num_scales, node_ptr, data_type, device='cpu'):
 def rotate_data_sample(data, angle, selected_node_features, selected_edge_features):
     """Data augmentation: rotate the data sample by a given angle
     Use this function after creating the dataset
-    
+
     Args:
         data (torch_geomertic.data.Data): data sample
         angle (float): angle in degrees

@@ -1,15 +1,15 @@
 # Libraries
 import torch
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
-from database.graph_creation import MultiscaleMesh
+from mswegnn.database.graph_creation import MultiscaleMesh
 
 def get_none_scalers():
-    none_scalers = {'DEM_scaler'        : None, 
-                    'slope_scaler'      : None, 
+    none_scalers = {'DEM_scaler'        : None,
+                    'slope_scaler'      : None,
                     'area_scaler'       : None,
                     'edge_length_scaler': None,
-                    'edge_slope_scaler' : None, 
-                    'WD_scaler'         : None,  
+                    'edge_slope_scaler' : None,
+                    'WD_scaler'         : None,
                     'V_scaler'          : None}
     return none_scalers
 
@@ -21,7 +21,7 @@ def stack_attributes(dataset, attribute, inverse=False, to_min=False):
         stacked_map = torch.cat([1/data[attribute] for data in dataset])
     else:
         stacked_map = torch.cat([data[attribute] - data[attribute].min()*to_min for data in dataset])
-    
+
     return stacked_map.reshape(-1,1)
 
 def scaler(train_database, attribute, type_scaler='minmax', inverse=False, to_min=False):
@@ -40,9 +40,9 @@ def scaler(train_database, attribute, type_scaler='minmax', inverse=False, to_mi
         options: 'minmax', 'minmax_neg', or 'standard'
     to_min: bool
         subtract the minimum value before scaling (then the minimum is always 0)
-    '''    
+    '''
     assert isinstance(train_database, list), 'train_database must be a list of torch_geometric.data.data.Data objects'
-    
+
     if type_scaler == 'minmax':
         scaler = MinMaxScaler(feature_range=(0,1))
     elif type_scaler == 'minmax_neg':
@@ -53,7 +53,7 @@ def scaler(train_database, attribute, type_scaler='minmax', inverse=False, to_mi
         return None
     else:
         raise 'type_scaler can be only "minmax", "minmax_neg", or "standard"'
-    
+
     if isinstance(attribute, list):
         all_attrs = torch.cat([stack_attributes(train_database, attr, inverse=inverse, to_min=to_min) for attr in attribute])
     elif isinstance(attribute, tuple):
@@ -63,7 +63,7 @@ def scaler(train_database, attribute, type_scaler='minmax', inverse=False, to_mi
         all_attrs = stack_attributes(train_database, attribute, inverse=inverse, to_min=to_min)
 
     scaler.fit(all_attrs)
-        
+
     return scaler
 
 def multiscale_scaler(train_database, attribute: str, type_feature:str, type_scaler='minmax'):
@@ -96,17 +96,17 @@ def multiscale_scaler(train_database, attribute: str, type_feature:str, type_sca
         return None
     else:
         raise ValueError('type_scaler can be only "minmax", "minmax_neg", or "standard", instead got {}'.format(type_scaler) + ' for multiscale_scaler()')
-    
+
     if type_feature == 'node':
         all_attrs = [torch.cat([data[attribute][data.node_ptr[i]:data.node_ptr[i+1]] for data in train_database]).reshape(-1,1) for i in range(num_scales)]
     elif type_feature == 'edge':
         all_attrs = [torch.cat([data[attribute][data.edge_ptr[i]:data.edge_ptr[i+1]] for data in train_database]).reshape(-1,1) for i in range(num_scales)]
     else:
         raise 'type_feature can be only "node" or "edge"'
-    
+
     for attr, scaler in zip(all_attrs, scalers):
         scaler.fit(attr)
-        
+
     return scalers
 
 def get_scalers(dataset, scalers: dict):
@@ -135,7 +135,7 @@ def get_scalers(dataset, scalers: dict):
         scalers['area_scaler'] = scaler(dataset, 'area', type_scaler=scalers['area_scaler'], inverse=False)
         scalers['edge_length_scaler'] = scaler(dataset, 'face_distance', type_scaler=scalers['edge_length_scaler'])
         scalers['edge_slope_scaler'] = scaler(dataset, 'edge_slope', type_scaler=scalers['edge_slope_scaler'])
-    
+
     scalers['V_scaler'] = scaler(dataset, ('VX', 'VY'), type_scaler=scalers['V_scaler'])
 
     return scalers

@@ -10,8 +10,8 @@ import os
 from sklearn.model_selection import train_test_split
 
 # --- New Imports ---
-from utils.adforce_dataset import AdforceLazyDataset # Your new data loader
-from training.train import LightningTrainer, DataModule # Updated PL modules
+from mswegnn.utils.adforce_dataset import AdforceLazyDataset # Your new data loader
+from mswegnn.training.train import LightningTrainer, DataModule # Updated PL modules
 
 # --- Old/Removed Imports ---
 # from utils.dataset import create_model_dataset, to_temporal_dataset
@@ -21,8 +21,8 @@ from training.train import LightningTrainer, DataModule # Updated PL modules
 # from training.train import CurriculumLearning
 
 # --- Kept Imports ---
-from utils.load import read_config
-from utils.miscellaneous import get_model, fix_dict_in_config
+from mswegnn.utils.load import read_config
+from mswegnn.utils.miscellaneous import get_model, fix_dict_in_config
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = True

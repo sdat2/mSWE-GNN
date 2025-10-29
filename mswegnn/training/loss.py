@@ -1,7 +1,7 @@
 # Libraries
 import torch
 from torch_geometric.data import Batch
-from utils.dataset import get_inflow_volume
+from mswegnn.utils.dataset import get_inflow_volume
 
 NUM_WATER_VARS = 2 # water depth and velocity
 
@@ -36,14 +36,14 @@ def mask_on_water(diff, water_axis=1):
 
 def get_loss_variable_scaler(velocity_scaler=1):
     '''Scales loss in velocity terms by a factor velocity_scaler
-    
+
     Parameters:
     velocity_scaler: float (default = 1)
         scales loss in velocity terms by a factor velocity_scaler
     '''
     loss_scaler = torch.ones(NUM_WATER_VARS)
     loss_scaler[1::NUM_WATER_VARS] = velocity_scaler
-        
+
     return loss_scaler
 
 def get_multiscale_loss(diff, data, only_where_water=True, type_loss='RMSE', nodes_dim=0):
@@ -64,20 +64,20 @@ def get_multiscale_loss(diff, data, only_where_water=True, type_loss='RMSE', nod
         where_water = mask_on_water(diff)
     else:
         where_water = torch.ones(diff.shape[0]).bool()
-    
+
     if isinstance(data, Batch):
-        multiscale_loss = get_mean_error(torch.cat([diff[data.node_ptr[i,0]:data.node_ptr[i,1]][where_water[node_ptr[i,0]:node_ptr[i,1]]] 
+        multiscale_loss = get_mean_error(torch.cat([diff[data.node_ptr[i,0]:data.node_ptr[i,1]][where_water[node_ptr[i,0]:node_ptr[i,1]]]
                                                     for i in range(data.num_graphs)]), type_loss, nodes_dim)
     else:
         multiscale_loss = get_mean_error(diff[node_ptr[0]:node_ptr[1]][where_water[node_ptr[0]:node_ptr[1]]], type_loss, nodes_dim)
-        
+
     return multiscale_loss
 
-def loss_function(preds, real, data, BC, type_loss='RMSE', only_where_water=False, 
+def loss_function(preds, real, data, BC, type_loss='RMSE', only_where_water=False,
                   conservation=0, velocity_scaler=1):
     '''
     Calculates loss between predictions and real values
-    
+
     Parameters:
     preds: torch.tensor (shape = [num_nodes, num_variables])
         predictions of the model
@@ -108,7 +108,7 @@ def loss_function(preds, real, data, BC, type_loss='RMSE', only_where_water=Fals
 
     loss_scaler = get_loss_variable_scaler(velocity_scaler=velocity_scaler).to(diff.device)
     loss = torch.dot(loss, loss_scaler)/loss_scaler.sum()
-        
+
     if conservation != 0:
         WD_index = 2
         input_WD = data.x[:,-WD_index::WD_index] #[m] (only water depth)
@@ -119,8 +119,8 @@ def loss_function(preds, real, data, BC, type_loss='RMSE', only_where_water=Fals
 
 def conservation_loss(pred_WD, input_WD, data, BC):
     '''
-    Calculates loss for mass conservation, calculated as the difference between 
-    the predicted volume change (sum(area*(pred_WD - input_WD))) and 
+    Calculates loss for mass conservation, calculated as the difference between
+    the predicted volume change (sum(area*(pred_WD - input_WD))) and
     the theoretical inflow volume (BC[t:t+1]*edge_BC_length)
 
     All calculations are done at the finest scale (in case of multiscale simulations)
@@ -128,13 +128,13 @@ def conservation_loss(pred_WD, input_WD, data, BC):
     Parameters:
     pred_WD: torch.tensor
         predicted water depth (time t+1), shape (num_nodes, 1)
-    input_WD: torch.tensor 
+    input_WD: torch.tensor
         input water depth (time t), shape (num_nodes, 1)
     data: torch_geometric.data.Data
         data object with the graph information (e.g., batch, node_ptr)
     BC: torch.tensor
         boundary conditions (time t), shape (num_BCs)
-    '''        
+    '''
     # Calculate delta_WD
     assert pred_WD.shape == input_WD.shape, f"Input or predictions have wrong dimensions ({pred_WD.shape} != {input_WD.shape})"
     delta_WD = pred_WD - input_WD #[m]
@@ -147,23 +147,23 @@ def conservation_loss(pred_WD, input_WD, data, BC):
     # Multiscale (select only the finest scale)
     if 'node_ptr' in data.keys():
         if isinstance(data, Batch):
-            predicted_inflow_volume = torch.cat([(area*delta_WD)[data.node_ptr[i,0]:data.node_ptr[i,1]] 
+            predicted_inflow_volume = torch.cat([(area*delta_WD)[data.node_ptr[i,0]:data.node_ptr[i,1]]
                                                  for i in range(data.num_graphs)]).sum() #[m^3]
         else:
             predicted_inflow_volume = ((area*delta_WD)[data.node_ptr[0]:data.node_ptr[1]]).sum()
 
     # Single scale
-    else: 
+    else:
         predicted_inflow_volume = (area*delta_WD).sum() #[m^3]
-    
+
     # Theoretical inflow volume
     inflow_volume = get_inflow_volume(data, BC) #[m^3]
     boundary_correction = ((area*delta_WD)[data.node_BC]).sum() #[m^3] # remove values at ghost cells
-        
-    # Mass conservation 
+
+    # Mass conservation
     conservation_loss = (predicted_inflow_volume - inflow_volume - boundary_correction)/1e6 #[m^3 * 1e6]
 
     if isinstance(data, Batch):
         conservation_loss = conservation_loss/data.num_graphs
-    
+
     return conservation_loss

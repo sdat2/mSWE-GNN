@@ -5,10 +5,10 @@ import matplotlib.pyplot as plt
 from torch_geometric.utils import scatter
 from wandb import Config
 
-from database.graph_creation import MultiscaleMesh
-from utils.dataset import to_temporal_dataset, get_inflow_volume, create_scale_mask
-from training.loss import conservation_loss, mask_on_water, get_mean_error
-from models.gnn import GNN, MSGNN
+from mswegnn.database.graph_creation import MultiscaleMesh
+from mswegnn.utils.dataset import to_temporal_dataset, get_inflow_volume, create_scale_mask
+from mswegnn.training.loss import conservation_loss, mask_on_water, get_mean_error
+from mswegnn.models.gnn import GNN, MSGNN
 
 NUM_WATER_VARS = 2  # water depth and discharge
 
@@ -25,7 +25,7 @@ def get_time_vector(total_time_steps, temporal_res):
 
 def add_null_time_start(time_start, temporal_array):
     '''Adds null values to the beginning of a temporal array
-    
+
     time_start: int
         initial time of the simulation = number of null values to add
     temporal_array: np.array
@@ -59,12 +59,12 @@ def WD_to_FAT(WD, temporal_res, water_threshold=0, time_start=0):
     '''
     assert WD.dim() == 2, "WD must be a tensor of dimension [N, T]"
     total_time = time_start + WD.shape[-1]
-    
+
     flooded_areas = WD > water_threshold
     flooded_time = flooded_areas.sum(1)
     FAT = -(flooded_time - total_time)
     FAT_hours = FAT*temporal_res/60
-        
+
     return FAT_hours
 
 def get_numerical_times(dataset_name, dataset_size, temporal_res, maximum_time,
@@ -75,7 +75,7 @@ def get_numerical_times(dataset_name, dataset_size, temporal_res, maximum_time,
     time_stop = temporal_test_dataset_parameters['time_stop']
 
     final_time = time_stop%maximum_time + (time_stop==-1)
-    
+
     assert final_time != -1, "I'm not sure how to interpret final_time value of -1"
 
     numerical_simulation_overview = pd.read_csv(overview_file, sep=',')
@@ -117,7 +117,7 @@ def get_mass_conservation_loss(rollout, data):
     '''Calculates mass conservation loss for a given simulation'''
     data.area = data.area[data.node_ptr[0]:data.node_ptr[1]]
     return torch.stack([conservation_loss(rollout[:,0::NUM_WATER_VARS,t], rollout[:,0::NUM_WATER_VARS,t-1], data,
-                                          (data.BC[:,t] + data.BC[:,t+1])/2) 
+                                          (data.BC[:,t] + data.BC[:,t+1])/2)
                                           for t in range(1, rollout.shape[-1])])
 
 def get_binary_rollouts(predicted_rollout, real_rollout, water_threshold=0):
@@ -169,9 +169,9 @@ def get_F1(predicted_rollout, real_rollout, water_threshold=0):
     return F1
 
 def get_masked_diff(diff_roll, where_water):
-    masked_diff = torch.stack([diff_roll[:,water_variable,:][where_water] 
+    masked_diff = torch.stack([diff_roll[:,water_variable,:][where_water]
                                     for water_variable in range(diff_roll.shape[1])])
-                                
+
     return masked_diff
 
 def get_rollout_loss(predicted_rollout, real_rollout, type_loss='RMSE', only_where_water=False):
@@ -186,16 +186,16 @@ def get_rollout_loss(predicted_rollout, real_rollout, type_loss='RMSE', only_whe
 
     if only_where_water:
         where_water = mask_on_water(diff_roll, water_axis=water_axis)
-        
+
         if diff_roll.dim() == 4:
             roll_loss = torch.stack([get_mean_error(
-                get_masked_diff(diff_roll[id_dataset], where_water[id_dataset]), 
+                get_masked_diff(diff_roll[id_dataset], where_water[id_dataset]),
                 type_loss, nodes_dim=-1) for id_dataset in range(diff_roll.shape[0])])
         elif diff_roll.dim() == 3:
             roll_loss = get_mean_error(get_masked_diff(diff_roll, where_water), type_loss, nodes_dim=-1)
     else:
         roll_loss = get_mean_error(diff_roll, type_loss, nodes_dim=nodes_dim).mean(-1)
-    
+
     return roll_loss
 
 def plot_line_with_deviation(time_vector, variable, with_minmax=False, ax=None, **plt_kwargs):
@@ -237,14 +237,14 @@ def fix_dict_in_config(wandb):
                 config[new_key] = {}
             config[new_key].update({inner_key: v})
             del config[k]
-    
+
     wandb.config = Config()
     for k, v in config.items():
         wandb.config[k] = v
 
 def get_pareto_front(df, objective_function1, objective_function2, ascending=False):
     """Returns the pareto front of a dataframe with two objective functions
-    
+
     df: pd.DataFrame
         Dataframe with the objective functions
     objective_function1: str
@@ -260,7 +260,7 @@ def get_pareto_front(df, objective_function1, objective_function2, ascending=Fal
     for var1, var2 in sorted_df.values[1:]:
         if var2 >= pareto_front[-1,1]:
             pareto_front = np.concatenate((pareto_front, np.array([[var1, var2]])), axis=0)
-    
+
     return pareto_front
 
 def get_sufficient_k_hops(edge_index, WD, cover_percentage=0.999):
@@ -302,8 +302,8 @@ def get_sufficient_k_hops(edge_index, WD, cover_percentage=0.999):
 
 def get_sufficient_k_hops_per_scale(edge_index, WD, edge_ptr, node_ptr, cover_percentage=0.999):
     """Determine how many K-hops are needed to cover the cells changed in one time step at the different scales"""
-    
-    khop_per_scale = [get_sufficient_k_hops(edge_index[:,edge_ptr[i]:edge_ptr[i+1]]-node_ptr[i], 
+
+    khop_per_scale = [get_sufficient_k_hops(edge_index[:,edge_ptr[i]:edge_ptr[i+1]]-node_ptr[i],
                                             WD[node_ptr[i]:node_ptr[i+1]], cover_percentage)
                                             for i in range(len(node_ptr)-1)]
     return khop_per_scale
@@ -330,7 +330,7 @@ class SpatialAnalysis():
         self.type_BCs = [data.type_BC.item() for data in self.dataset]
         total_time_steps = self.real_rollout[0].shape[-1]+self.time_start
         self.time_vector = get_time_vector(total_time_steps, self.temporal_res)
-        
+
     def _get_DEMS(self, dataset):
         if isinstance(dataset, list):
             DEMs = [data.DEM for data in dataset]
@@ -341,28 +341,28 @@ class SpatialAnalysis():
     def _plot_metric_rollouts(self, metric_name, metric_function, water_thresholds=[0.05, 0.3], ax=None):
         '''Plots metric in time for different water_thresholds
         -------
-        metric_function: 
+        metric_function:
             options: get_CSI, get_F1
         '''
         if ax is None: fig, ax = plt.subplots(figsize=(7,5))
 
         all_metric = []
         for wt in water_thresholds:
-            metric = torch.stack([metric_function(pred, real, water_threshold=wt) 
+            metric = torch.stack([metric_function(pred, real, water_threshold=wt)
                                   for pred, real in zip(self.predicted_rollout, self.real_rollout)]).to('cpu').numpy()
             all_metric.append(metric)
             metric = add_null_time_start(self.time_start, metric)
             plot_line_with_deviation(self.time_vector, metric, ax=ax, label=f'{metric_name}$_{{{wt}}}$')
             # plt.legend()
-            
+
         ax.set_xlabel('Time [h]')
         ax.set_title(f'{metric_name} score')
         ax.set_ylim(0,1)
         ax.grid()
         ax.legend(loc=4)
-        
+
         return ax, np.array(all_metric)
-    
+
     def _plot_rollouts(self, type_loss, ax=None):
         '''Plots loss in time for the different water variables'''
         if ax is None: fig, ax = plt.subplots(figsize=(7,5))
@@ -374,7 +374,7 @@ class SpatialAnalysis():
         ax2 = ax.twinx()
         axx = ax
 
-        diff_rollout = torch.stack([get_mean_error(pred - real, type_loss, nodes_dim=0) for pred, real 
+        diff_rollout = torch.stack([get_mean_error(pred - real, type_loss, nodes_dim=0) for pred, real
                      in zip(self.predicted_rollout, self.real_rollout)])
 
         for var in range(diff_rollout.shape[1]):
@@ -385,25 +385,25 @@ class SpatialAnalysis():
             axx = ax2
 
         ax.tick_params(axis='y', colors='royalblue')
-        ax2.tick_params(axis='y', colors=lines[var].get_color())            
+        ax2.tick_params(axis='y', colors=lines[var].get_color())
         axx = ax
         ax.set_xlabel('Time [h]')
         ax.set_title(type_loss)
 
         labs = [l.get_label() for l in lines]
         ax.legend(lines, labs, loc=2)
-        
+
         return ax
-    
+
     def _plot_BCs(self, ax=None):
         '''Plots boundary conditions in time'''
         if ax is None: fig, ax = plt.subplots(figsize=(7,5))
-        
+
         type_BC_dict = {
             1: 'Water depth [m]',
             2: 'Discharge [$m^3$/s]'
         }
-        
+
         if isinstance(self.dataset[0].mesh, MultiscaleMesh):
             cell_length = torch.tensor([data.edge_BC_length[0].cpu() for data in self.dataset]) # only finest scale
         else:
@@ -412,19 +412,19 @@ class SpatialAnalysis():
 
         time_vector = get_time_vector(inflow_nodes.shape[-1]-1, self.temporal_res)
         plot_line_with_deviation(time_vector, inflow_nodes.cpu(), with_minmax=True, label=f'{type_BC_dict[self.type_BCs[0]]}')
-        
+
         ax.set_xlabel('Time [h]')
         ax.set_ylabel(f'{type_BC_dict[self.type_BCs[0]]}')
         ax.set_title('Boundary conditions')
         ax.grid()
         # ax.legend(loc=1)
-        
+
         return ax
 
     def _get_CSI(self, water_threshold=0):
         CSI = [get_CSI(pred, real, water_threshold=water_threshold) for pred, real in zip(self.predicted_rollout, self.real_rollout)]
         return torch.stack(CSI)
-        
+
     def _get_F1(self, water_threshold=0):
         F1 = [get_F1(pred, real, water_threshold=water_threshold) for pred, real in zip(self.predicted_rollout, self.real_rollout)]
         return torch.stack(F1)
@@ -434,12 +434,12 @@ class SpatialAnalysis():
 
     def plot_F1_rollouts(self, water_thresholds=[0.05, 0.3], ax=None):
         return self._plot_metric_rollouts('F1', get_F1, water_thresholds=water_thresholds, ax=ax)
-    
+
     def _get_mass_loss_in_time(self):
-        mass_loss = torch.stack([get_mass_conservation_loss(self.predicted_rollout[i], data.cpu()) 
+        mass_loss = torch.stack([get_mass_conservation_loss(self.predicted_rollout[i], data.cpu())
                                  for i, data in enumerate(self.dataset)])*1e6 # denormalize
         return mass_loss
-    
+
     def plot_mass_conservation(self):
         '''Plots mass conservation in time for one or more simulations'''
         fig, ax = plt.subplots(figsize=(7,5))
@@ -447,8 +447,8 @@ class SpatialAnalysis():
         mass_loss = self._get_mass_loss_in_time().cpu().numpy()
         mass_loss = add_null_time_start(self.time_start+1, mass_loss)
 
-        inflow_volume = torch.tensor([[get_inflow_volume(data, data.BC[:,t:t+2].mean(1)) 
-                                                for t in range(mass_loss.shape[1]-1)] 
+        inflow_volume = torch.tensor([[get_inflow_volume(data, data.BC[:,t:t+2].mean(1))
+                                                for t in range(mass_loss.shape[1]-1)]
                                                 for data in self.dataset])
 
         inflow_volume = add_null_time_start(self.time_start, inflow_volume)
@@ -463,16 +463,16 @@ class SpatialAnalysis():
         ax.set_ylabel('Volume per time step [$m^3$]')
 
         plt.tight_layout()
-        
+
         return mass_loss
 
     def _get_rollout_loss(self, type_loss='RMSE', only_where_water=False):
-        rollout_losses = [get_rollout_loss(pred, real, type_loss=type_loss, only_where_water=only_where_water) 
+        rollout_losses = [get_rollout_loss(pred, real, type_loss=type_loss, only_where_water=only_where_water)
                           for pred, real in zip(self.predicted_rollout, self.real_rollout)]
 
         return torch.stack(rollout_losses)
 
-    def plot_loss_per_simulation(self, type_loss='RMSE', water_thresholds=[0.05, 0.3], 
+    def plot_loss_per_simulation(self, type_loss='RMSE', water_thresholds=[0.05, 0.3],
                                  ranking='loss', only_where_water=False, figsize=(20,12)):
         '''Plot sorted loss for each simulation in a dataset
         ranking: criterion to sort simulations
@@ -498,7 +498,7 @@ class SpatialAnalysis():
             raise ValueError("ranking can only be either 'loss' or 'CSI'")
 
         positions=range(len(sorted_ids))
-        
+
         water_variables = rollout_loss.shape[1]
         if water_variables == 1:
             water_labels = ['h [m]']
@@ -509,7 +509,7 @@ class SpatialAnalysis():
         elif water_variables == 3:
             water_labels = ['h [m]', 'qx [$m^2$/s]', 'qy [$m^2$/s]']
             var_colors = ['royalblue', 'orange', 'darkgreen']
-            
+
         axs[0].set_title(f'{ranking} ranking for test simulations')
         n_x_ticks = range(len(sorted_ids))
         axs[0].boxplot([self.DEMs[i] for i in sorted_ids], positions=positions)
@@ -520,10 +520,10 @@ class SpatialAnalysis():
         axs[1].set_ylabel(type_loss)
         axs[1].set_yscale('log')
         axs[1].legend()
-        
+
         axs[2].set_xticks(n_x_ticks)
         axs[2].set_xticklabels(sorted_ids)
-        
+
         [axs[2].plot(CSIs[sorted_ids, i], 'o--', label=f'CSI$_{{{wt}}}$') for i, wt in enumerate(water_thresholds)]
         axs[2].set_ylim(0,1)
         axs[2].set_xlabel('Simulation id')
@@ -534,7 +534,7 @@ class SpatialAnalysis():
 
         return sorted_ids
 
-    def plot_summary(self, numerical_times, type_loss='RMSE', water_thresholds=[0.05, 0.3], 
+    def plot_summary(self, numerical_times, type_loss='RMSE', water_thresholds=[0.05, 0.3],
                      only_where_water=False, figsize=(10,5)):
 
         fig, axs = plt.subplots(1, 3, figsize=figsize)
