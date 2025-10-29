@@ -10,7 +10,7 @@ from mswegnn.utils.dataset import to_temporal_dataset, get_inflow_volume, create
 from mswegnn.training.loss import conservation_loss, mask_on_water, get_mean_error
 from mswegnn.models.gnn import GNN, MSGNN
 
-NUM_WATER_VARS = 2  # water depth and discharge
+NUM_WATER_VARS = 3  # water depth and discharge
 
 def get_model(model_name):
     models_dict = {'GNN': GNN,

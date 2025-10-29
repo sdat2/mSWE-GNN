@@ -1,9 +1,9 @@
 # Libraries
 import torch
 from torch_geometric.data import Batch
-from mswegnn.utils.dataset import get_inflow_volume
+# from mswegnn.utils.dataset import get_inflow_volume
 
-NUM_WATER_VARS = 2 # water depth and velocity
+NUM_WATER_VARS = 3 # water depth and velocity x and velocity y
 
 def get_mean_error(diff_rollout, type_loss, nodes_dim=0):
     '''Calculates mean error between predictions and real values

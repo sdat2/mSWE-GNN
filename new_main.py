@@ -1,108 +1,180 @@
 """
-Example of how to use this in your main.py
+Main training script for the mSWE-GNN Adforce pipeline.
+
+This script ties together all the new components:
+1.  Loads the 'adforce_config.yaml' for all hyperparameters.
+2.  Finds and splits NetCDF files.
+3.  Uses 'AdforceLazyDataset' to create train/val datasets
+   .
+4.  Calculates model dimensions based on the dataset's known structure.
+5.  Instantiates the correct model ('GNNModel_new' or 'MSGNNModel_new')
+   .
+6.  Uses the 'DataModule' and 'LightningTrainer' from train.py to run
+    the training loop.
 """
 import glob
 import os
+import lightning as L
 from sklearn.model_selection import train_test_split
-from torch_geometric.loader import DataLoader
-from mswegnn.utils.adforce_dataset import AdforceLazyDataset # Import your new class
 
-# 1. Find all your NetCDF files
-data_dir = "/Volumes/s/tcpips/swegnn_5sec/"
-all_nc_files = sorted(glob.glob(os.path.join(data_dir, "*.nc")))
-print(f"Found {len(all_nc_files)} total simulation files.")
+# Imports from our mSWE-GNN project
+from mswegnn.utils.adforce_dataset import AdforceLazyDataset
+from mswegnn.utils.load import read_config
+from mswegnn.models.models_new import GNNModel_new, MSGNNModel_new
+from mswegnn.training.train import LightningTrainer, DataModule
 
-# 2. Split the FILE LIST (e.g., 80% train, 20% validation)
-# This ensures simulations don't leak between sets
-train_files, val_files = train_test_split(
-    all_nc_files,
-    test_size=0.2,
-    random_state=42
-)
+# --- Constants based on adforce_dataset.py ---
+#
+# 5 static node features: (DEM, slopex, slopey, area, node_type)
+NUM_STATIC_NODE_FEATURES = 5
+# 3 dynamic node features: (WX, WY, P)
+NUM_DYNAMIC_NODE_FEATURES = 3
+# 2 static edge features: (face_distance, edge_slope)
+NUM_STATIC_EDGE_FEATURES = 2
+# 3 target variables: (WD, VX, VY)
+NUM_OUTPUT_FEATURES = 3
 
-print(f"Training on {len(train_files)} files, validating on {len(val_files)} files.")
+# --- Configuration ---
+CONFIG_PATH = "adforce_config.yaml"
 
-# 3. Create a separate "lazy" dataset for each split
-# The .process() method will run ONLY for its own files
-try:
-    train_dataset = AdforceLazyDataset(
-        root="data_processed/train",
-        nc_files=train_files,
-        previous_t=1,
+
+def main():
+    """
+    Main function to run the data loading and training pipeline.
+    """
+    # 1. Load Configuration
+    print(f"Loading configuration from {CONFIG_PATH}...")
+    try:
+        config = read_config(CONFIG_PATH)
+    except FileNotFoundError:
+        print(f"ERROR: Configuration file not found at {CONFIG_PATH}")
+        print("Please create 'adforce_config.yaml' based on the example provided.")
+        return
+    except Exception as e:
+        print(f"Error reading config file: {e}")
+        return
+
+    data_cfg = config.get('data_params', {})
+    model_cfg = config.get('model_params', {})
+    trainer_cfg = config.get('trainer_options', {})
+    lr_cfg = config.get('lr_info', {})
+    lt_cfg = config.get('lightning_trainer', {})
+
+    p_t = data_cfg.get('previous_t', 1)
+    data_dir = data_cfg.get('data_dir', 'data/')
+
+    # 2. Find and split data files
+    print(f"Searching for NetCDF files in {data_dir}...")
+    all_nc_files = sorted(glob.glob(os.path.join(data_dir, "*.nc")))
+    if not all_nc_files:
+        print(f"ERROR: No *.nc files found in {data_dir}.")
+        print("Please check the 'data_dir' path in your config file.")
+        return
+    print(f"Found {len(all_nc_files)} total simulation files.")
+
+    train_files, val_files = train_test_split(
+        all_nc_files,
+        test_size=data_cfg.get('test_size', 0.2),
+        random_state=data_cfg.get('random_state', 42)
     )
+    print(f"Training on {len(train_files)} files, validating on {len(val_files)} files.")
 
-    val_dataset = AdforceLazyDataset(
-        root="data_processed/val",
-        nc_files=val_files,
-        previous_t=1,
-    )
+    try:
+        # 3. Create "lazy" datasets
+        print("Initializing training dataset (this may run .process()...)")
+        train_dataset = AdforceLazyDataset(
+            root="data_processed/train",
+            nc_files=train_files,
+            previous_t=p_t,
+        )
 
-    # 4. Create DataLoaders
-    # The DataLoader will call train_dataset.get(i) for each batch
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=32,
-        shuffle=True,
-        num_workers=4
-    )
-    print("Train DataLoader created.", train_loader)
+        print("Initializing validation dataset (this may run .process()...)")
+        val_dataset = AdforceLazyDataset(
+            root="data_processed/val",
+            nc_files=val_files,
+            previous_t=p_t,
+        )
 
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=32,
-        shuffle=False,
-        num_workers=4
-    )
-    print("Validation DataLoader created.", val_loader)
+        # 4. Instantiate Lightning DataModule
+        # This handles DataLoaders and auto-closes file handles via setup/teardown
+        data_module = DataModule(
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            batch_size=trainer_cfg.get('batch_size', 32),
+            num_workers=data_cfg.get('num_workers', 4)
+        )
 
-    # 5. ... Your training loop ...
-    # for batch in train_loader:
-    #     ...
+        # 5. Calculate Model Dimensions
+        num_node_features = NUM_STATIC_NODE_FEATURES + (NUM_DYNAMIC_NODE_FEATURES * p_t)
+        num_edge_features = NUM_STATIC_EDGE_FEATURES
+        num_output_features = NUM_OUTPUT_FEATURES
 
-except Exception as e:
-    print(f"Error initializing dataset: {e}")
-    # Make sure to close file handles if an error occurs
-    if 'train_dataset' in locals():
-        train_dataset.close()
-    if 'val_dataset' in locals():
-        val_dataset.close()
+        print("-" * 30)
+        print(f"Model dimensions calculated:")
+        print(f"  Input Node Features: {num_node_features} (5 static + {NUM_DYNAMIC_NODE_FEATURES} dynamic * {p_t} steps)")
+        print(f"  Input Edge Features: {num_edge_features}")
+        print(f"  Output Features: {num_output_features}")
+        print("-" * 30)
 
-finally:
-    # 6. Clean up file handles when training is done
-    print("Closing file handles...")
-    if 'train_dataset' in locals():
-        train_dataset.close()
-    if 'val_dataset' in locals():
-        val_dataset.close()
+        # 6. Instantiate the Model
+        model_type = model_cfg.get('model_type', 'GNN')
+        print(f"Instantiating model type: {model_type}...")
+
+        # Pass all model_params, the constructors will pick what they need
+        if model_type == 'GNN':
+            model = GNNModel_new(
+                num_node_features=num_node_features,
+                num_edge_features=num_edge_features,
+                previous_t=p_t,
+                num_output_features=num_output_features,
+                num_static_features=NUM_STATIC_NODE_FEATURES,
+                **model_cfg
+            )
+        elif model_type == 'MSGNN':
+            model = MSGNNModel_new(
+                num_node_features=num_node_features,
+                num_edge_features=num_edge_features,
+                previous_t=p_t,
+                num_output_features=num_output_features,
+                num_static_features=NUM_STATIC_NODE_FEATURES,
+                **model_cfg
+            )
+        else:
+            raise ValueError(f"Unknown model_type in config: {model_type}. Must be 'GNN' or 'MSGNN'.")
+
+        # 7. Instantiate the LightningTrainer (the module)
+        lightning_model = LightningTrainer(
+            model=model,
+            lr_info=lr_cfg,
+            trainer_options=trainer_cfg
+        )
+
+        # 8. Instantiate the Lightning Trainer (the runner)
+        # You can add loggers, callbacks, etc., here
+        # e.g., from lightning.pytorch.loggers import TensorBoardLogger
+        # logger = TensorBoardLogger("tb_logs", name="mswe-gnn-adforce")
+        trainer = L.Trainer(
+            **lt_cfg  # Passes max_epochs, accelerator, devices, etc.
+            # logger=logger,
+        )
+
+        # 9. Start Training
+        print("Starting training... 🚀")
+        trainer.fit(lightning_model, datamodule=data_module)
+
+        print("Training complete. ✅")
+
+    except Exception as e:
+        print(f"\nAn error occurred during dataset initialization or training: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Note: The L.Trainer.fit() call will automatically call
+        # data_module.teardown(), which closes the file handles.
+        #
+        print("File handles (if any) will be closed by the DataModule's teardown hook.")
 
 
-
-# import glob
-# import os
-# from sklearn.model_selection import train_test_split
-# from torch_geometric.loader import DataLoader
-# # from adforce_dataset import AdforceLazyDataset # Import your new class
-
-# # 1. Find all your PRE-PROCESSED NetCDF files
-# data_dir = "data/processed_simulations/" # <-- NEW PATH
-# all_nc_files = sorted(glob.glob(os.path.join(data_dir, "*_swegnn.nc")))
-# print(f"Found {len(all_nc_files)} total simulation files.")
-
-# # 2. Split the FILE LIST
-# train_files, val_files = train_test_split(
-#     all_nc_files, test_size=0.2, random_state=42
-# )
-
-# # 3. Create datasets (this builds the index_map.pkl)
-# train_dataset = AdforceLazyDataset(root="data_processed/train", nc_files=train_files)
-# val_dataset = AdforceLazyDataset(root="data_processed/val", nc_files=val_files)
-
-# # 4. Create DataLoaders
-# train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4)
-# val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4)
-
-# # 5. ... Training loop ...
-# # ...
-# # 6. Clean up
-# train_dataset.close()
-# val_dataset.close()
+if __name__ == "__main__":
+    # python -m new_main
+    main()

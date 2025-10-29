@@ -1,0 +1,85 @@
+# adforce_config.yaml
+#
+# Hyperparameters for the Adforce/SWE-GNN pipeline.
+# This config is designed to work with:
+# - mswegnn/utils/adforce_dataset.py
+# - mswegnn/models/models_new.py
+# - mswegnn/training/train.py
+
+# -----------------------------------------------------------------------------
+# Data Loading Parameters (for new_main.py and AdforceLazyDataset)
+# -----------------------------------------------------------------------------
+data_params:
+  # Path to the directory containing all simulation *.nc files
+  data_dir: "/Volumes/s/tcpips/swegnn_5sec/"
+
+  # Split ratio for validation set (from new_main.py)
+  test_size: 0.2
+  random_state: 42
+
+  # Number of *input* time steps to provide to the model
+  # This is the 'previous_t' argument for AdforceLazyDataset
+  #
+  previous_t: 1
+
+  # Number of CPU workers for the DataLoader
+  num_workers: 4
+
+# -----------------------------------------------------------------------------
+# Model Parameters (for GNNModel_new or MSGNNModel_new)
+# -----------------------------------------------------------------------------
+model_params:
+  # 'GNN' for GNNModel_new or 'MSGNN' for MSGNNModel_new
+  #
+  model_type: 'GNN'
+
+  # --- Common GNN Hyperparameters ---
+  # These are passed as **gnn_kwargs to GNN_new
+  #
+  hid_features: 64
+  mlp_layers: 2
+  type_gnn: 'GCN'         # Options: 'GCN', 'SAGE', 'GIN', 'GAT'
+  gnn_activation: 'tanh'  # 'relu', 'prelu', 'tanh'
+  mlp_activation: 'prelu' # 'relu', 'prelu', 'tanh'
+
+  # --- MSGNN-specific parameters ---
+  # (Only used if model_type is 'MSGNN')
+  num_scales: 3
+  learned_pooling: false
+  skip_connections: true
+
+# -----------------------------------------------------------------------------
+# Trainer Options (for LightningTrainer)
+# -----------------------------------------------------------------------------
+trainer_options:
+  # Batch size (also used by DataModule in new_main.py)
+  batch_size: 32
+
+  # Loss function type: 'RMSE' or 'MAE'
+  #
+  type_loss: 'RMSE'
+
+  # Whether to only compute loss where water depth (target) > 0.01
+  only_where_water: true
+
+  # Weighting factor for velocity components (VX, VY) in the loss
+  velocity_scaler: 5.0
+
+# -----------------------------------------------------------------------------
+# Learning Rate Scheduler (for LightningTrainer)
+# -----------------------------------------------------------------------------
+lr_info:
+  #
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  step_size: 20  # num epochs before decaying LR
+  gamma: 0.5     # decay factor
+
+# -----------------------------------------------------------------------------
+# Lightning Trainer Parameters (for L.Trainer in new_main.py)
+# -----------------------------------------------------------------------------
+lightning_trainer:
+  max_epochs: 100
+  # accelerator: 'gpu'
+  # devices: 1
+  # logger: ... (e.g., TensorBoardLogger)

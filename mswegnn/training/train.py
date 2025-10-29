@@ -51,12 +51,11 @@ class LightningTrainer(L.LightningModule):
 
         # Calculate loss
         # batch.y is shape [N, 3] from AdforceLazyDataset
-        # We remove the conservation term as BCs are not provided
         loss = loss_function(
             preds,
             batch.y,
             batch,
-            conservation_target=None, # Removed BC-dependent term
+            BC=batch.node_BC, # <-- ADDED THIS
             type_loss=self.type_loss,
             only_where_water=self.only_where_water,
             velocity_scaler=self.velocity_scaler
@@ -92,7 +91,7 @@ class LightningTrainer(L.LightningModule):
             preds,
             batch.y,
             batch,
-            conservation_target=None,
+            BC=batch.node_BC, # <-- ADDED THIS
             type_loss=self.type_loss,
             only_where_water=self.only_where_water,
             velocity_scaler=self.velocity_scaler
@@ -114,7 +113,7 @@ class LightningTrainer(L.LightningModule):
             preds,
             batch.y,
             batch,
-            conservation_target=None,
+            BC=batch.node_BC, # <-- ADDED THIS
             type_loss=self.type_loss,
             only_where_water=self.only_where_water,
             velocity_scaler=self.velocity_scaler

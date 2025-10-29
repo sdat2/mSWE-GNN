@@ -79,7 +79,9 @@ class GNN_Layer(nn.Module):
             raise ValueError("Activation type not implemented")
 
     def forward(self, x, edge_index, edge_attr=None):
-        x = self.conv(x, edge_index, edge_attr=edge_attr)
+        # GCNConv, SAGEConv, and GINConv do not accept edge_attr by default.
+        # We pass only the x and edge_index.
+        x = self.conv(x, edge_index)
         x = self.activation(x)
         return x
 

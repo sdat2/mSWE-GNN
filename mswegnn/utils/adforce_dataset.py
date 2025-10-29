@@ -295,15 +295,32 @@ def _get_forcing_slice(ds: xr.Dataset, t_start: int, num_steps: int) -> torch.Te
     >>> print(torch.all(torch.eq(forcing_slice, expected_tensor)))
     tensor(True)
     """
-    # This loads as [num_vars, num_nodes, num_steps]
-    raw_slice = torch.tensor(
-        ds[['WX', 'WY', 'P']].isel(time=slice(t_start, t_start + num_steps)).to_array().values,
-        dtype=torch.float
-    )
+    # 1. Get the DataArray from xarray
+    #    .to_array() creates a new 'variable' dimension
+    data_array = ds[['WX', 'WY', 'P']].isel(time=slice(t_start, t_start + num_steps)).to_array()
 
-    # Reshape to [num_nodes, num_steps * num_vars] -> [N, T*V]
-    num_nodes = raw_slice.shape[1]
-    formatted_slice = raw_slice.permute(1, 2, 0).reshape(num_nodes, -1)
+    # 2. Define the canonical (expected) order for our code.
+    #    The node dimension is 'num_nodes', time is 'time'.
+    canonical_order = ('num_nodes', 'time', 'variable')
+
+    # 3. Use xarray's .transpose() to *guarantee* the order
+    try:
+        # Find dimensions by name and reorder them.
+        transposed_da = data_array.transpose(*canonical_order, missing_dims='raise')
+    except ValueError as e:
+        dims = data_array.dims
+        raise IOError(
+            f"Failed to transpose forcing data dims. Got {dims}, expected {canonical_order}. Error: {e}"
+            f"\nCheck if 'num_nodes' dim is missing or misnamed in file."
+        )
+
+    # 4. Now that order is guaranteed (N_nodes, N_steps, N_vars),
+    #    convert to tensor.
+    raw_slice = torch.tensor(transposed_da.values, dtype=torch.float)
+
+    # 5. Reshape to [N, T*V]
+    num_nodes = raw_slice.shape[0] # We know this is num_nodes
+    formatted_slice = raw_slice.reshape(num_nodes, -1)
     return formatted_slice
 
 
@@ -355,16 +372,32 @@ def _get_target_slice(ds: xr.Dataset, t_start: int, num_steps: int) -> torch.Ten
     >>> print(torch.all(torch.eq(target_slice, expected_tensor)))
     tensor(True)
     """
-    # This loads as [num_vars, num_nodes, num_steps]
-    raw_slice = torch.tensor(
-        ds[['WD', 'VX', 'VY']].isel(time=slice(t_start, t_start + num_steps)).to_array().values,
-        dtype=torch.float
-    )
+    # 1. Get the DataArray from xarray
+    #    .to_array() creates a new 'variable' dimension
+    data_array = ds[['WD', 'VX', 'VY']].isel(time=slice(t_start, t_start + num_steps)).to_array()
 
-    # Reshape to [num_nodes, num_steps * num_vars] -> [N, T*V]
-    # .squeeze() will remove the T dim if T=1, giving [N, V]
-    num_nodes = raw_slice.shape[1]
-    formatted_slice = raw_slice.permute(1, 2, 0).reshape(num_nodes, -1).squeeze()
+    # 2. Define the canonical (expected) order for our code.
+    #    The node dimension is 'num_nodes', time is 'time'.
+    canonical_order = ('num_nodes', 'time', 'variable')
+
+    # 3. Use xarray's .transpose() to *guarantee* the order
+    try:
+        # Find dimensions by name and reorder them.
+        transposed_da = data_array.transpose(*canonical_order, missing_dims='raise')
+    except ValueError as e:
+        dims = data_array.dims
+        raise IOError(
+            f"Failed to transpose target data dims. Got {dims}, expected {canonical_order}. Error: {e}"
+            f"\nCheck if 'num_nodes' dim is missing or misnamed in file."
+        )
+
+    # 4. Now that order is guaranteed (N_nodes, N_steps, N_vars),
+    #    convert to tensor.
+    raw_slice = torch.tensor(transposed_da.values, dtype=torch.float)
+
+    # 5. Reshape to [N, T*V] and .squeeze() if T=1
+    num_nodes = raw_slice.shape[0] # We know this is num_nodes
+    formatted_slice = raw_slice.reshape(num_nodes, -1).squeeze()
     return formatted_slice
 
 
@@ -470,6 +503,11 @@ class AdforceLazyDataset(Dataset):
                         warnings.warn(f"File {nc_path} is missing variables: {missing}. Skipping file.")
                         continue
 
+                    # Check for 'num_nodes' dimension
+                    if 'num_nodes' not in ds.dims:
+                        warnings.warn(f"File {nc_path} is missing 'num_nodes' dimension. Skipping file.")
+                        continue
+
                     # Check Mesh Consistency
                     current_edge_index = torch.tensor(ds['edge_index'].values, dtype=torch.long)
                     if not first_valid_file_found:
@@ -479,6 +517,14 @@ class AdforceLazyDataset(Dataset):
                     elif not torch.equal(reference_edge_index, current_edge_index):
                         warnings.warn(f"Mesh mismatch in {nc_path}! Skipping file.")
                         continue
+
+                    # Check node count consistency
+                    if ds.sizes['num_nodes'] != total_nodes:
+                         warnings.warn(
+                             f"Node count mismatch in {nc_path}! "
+                             f"Expected {total_nodes} but found {ds.sizes['num_nodes']}. Skipping file."
+                         )
+                         continue
 
                     # Add to index map
                     num_timesteps = ds.sizes['time']
@@ -530,6 +576,9 @@ class AdforceLazyDataset(Dataset):
             # Load static data ONCE using the shared helper
             try:
                 with xr.open_dataset(nc_path) as ds:
+                    # Check for 'num_nodes' dim before loading
+                    if 'num_nodes' not in ds.dims:
+                        raise IOError(f"File {nc_path} is missing 'num_nodes' dimension.")
                     self._static_data_cache[nc_path] = _load_static_data_from_ds(ds)
             except Exception as e:
                 raise IOError(f"Failed to load static data from {nc_path}: {e}")
@@ -547,15 +596,15 @@ class AdforceLazyDataset(Dataset):
         """
         nc_path, t_start = self.index_map[idx]
 
-        # 1. Get static data (from cache or disk)
-        static_data = self._get_static_data(nc_path)
-
-        # 2. Open the file handle (or get from cache)
-        if nc_path not in self._file_handles:
-            self._file_handles[nc_path] = xr.open_dataset(nc_path, cache=True)
-        ds = self._file_handles[nc_path]
-
         try:
+            # 1. Get static data (from cache or disk)
+            static_data = self._get_static_data(nc_path)
+
+            # 2. Open the file handle (or get from cache)
+            if nc_path not in self._file_handles:
+                self._file_handles[nc_path] = xr.open_dataset(nc_path, cache=True)
+            ds = self._file_handles[nc_path]
+
             # 3. Get dynamic slices using helper functions
             dyn_node_features_t = _get_forcing_slice(ds, t_start, self.previous_t)
             y_tplus1 = _get_target_slice(ds, t_start + self.previous_t, self.rollout_steps)
@@ -575,7 +624,11 @@ class AdforceLazyDataset(Dataset):
                         edge_BC_length=static_data['edge_BC_length'])
 
         except Exception as e:
-            raise IOError(f"Error loading sample {idx} (file: {nc_path}, time_idx: {t_start}): {e}")
+            # Add context to the error message
+            raise IOError(
+                f"Error loading sample {idx} (file: {nc_path}, time_idx: {t_start}): {e}"
+                f"\nCheck data consistency for this file."
+            )
 
 
     def close(self):
@@ -713,19 +766,15 @@ def run_forcing_rollout(model: torch.nn.Module, nc_path: str, previous_t: int) -
             # --- Update forcing history for the *next* step ---
             # Check if we are not at the very last step
             if t + 1 < num_timesteps:
-                # Get just the *next* timestep's forcing data
-                # This corresponds to t_start = t + 1
-                # The history window starts at (t + 1) - previous_t
-                # ERROR: this is not used
-                # next_history_start_idx = t - previous_t + 1
-
                 # Get just the single *newest* forcing slice to append
+                # We need the slice *at* time t to predict t+1
+                # But _get_forcing_slice loads from t_start, so t_start = t
                 next_forcing_slice = _get_forcing_slice(ds, t, 1).to(device)
 
                 # Update history: drop oldest step, append newest step
                 # current_forcing_history shape is [N, 3 * previous_t]
                 # We drop the first 3 features (WX, WY, P from oldest step)
-                num_forcing_vars = next_forcing_slice.shape[1]
+                num_forcing_vars = next_forcing_slice.shape[1] # Should be 3
                 current_forcing_history = torch.cat([
                     current_forcing_history[:, num_forcing_vars:], # Drop oldest N_forcing columns
                     next_forcing_slice                          # Add newest N_forcing columns

@@ -1,9 +1,9 @@
 # Libraries
+import os
+import numpy as np
 import torch
 from torch_geometric.data import Data
 from torch_geometric.utils import scatter
-import numpy as np
-import os
 from sklearn.model_selection import train_test_split
 from mswegnn.database.graph_creation import MultiscaleMesh, rotate_mesh
 from mswegnn.utils.load import load_dataset
