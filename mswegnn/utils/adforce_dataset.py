@@ -125,6 +125,7 @@ variables:
                 :description = "Dual graph formatted for mSWE-GNN input pipeline" ;
 }
 """
+
 from typing import Dict
 import warnings
 import numpy as np
@@ -137,6 +138,7 @@ from tqdm import tqdm
 # ----------------------------------------------------------------------------
 #  HELPER FUNCTIONS (with Doctests)
 # ----------------------------------------------------------------------------
+
 
 def _load_static_data_from_ds(ds: xr.Dataset) -> Dict[str, torch.Tensor]:
     """
@@ -194,48 +196,55 @@ def _load_static_data_from_ds(ds: xr.Dataset) -> Dict[str, torch.Tensor]:
             [ 1.2000,  0.1000]])
     """
     # --- Edge Features ---
-    edge_index = torch.tensor(ds['edge_index'].values, dtype=torch.long)
-    static_edge_attr = torch.stack([
-        torch.tensor(ds['face_distance'].values, dtype=torch.float),
-        torch.tensor(ds['edge_slope'].values, dtype=torch.float)
-    ], dim=1)  # Shape [num_edges, 2]
+    edge_index = torch.tensor(ds["edge_index"].values, dtype=torch.long)
+    static_edge_attr = torch.stack(
+        [
+            torch.tensor(ds["face_distance"].values, dtype=torch.float),
+            torch.tensor(ds["edge_slope"].values, dtype=torch.float),
+        ],
+        dim=1,
+    )  # Shape [num_edges, 2]
 
     # --- Node Features ---
-    dem = torch.tensor(ds['DEM'].values, dtype=torch.float)
-    slopex = torch.tensor(ds['slopex'].values, dtype=torch.float)
-    slopey = torch.tensor(ds['slopey'].values, dtype=torch.float)
-    area = torch.tensor(ds['area'].values, dtype=torch.float)
+    dem = torch.tensor(ds["DEM"].values, dtype=torch.float)
+    slopex = torch.tensor(ds["slopex"].values, dtype=torch.float)
+    slopey = torch.tensor(ds["slopey"].values, dtype=torch.float)
+    area = torch.tensor(ds["area"].values, dtype=torch.float)
 
     # --- Boundary Condition Info ---
-    num_real_nodes = ds.dims['num_nodes']
+    num_real_nodes = ds.sizes["num_nodes"]
     node_type = torch.zeros(num_real_nodes, dtype=torch.float)
 
-    boundary_face_indices = torch.tensor([], dtype=torch.long) # Default
-    if 'face_BC' in ds:
+    boundary_face_indices = torch.tensor([], dtype=torch.long)  # Default
+    if "face_BC" in ds:
         # NOTE: Using 'face_BC' as the source for node_BC indices
-        boundary_face_indices = torch.tensor(ds['face_BC'].values, dtype=torch.long)
+        boundary_face_indices = torch.tensor(ds["face_BC"].values, dtype=torch.long)
         if boundary_face_indices.numel() > 0:
             # Ensure indices are within bounds before assigning
-            valid_indices = boundary_face_indices[boundary_face_indices < num_real_nodes]
+            valid_indices = boundary_face_indices[
+                boundary_face_indices < num_real_nodes
+            ]
             if len(valid_indices) < len(boundary_face_indices):
-                warnings.warn("Some 'face_BC' indices are out of bounds for 'num_nodes'.")
+                warnings.warn(
+                    "Some 'face_BC' indices are out of bounds for 'num_nodes'."
+                )
             if valid_indices.numel() > 0:
                 node_type[valid_indices] = 1.0  # Mark as boundary
 
-    edge_bc_length = torch.tensor([], dtype=torch.float) # Default
-    if 'edge_BC_length' in ds:
-        edge_bc_length = torch.tensor(ds['edge_BC_length'].values, dtype=torch.float)
+    edge_bc_length = torch.tensor([], dtype=torch.float)  # Default
+    if "edge_BC_length" in ds:
+        edge_bc_length = torch.tensor(ds["edge_BC_length"].values, dtype=torch.float)
 
-    static_node_features = torch.stack([
-        dem, slopex, slopey, area, node_type
-    ], dim=1)  # Shape [num_nodes, 5]
+    static_node_features = torch.stack(
+        [dem, slopex, slopey, area, node_type], dim=1
+    )  # Shape [num_nodes, 5]
 
     return {
-        'edge_index': edge_index,
-        'static_node_features': static_node_features,
-        'static_edge_attr': static_edge_attr,
-        'node_BC': boundary_face_indices, # Return the indices
-        'edge_BC_length': edge_bc_length
+        "edge_index": edge_index,
+        "static_node_features": static_node_features,
+        "static_edge_attr": static_edge_attr,
+        "node_BC": boundary_face_indices,  # Return the indices
+        "edge_BC_length": edge_bc_length,
     }
 
 
@@ -297,16 +306,18 @@ def _get_forcing_slice(ds: xr.Dataset, t_start: int, num_steps: int) -> torch.Te
     """
     # 1. Get the DataArray from xarray
     #    .to_array() creates a new 'variable' dimension
-    data_array = ds[['WX', 'WY', 'P']].isel(time=slice(t_start, t_start + num_steps)).to_array()
+    data_array = (
+        ds[["WX", "WY", "P"]].isel(time=slice(t_start, t_start + num_steps)).to_array()
+    )
 
     # 2. Define the canonical (expected) order for our code.
     #    The node dimension is 'num_nodes', time is 'time'.
-    canonical_order = ('num_nodes', 'time', 'variable')
+    canonical_order = ("num_nodes", "time", "variable")
 
     # 3. Use xarray's .transpose() to *guarantee* the order
     try:
         # Find dimensions by name and reorder them.
-        transposed_da = data_array.transpose(*canonical_order, missing_dims='raise')
+        transposed_da = data_array.transpose(*canonical_order, missing_dims="raise")
     except ValueError as e:
         dims = data_array.dims
         raise IOError(
@@ -319,7 +330,7 @@ def _get_forcing_slice(ds: xr.Dataset, t_start: int, num_steps: int) -> torch.Te
     raw_slice = torch.tensor(transposed_da.values, dtype=torch.float)
 
     # 5. Reshape to [N, T*V]
-    num_nodes = raw_slice.shape[0] # We know this is num_nodes
+    num_nodes = raw_slice.shape[0]  # We know this is num_nodes
     formatted_slice = raw_slice.reshape(num_nodes, -1)
     return formatted_slice
 
@@ -374,16 +385,18 @@ def _get_target_slice(ds: xr.Dataset, t_start: int, num_steps: int) -> torch.Ten
     """
     # 1. Get the DataArray from xarray
     #    .to_array() creates a new 'variable' dimension
-    data_array = ds[['WD', 'VX', 'VY']].isel(time=slice(t_start, t_start + num_steps)).to_array()
+    data_array = (
+        ds[["WD", "VX", "VY"]].isel(time=slice(t_start, t_start + num_steps)).to_array()
+    )
 
     # 2. Define the canonical (expected) order for our code.
     #    The node dimension is 'num_nodes', time is 'time'.
-    canonical_order = ('num_nodes', 'time', 'variable')
+    canonical_order = ("num_nodes", "time", "variable")
 
     # 3. Use xarray's .transpose() to *guarantee* the order
     try:
         # Find dimensions by name and reorder them.
-        transposed_da = data_array.transpose(*canonical_order, missing_dims='raise')
+        transposed_da = data_array.transpose(*canonical_order, missing_dims="raise")
     except ValueError as e:
         dims = data_array.dims
         raise IOError(
@@ -396,7 +409,7 @@ def _get_target_slice(ds: xr.Dataset, t_start: int, num_steps: int) -> torch.Ten
     raw_slice = torch.tensor(transposed_da.values, dtype=torch.float)
 
     # 5. Reshape to [N, T*V] and .squeeze() if T=1
-    num_nodes = raw_slice.shape[0] # We know this is num_nodes
+    num_nodes = raw_slice.shape[0]  # We know this is num_nodes
     formatted_slice = raw_slice.reshape(num_nodes, -1).squeeze()
     return formatted_slice
 
@@ -404,6 +417,7 @@ def _get_target_slice(ds: xr.Dataset, t_start: int, num_steps: int) -> torch.Ten
 # ----------------------------------------------------------------------------
 #  TRAINING DATA LOADER CLASS
 # ----------------------------------------------------------------------------
+
 
 class AdforceLazyDataset(Dataset):
     """
@@ -418,6 +432,7 @@ class AdforceLazyDataset(Dataset):
     2.  The static mesh is IDENTICAL across all files.
     3.  This loader provides 1-step-ahead data (rollout_steps=1).
     """
+
     def __init__(self, root, nc_files, previous_t, transform=None, pre_transform=None):
         """
         Args:
@@ -427,7 +442,7 @@ class AdforceLazyDataset(Dataset):
         """
         self.nc_files = sorted(nc_files)
         self.previous_t = previous_t
-        self.rollout_steps = 1 # Hard-coded for 1-step-ahead training
+        self.rollout_steps = 1  # Hard-coded for 1-step-ahead training
 
         # --- Caches ---
         # Cache for open file handles
@@ -443,10 +458,10 @@ class AdforceLazyDataset(Dataset):
         # --- Load the index map from NetCDF ---
         try:
             with xr.open_dataset(self.processed_paths[0]) as ds:
-                self.total_nodes = ds.attrs['total_nodes']
+                self.total_nodes = ds.attrs["total_nodes"]
 
-                loaded_p_t = ds.attrs.get('previous_t', 1)
-                loaded_r_s = ds.attrs.get('rollout_steps', 1)
+                loaded_p_t = ds.attrs.get("previous_t", 1)
+                loaded_r_s = ds.attrs.get("rollout_steps", 1)
 
                 if loaded_p_t != self.previous_t or loaded_r_s != self.rollout_steps:
                     raise ValueError(
@@ -456,34 +471,44 @@ class AdforceLazyDataset(Dataset):
                         f"Delete the 'processed' directory (e.g., '{self.processed_dir}') and re-run."
                     )
 
-                file_paths = ds['file_paths'].values
-                time_indices = ds['time_indices'].values
+                file_paths = ds["file_paths"].values
+                time_indices = ds["time_indices"].values
                 self.index_map = list(zip(file_paths, time_indices))
 
         except FileNotFoundError:
-            raise RuntimeError(f"Processed file not found at {self.processed_paths[0]}. Please check 'root' or re-run processing.")
+            raise RuntimeError(
+                f"Processed file not found at {self.processed_paths[0]}. Please check 'root' or re-run processing."
+            )
         except Exception as e:
             raise IOError(f"Failed to load processed index file: {e}")
 
     @property
     def processed_file_names(self):
         """The file that will store our index map."""
-        return [f'index_map_p{self.previous_t}_r{self.rollout_steps}.nc']
+        return [f"index_map_p{self.previous_t}_r{self.rollout_steps}.nc"]
 
     def process(self):
         """
         Runs ONCE. Scans all files, builds the index map,
         and verifies mesh consistency and variable presence.
         """
-        print(f"Building index map for {len(self.nc_files)} files (p_t={self.previous_t}, r_s={self.rollout_steps})...")
+        print(
+            f"Building index map for {len(self.nc_files)} files (p_t={self.previous_t}, r_s={self.rollout_steps})..."
+        )
 
         # Define all required variables
         required_static_vars = [
-            'edge_index', 'face_distance', 'edge_slope',
-            'DEM', 'slopex', 'slopey', 'area',
-            'face_BC', 'edge_BC_length'
+            "edge_index",
+            "face_distance",
+            "edge_slope",
+            "DEM",
+            "slopex",
+            "slopey",
+            "area",
+            "face_BC",
+            "edge_BC_length",
         ]
-        required_dynamic_vars = ['WX', 'WY', 'P', 'WD', 'VX', 'VY']
+        required_dynamic_vars = ["WX", "WY", "P", "WD", "VX", "VY"]
         all_required_vars = set(required_static_vars + required_dynamic_vars)
 
         reference_edge_index = None
@@ -500,68 +525,80 @@ class AdforceLazyDataset(Dataset):
                     available_vars = set(ds.data_vars.keys())
                     if not all_required_vars.issubset(available_vars):
                         missing = all_required_vars - available_vars
-                        warnings.warn(f"File {nc_path} is missing variables: {missing}. Skipping file.")
+                        warnings.warn(
+                            f"File {nc_path} is missing variables: {missing}. Skipping file."
+                        )
                         continue
 
                     # Check for 'num_nodes' dimension
-                    if 'num_nodes' not in ds.dims:
-                        warnings.warn(f"File {nc_path} is missing 'num_nodes' dimension. Skipping file.")
+                    if "num_nodes" not in ds.sizes:
+                        warnings.warn(
+                            f"File {nc_path} is missing 'num_nodes' dimension. Skipping file."
+                        )
                         continue
 
                     # Check Mesh Consistency
-                    current_edge_index = torch.tensor(ds['edge_index'].values, dtype=torch.long)
+                    current_edge_index = torch.tensor(
+                        ds["edge_index"].values, dtype=torch.long
+                    )
                     if not first_valid_file_found:
                         reference_edge_index = current_edge_index
-                        total_nodes = ds.sizes['num_nodes']
+                        total_nodes = ds.sizes["num_nodes"]
                         first_valid_file_found = True
                     elif not torch.equal(reference_edge_index, current_edge_index):
                         warnings.warn(f"Mesh mismatch in {nc_path}! Skipping file.")
                         continue
 
                     # Check node count consistency
-                    if ds.sizes['num_nodes'] != total_nodes:
-                         warnings.warn(
-                             f"Node count mismatch in {nc_path}! "
-                             f"Expected {total_nodes} but found {ds.sizes['num_nodes']}. Skipping file."
-                         )
-                         continue
+                    if ds.sizes["num_nodes"] != total_nodes:
+                        warnings.warn(
+                            f"Node count mismatch in {nc_path}! "
+                            f"Expected {total_nodes} but found {ds.sizes['num_nodes']}. Skipping file."
+                        )
+                        continue
 
                     # Add to index map
-                    num_timesteps = ds.sizes['time']
-                    valid_steps = num_timesteps - self.previous_t - self.rollout_steps + 1
+                    num_timesteps = ds.sizes["time"]
+                    valid_steps = (
+                        num_timesteps - self.previous_t - self.rollout_steps + 1
+                    )
                     for t in range(valid_steps):
                         index_map.append((nc_path, t))
                 valid_datasets += 1
 
             except Exception as e:
-                warnings.warn(f"Failed to open or process {nc_path}: {e}. Skipping file.")
+                warnings.warn(
+                    f"Failed to open or process {nc_path}: {e}. Skipping file."
+                )
                 continue
 
         if not index_map:
             raise IOError("No valid time steps found across all NetCDF files.")
         if total_nodes is None:
-             raise IOError("No valid files were found to establish mesh properties.")
+            raise IOError("No valid files were found to establish mesh properties.")
 
-        print(f"Index map built. Total samples: {len(index_map)},\n Total nodes per sample: {total_nodes},\n Valid files: {valid_datasets}/{len(self.nc_files)}, {valid_datasets /len(self.nc_files)*100:.1f}%")
+        print(
+            f"Index map built. Total samples: {len(index_map)},\n Total nodes per sample: {total_nodes},\n Valid files: {valid_datasets}/{len(self.nc_files)}, {valid_datasets /len(self.nc_files)*100:.1f}%"
+        )
 
         # Save the map using xarray/NetCDF
-        file_paths = np.array([item[0] for item in index_map], dtype='object')
+        file_paths = np.array([item[0] for item in index_map], dtype="object")
         time_indices = np.array([item[1] for item in index_map], dtype=np.int32)
-        sample_dim = 'sample_idx'
+        sample_dim = "sample_idx"
         sample_coords = np.arange(len(index_map))
         ds_index = xr.Dataset(
             data_vars={
-                'file_paths': (sample_dim, file_paths),
-                'time_indices': (sample_dim, time_indices),
+                "file_paths": (sample_dim, file_paths),
+                "time_indices": (sample_dim, time_indices),
             },
-            coords={sample_dim: sample_coords}
+            coords={sample_dim: sample_coords},
         )
-        ds_index.attrs['total_nodes'] = total_nodes
-        ds_index.attrs['previous_t'] = self.previous_t
-        ds_index.attrs['rollout_steps'] = self.rollout_steps
+        ds_index.attrs["total_nodes"] = total_nodes
+        ds_index.attrs["previous_t"] = self.previous_t
+        ds_index.attrs["rollout_steps"] = self.rollout_steps
 
         try:
-            ds_index.to_netcdf(self.processed_paths[0], mode='w')
+            ds_index.to_netcdf(self.processed_paths[0], mode="w")
         except Exception as e:
             raise IOError(f"Failed to write processed index file: {e}")
         finally:
@@ -577,8 +614,10 @@ class AdforceLazyDataset(Dataset):
             try:
                 with xr.open_dataset(nc_path) as ds:
                     # Check for 'num_nodes' dim before loading
-                    if 'num_nodes' not in ds.dims:
-                        raise IOError(f"File {nc_path} is missing 'num_nodes' dimension.")
+                    if "num_nodes" not in ds.sizes:
+                        raise IOError(
+                            f"File {nc_path} is missing 'num_nodes' dimension."
+                        )
                     self._static_data_cache[nc_path] = _load_static_data_from_ds(ds)
             except Exception as e:
                 raise IOError(f"Failed to load static data from {nc_path}: {e}")
@@ -607,21 +646,24 @@ class AdforceLazyDataset(Dataset):
 
             # 3. Get dynamic slices using helper functions
             dyn_node_features_t = _get_forcing_slice(ds, t_start, self.previous_t)
-            y_tplus1 = _get_target_slice(ds, t_start + self.previous_t, self.rollout_steps)
+            y_tplus1 = _get_target_slice(
+                ds, t_start + self.previous_t, self.rollout_steps
+            )
 
             # 4. Combine static and dynamic inputs
-            x_t = torch.cat([
-                static_data['static_node_features'],
-                dyn_node_features_t
-            ], dim=1)  # Shape [num_nodes, 5 + (3 * previous_t)]
+            x_t = torch.cat(
+                [static_data["static_node_features"], dyn_node_features_t], dim=1
+            )  # Shape [num_nodes, 5 + (3 * previous_t)]
 
             # 5. Construct and return the Data object
-            return Data(x=x_t,
-                        edge_index=static_data['edge_index'],
-                        edge_attr=static_data['static_edge_attr'],
-                        y=y_tplus1,
-                        node_BC=static_data['node_BC'],
-                        edge_BC_length=static_data['edge_BC_length'])
+            return Data(
+                x=x_t,
+                edge_index=static_data["edge_index"],
+                edge_attr=static_data["static_edge_attr"],
+                y=y_tplus1,
+                node_BC=static_data["node_BC"],
+                edge_BC_length=static_data["edge_BC_length"],
+            )
 
         except Exception as e:
             # Add context to the error message
@@ -629,7 +671,6 @@ class AdforceLazyDataset(Dataset):
                 f"Error loading sample {idx} (file: {nc_path}, time_idx: {t_start}): {e}"
                 f"\nCheck data consistency for this file."
             )
-
 
     def close(self):
         """Call this to close all open NetCDF file handles."""
@@ -642,7 +683,10 @@ class AdforceLazyDataset(Dataset):
 #  TESTING / ROLLOUT FUNCTION
 # ----------------------------------------------------------------------------
 
-def run_forcing_rollout(model: torch.nn.Module, nc_path: str, previous_t: int) -> torch.Tensor:
+
+def run_forcing_rollout(
+    model: torch.nn.Module, nc_path: str, previous_t: int
+) -> torch.Tensor:
     """
     Runs a full, memory-efficient, forcing-driven rollout for one simulation.
 
@@ -725,16 +769,18 @@ def run_forcing_rollout(model: torch.nn.Module, nc_path: str, previous_t: int) -
     """
 
     predictions = []
-    device = next(model.parameters()).device # Get model's device
+    device = next(model.parameters()).device  # Get model's device
 
     with xr.open_dataset(nc_path) as ds:
         # 1. Load all static data (once) using the helper
         static_data = _load_static_data_from_ds(ds)
         static_data_gpu = {k: v.to(device) for k, v in static_data.items()}
 
-        num_timesteps = ds.sizes['time']
+        num_timesteps = ds.sizes["time"]
         if num_timesteps <= previous_t:
-            warnings.warn(f"File {nc_path} has {num_timesteps} steps, which is not more than previous_t={previous_t}. Skipping rollout.")
+            warnings.warn(
+                f"File {nc_path} has {num_timesteps} steps, which is not more than previous_t={previous_t}. Skipping rollout."
+            )
             return torch.tensor([])
 
         # 2. Get initial forcing history (t=0 to t=previous_t-1)
@@ -743,25 +789,25 @@ def run_forcing_rollout(model: torch.nn.Module, nc_path: str, previous_t: int) -
         # 3. Loop sequentially through the *rest* of the timesteps
         for t in range(previous_t, num_timesteps):
             # Combine static and dynamic features for this step
-            x_t = torch.cat([
-                static_data_gpu['static_node_features'],
-                current_forcing_history
-            ], dim=1)
+            x_t = torch.cat(
+                [static_data_gpu["static_node_features"], current_forcing_history],
+                dim=1,
+            )
 
             # Create a Data object for the model
             batch = Data(
                 x=x_t,
-                edge_index=static_data_gpu['edge_index'],
-                edge_attr=static_data_gpu['static_edge_attr'],
-                node_BC=static_data_gpu['node_BC'],
-                edge_BC_length=static_data_gpu['edge_BC_length']
+                edge_index=static_data_gpu["edge_index"],
+                edge_attr=static_data_gpu["static_edge_attr"],
+                node_BC=static_data_gpu["node_BC"],
+                edge_BC_length=static_data_gpu["edge_BC_length"],
             ).to(device)
 
             # --- Run model prediction (no gradients) ---
             with torch.no_grad():
-                pred = model(batch) # pred shape [N, 3]
+                pred = model(batch)  # pred shape [N, 3]
 
-            predictions.append(pred.cpu()) # Store on CPU
+            predictions.append(pred.cpu())  # Store on CPU
 
             # --- Update forcing history for the *next* step ---
             # Check if we are not at the very last step
@@ -774,11 +820,16 @@ def run_forcing_rollout(model: torch.nn.Module, nc_path: str, previous_t: int) -
                 # Update history: drop oldest step, append newest step
                 # current_forcing_history shape is [N, 3 * previous_t]
                 # We drop the first 3 features (WX, WY, P from oldest step)
-                num_forcing_vars = next_forcing_slice.shape[1] # Should be 3
-                current_forcing_history = torch.cat([
-                    current_forcing_history[:, num_forcing_vars:], # Drop oldest N_forcing columns
-                    next_forcing_slice                          # Add newest N_forcing columns
-                ], dim=1)
+                num_forcing_vars = next_forcing_slice.shape[1]  # Should be 3
+                current_forcing_history = torch.cat(
+                    [
+                        current_forcing_history[
+                            :, num_forcing_vars:
+                        ],  # Drop oldest N_forcing columns
+                        next_forcing_slice,  # Add newest N_forcing columns
+                    ],
+                    dim=1,
+                )
 
     if not predictions:
         return torch.tensor([])
@@ -788,7 +839,7 @@ def run_forcing_rollout(model: torch.nn.Module, nc_path: str, previous_t: int) -
     return torch.stack(predictions, dim=0).permute(1, 2, 0)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     """
     Run doctests for this module.
 
@@ -796,5 +847,6 @@ if __name__ == '__main__':
     python utils/adforce_dataset.py
     """
     import doctest
-    doctest.testmod(verbose=True) # Set verbose=True to see all tests
+
+    doctest.testmod(verbose=True)  # Set verbose=True to see all tests
     print("Doctests complete.")
