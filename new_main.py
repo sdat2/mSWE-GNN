@@ -12,6 +12,7 @@ This script ties together all the new components:
 6.  Uses the 'DataModule' and 'LightningTrainer' from train.py to run
     the training loop.
 """
+
 import glob
 import os
 import lightning as L
@@ -54,14 +55,14 @@ def main():
         print(f"Error reading config file: {e}")
         return
 
-    data_cfg = config.get('data_params', {})
-    model_cfg = config.get('model_params', {})
-    trainer_cfg = config.get('trainer_options', {})
-    lr_cfg = config.get('lr_info', {})
-    lt_cfg = config.get('lightning_trainer', {})
+    data_cfg = config.get("data_params", {})
+    model_cfg = config.get("model_params", {})
+    trainer_cfg = config.get("trainer_options", {})
+    lr_cfg = config.get("lr_info", {})
+    lt_cfg = config.get("lightning_trainer", {})
 
-    p_t = data_cfg.get('previous_t', 1)
-    data_dir = data_cfg.get('data_dir', 'data/')
+    p_t = data_cfg.get("previous_t", 1)
+    data_dir = data_cfg.get("data_dir", "data/")
 
     # 2. Find and split data files
     print(f"Searching for NetCDF files in {data_dir}...")
@@ -71,13 +72,16 @@ def main():
         print("Please check the 'data_dir' path in your config file.")
         return
     print(f"Found {len(all_nc_files)} total simulation files.")
+    all_nc_files = all_nc_files[10:]  # just for quick testing
 
     train_files, val_files = train_test_split(
         all_nc_files,
-        test_size=data_cfg.get('test_size', 0.2),
-        random_state=data_cfg.get('random_state', 42)
+        test_size=data_cfg.get("test_size", 0.2),
+        random_state=data_cfg.get("random_state", 42),
     )
-    print(f"Training on {len(train_files)} files, validating on {len(val_files)} files.")
+    print(
+        f"Training on {len(train_files)} files, validating on {len(val_files)} files."
+    )
 
     try:
         # 3. Create "lazy" datasets
@@ -100,8 +104,8 @@ def main():
         data_module = DataModule(
             train_dataset=train_dataset,
             val_dataset=val_dataset,
-            batch_size=trainer_cfg.get('batch_size', 32),
-            num_workers=data_cfg.get('num_workers', 4)
+            batch_size=trainer_cfg.get("batch_size", 32),
+            num_workers=data_cfg.get("num_workers", 4),
         )
 
         # 5. Calculate Model Dimensions
@@ -111,42 +115,44 @@ def main():
 
         print("-" * 30)
         print(f"Model dimensions calculated:")
-        print(f"  Input Node Features: {num_node_features} (5 static + {NUM_DYNAMIC_NODE_FEATURES} dynamic * {p_t} steps)")
+        print(
+            f"  Input Node Features: {num_node_features} (5 static + {NUM_DYNAMIC_NODE_FEATURES} dynamic * {p_t} steps)"
+        )
         print(f"  Input Edge Features: {num_edge_features}")
         print(f"  Output Features: {num_output_features}")
         print("-" * 30)
 
         # 6. Instantiate the Model
-        model_type = model_cfg.get('model_type', 'GNN')
+        model_type = model_cfg.get("model_type", "GNN")
         print(f"Instantiating model type: {model_type}...")
 
         # Pass all model_params, the constructors will pick what they need
-        if model_type == 'GNN':
+        if model_type == "GNN":
             model = GNNModel_new(
                 num_node_features=num_node_features,
                 num_edge_features=num_edge_features,
                 previous_t=p_t,
                 num_output_features=num_output_features,
                 num_static_features=NUM_STATIC_NODE_FEATURES,
-                **model_cfg
+                **model_cfg,
             )
-        elif model_type == 'MSGNN':
+        elif model_type == "MSGNN":
             model = MSGNNModel_new(
                 num_node_features=num_node_features,
                 num_edge_features=num_edge_features,
                 previous_t=p_t,
                 num_output_features=num_output_features,
                 num_static_features=NUM_STATIC_NODE_FEATURES,
-                **model_cfg
+                **model_cfg,
             )
         else:
-            raise ValueError(f"Unknown model_type in config: {model_type}. Must be 'GNN' or 'MSGNN'.")
+            raise ValueError(
+                f"Unknown model_type in config: {model_type}. Must be 'GNN' or 'MSGNN'."
+            )
 
         # 7. Instantiate the LightningTrainer (the module)
         lightning_model = LightningTrainer(
-            model=model,
-            lr_info=lr_cfg,
-            trainer_options=trainer_cfg
+            model=model, lr_info=lr_cfg, trainer_options=trainer_cfg
         )
 
         # 8. Instantiate the Lightning Trainer (the runner)
@@ -167,6 +173,7 @@ def main():
     except Exception as e:
         print(f"\nAn error occurred during dataset initialization or training: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         # Note: The L.Trainer.fit() call will automatically call

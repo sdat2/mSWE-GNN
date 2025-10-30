@@ -421,41 +421,54 @@ def _get_target_slice(ds: xr.Dataset, t_start: int, num_steps: int) -> torch.Ten
 
 class AdforceLazyDataset(Dataset):
     """
-    A "lazy-loading" PyG Dataset for multiple pre-processed
-    SWE-GNN NetCDF simulations.
+        A "lazy-loading" PyG Dataset for multiple pre-processed
+        SWE-GNN NetCDF simulations.
 
-    This class uses the helper functions (`_load_static_data_from_ds`, etc.)
-    to construct individual training samples for a 1-step-ahead pipeline.
+        This class uses the helper functions (`_load_static_data_from_ds`, etc.)
+        to construct individual training samples for a 1-step-ahead pipeline.
 
     Assumes:
-    1.  Each .nc file was created by `swegnn_netcdf_creation`.
-    2.  The static mesh is IDENTICAL across all files.
-    3.  This loader provides 1-step-ahead data (rollout_steps=1).
+        1.  Each .nc file was created by `swegnn_netcdf_creation`.
+        2.  The static mesh is IDENTICAL across all files.
+        3.  This loader provides 1-step-ahead data (rollout_steps=1).
     """
 
-    def __init__(self, root, nc_files, previous_t, transform=None, pre_transform=None):
+    def __init__(
+        self,
+        root,
+        nc_files,
+        previous_t,
+        device: torch.device = torch.device("cpu"),
+        transform=None,
+        pre_transform=None,
+    ):
         """
         Args:
             root (str): Root directory to store processed index map.
             nc_files (list[str]): The list of PRE-PROCESSED .nc files.
             previous_t (int): Number of input time steps.
+            device (torch.device, optional): The device (e.g., 'cuda' or 'cpu')
+                to pre-load the static data onto. Defaults to 'cpu'.
         """
         self.nc_files = sorted(nc_files)
+        if not self.nc_files:
+            raise ValueError("No NetCDF files provided.")
+
         self.previous_t = previous_t
         self.rollout_steps = 1  # Hard-coded for 1-step-ahead training
+        self.device = device
 
-        # --- Caches ---
-        # Cache for open file handles
-        self._file_handles = {}
-        # Cache for static data (one entry per file)
-        self._static_data_cache = {}
+        # --- REMOVED Caches ---
+        # self._file_handles = {}  <- Removed to prevent holding handles
+        # self._static_data_cache = {} <- Removed to prevent redundant copies
 
         self.total_nodes = None
         self.index_map = []
+        self.static_data = {}  # Will hold the SINGLE copy of static data
 
         super().__init__(root, transform, pre_transform)
 
-        # --- Load the index map from NetCDF ---
+        # --- Load the index map from NetCDF (as before) ---
         try:
             with xr.open_dataset(self.processed_paths[0]) as ds:
                 self.total_nodes = ds.attrs["total_nodes"]
@@ -482,6 +495,34 @@ class AdforceLazyDataset(Dataset):
         except Exception as e:
             raise IOError(f"Failed to load processed index file: {e}")
 
+        # --- NEW: Load static data ONCE from the first file ---
+        print(f"Loading single static dataset from: {self.nc_files[0]}...")
+        try:
+            with xr.open_dataset(self.nc_files[0]) as ds:
+                if "num_nodes" not in ds.sizes:
+                    raise IOError(
+                        f"File {self.nc_files[0]} is missing 'num_nodes' dimension."
+                    )
+                # Load static data to CPU using the helper
+                static_data_cpu = _load_static_data_from_ds(ds)
+
+                # Move the single copy to the specified device
+                self.static_data = {
+                    k: v.to(self.device) for k, v in static_data_cpu.items()
+                }
+            print(f"Static data loaded and cached on device: {self.device}")
+        except Exception as e:
+            raise IOError(f"Failed to load static data from {self.nc_files[0]}: {e}")
+
+        # --- Sanity check ---
+        num_static_nodes = self.static_data["static_node_features"].shape[0]
+        if self.total_nodes != num_static_nodes:
+            warnings.warn(
+                f"Node count mismatch! Processed index reports {self.total_nodes} nodes, "
+                f"but static data from {self.nc_files[0]} has {num_static_nodes} nodes. "
+                "Ensuring 'processed' dir is up-to-date."
+            )
+
     @property
     def processed_file_names(self):
         """The file that will store our index map."""
@@ -491,6 +532,9 @@ class AdforceLazyDataset(Dataset):
         """
         Runs ONCE. Scans all files, builds the index map,
         and verifies mesh consistency and variable presence.
+
+        (This function remains unchanged. Its mesh consistency check
+        is what validates our new assumption.)
         """
         print(
             f"Building index map for {len(self.nc_files)} files (p_t={self.previous_t}, r_s={self.rollout_steps})..."
@@ -604,24 +648,24 @@ class AdforceLazyDataset(Dataset):
         finally:
             ds_index.close()
 
-    def _get_static_data(self, nc_path: str) -> Dict[str, torch.Tensor]:
-        """
-        Internal wrapper to get static data, using the cache.
-        Loads data from disk once per file.
-        """
-        if nc_path not in self._static_data_cache:
-            # Load static data ONCE using the shared helper
-            try:
-                with xr.open_dataset(nc_path) as ds:
-                    # Check for 'num_nodes' dim before loading
-                    if "num_nodes" not in ds.sizes:
-                        raise IOError(
-                            f"File {nc_path} is missing 'num_nodes' dimension."
-                        )
-                    self._static_data_cache[nc_path] = _load_static_data_from_ds(ds)
-            except Exception as e:
-                raise IOError(f"Failed to load static data from {nc_path}: {e}")
-        return self._static_data_cache[nc_path]
+    # def _get_static_data(self, nc_path: str) -> Dict[str, torch.Tensor]:
+    #     """
+    #     Internal wrapper to get static data, using the cache.
+    #     Loads data from disk once per file.
+    #     """
+    #     if nc_path not in self._static_data_cache:
+    #         # Load static data ONCE using the shared helper
+    #         try:
+    #             with xr.open_dataset(nc_path) as ds:
+    #                 # Check for 'num_nodes' dim before loading
+    #                 if "num_nodes" not in ds.sizes:
+    #                     raise IOError(
+    #                         f"File {nc_path} is missing 'num_nodes' dimension."
+    #                     )
+    #                 self._static_data_cache[nc_path] = _load_static_data_from_ds(ds)
+    #         except Exception as e:
+    #             raise IOError(f"Failed to load static data from {nc_path}: {e}")
+    #     return self._static_data_cache[nc_path]
 
     def len(self):
         """Returns the total number of samples (time steps)"""
@@ -630,32 +674,38 @@ class AdforceLazyDataset(Dataset):
     def get(self, idx: int) -> Data:
         """
         THE "LAZY" PART.
-        Loads a single (t...t+p_t -> t+p_t+1) sample from disk
-        by re-using the shared helper functions.
+        Loads a single (t...t+p_t -> t+p_t+1) sample from disk.
+
+        - Uses the pre-loaded static data (from self.static_data).
+        - Opens, reads, and closes the .nc file just for the
+        dynamic slices.
         """
         nc_path, t_start = self.index_map[idx]
 
         try:
-            # 1. Get static data (from cache or disk)
-            static_data = self._get_static_data(nc_path)
+            # 1. Get static data (from the pre-loaded class attribute)
+            #    It is *already* on self.device.
+            static_data = self.static_data
 
-            # 2. Open the file handle (or get from cache)
-            if nc_path not in self._file_handles:
-                self._file_handles[nc_path] = xr.open_dataset(nc_path, cache=True)
-            ds = self._file_handles[nc_path]
+            # 2. Open *only this file* and close it immediately after reading
+            with xr.open_dataset(nc_path, cache=False) as ds:
+                # 3. Get dynamic slices using helper functions
+                #    Load to CPU first, then move to the device
+                dyn_node_features_t = _get_forcing_slice(
+                    ds, t_start, self.previous_t
+                ).to(self.device)
 
-            # 3. Get dynamic slices using helper functions
-            dyn_node_features_t = _get_forcing_slice(ds, t_start, self.previous_t)
-            y_tplus1 = _get_target_slice(
-                ds, t_start + self.previous_t, self.rollout_steps
-            )
+                y_tplus1 = _get_target_slice(
+                    ds, t_start + self.previous_t, self.rollout_steps
+                ).to(self.device)
 
-            # 4. Combine static and dynamic inputs
+            # 4. Combine static (already on device) and dynamic (now on device)
             x_t = torch.cat(
                 [static_data["static_node_features"], dyn_node_features_t], dim=1
             )  # Shape [num_nodes, 5 + (3 * previous_t)]
 
             # 5. Construct and return the Data object
+            #    All data tensors are already on self.device.
             return Data(
                 x=x_t,
                 edge_index=static_data["edge_index"],
@@ -672,11 +722,14 @@ class AdforceLazyDataset(Dataset):
                 f"\nCheck data consistency for this file."
             )
 
-    def close(self):
-        """Call this to close all open NetCDF file handles."""
-        for handle in self._file_handles.values():
-            handle.close()
-        self._file_handles = {}
+
+# --- REMOVED: close(self) ---
+# No file handles are held open, so this is no longer needed.
+# def close(self):
+#     """Call this to close all open NetCDF file handles."""
+#     for handle in self._file_handles.values():
+#         handle.close()
+#     self._file_handles = {}
 
 
 # ----------------------------------------------------------------------------
@@ -844,7 +897,7 @@ if __name__ == "__main__":
     Run doctests for this module.
 
     From the command line, run:
-    python utils/adforce_dataset.py
+    python -m  mswegnn.utils.adforce_dataset
     """
     import doctest
 
