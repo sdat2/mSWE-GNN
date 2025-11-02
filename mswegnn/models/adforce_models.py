@@ -5,7 +5,121 @@ import torch
 import torch.nn as nn
 from torch_geometric.data.batch import Batch
 from torch_geometric.data import Data  # <-- Import Data for doctest
-from mswegnn.models.adforce_gnn import GNN_new, MSGNN_new
+from mswegnn.models.adforce_gnn import GNN_new, MSGNN_new, MLP
+
+
+class MLPModel_new(nn.Module):
+    """
+    A standalone MLP model wrapper.
+
+    This model applies a simple MLP to the node features and ignores all
+    graph/edge information (e.g., edge_index, edge_attr). It serves as a
+    baseline to compare against graph-based models.
+
+    Args:
+        num_node_features (int): Total number of features in the input `x` tensor.
+        num_output_features (int): Number of output features to predict.
+        **mlp_kwargs: Additional keyword arguments passed to the MLP constructor
+            (e.g., hid_features, mlp_layers). Expects 'mlp_activation'
+            for activation type.
+
+    Doctest:
+    >>> import torch
+    >>> from torch_geometric.data import Data
+    >>>
+    >>> # 1. Define test parameters
+    >>> N_NODES = 10
+    >>> NUM_IN_FEATURES = 14 # (5 static + 3 dynamic * 3 steps)
+    >>> NUM_OUT_FEATURES = 3 # (WD, VX, VY)
+    >>>
+    >>> # 2. Create mock data object (as a batch)
+    >>> mock_x = torch.rand(N_NODES, NUM_IN_FEATURES)
+    >>> # Note: edge_index is ignored by this model, but part of the batch
+    >>> mock_edge_index = torch.tensor([[0, 1], [1, 2]], dtype=torch.long)
+    >>> batch = Data(x=mock_x, edge_index=mock_edge_index)
+    >>>
+    >>> # 3. Define model kwargs
+    >>> mlp_kwargs = {
+    ...     'hid_features': 16,
+    ...     'mlp_layers': 3,
+    ...     'mlp_activation': 'relu'
+    ... }
+    >>>
+    >>> # 4. Instantiate the model
+    >>> model = MLPModel_new(
+    ...     num_node_features=NUM_IN_FEATURES,
+    ...     num_output_features=NUM_OUT_FEATURES,
+    ...     **mlp_kwargs
+    ... )
+    MLPModel_new initialized: 14 input features, 3 output features.
+    >>>
+    >>> # 5. Run forward pass
+    >>> out = model(batch)
+    >>>
+    >>> # 6. Check output shape
+    >>> print(f"Output shape: {out.shape}")
+    Output shape: torch.Size([10, 3])
+    """
+
+    def __init__(
+        self,
+        num_node_features,
+        num_output_features,
+        **mlp_kwargs,
+    ):
+        super().__init__()
+        self.in_features = num_node_features
+        self.out_features = num_output_features
+
+        # --- FIX ---
+        # Get the 'mlp_activation' value from the kwargs, default to 'relu'
+        # (matching the default in the MLP helper class).
+        # This maps 'mlp_activation' (from config) to 'activation' (for MLP class).
+        activation_type = mlp_kwargs.pop("mlp_activation", "relu")
+        # --- END FIX ---
+
+        # Remove keys that GNN/MSGNN models use but the standalone MLP doesn't
+        # to avoid passing them to the MLP constructor.
+        mlp_kwargs.pop("previous_t", None)
+        mlp_kwargs.pop("num_static_features", None)
+        mlp_kwargs.pop("num_edge_features", None)
+        mlp_kwargs.pop("num_scales", None)
+        mlp_kwargs.pop("learned_pooling", None)
+        mlp_kwargs.pop("skip_connections", None)
+        mlp_kwargs.pop("gnn_activation", None)  # Used by GNN, not MLP
+        mlp_kwargs.pop("type_gnn", None)  # Used by GNN, not MLP
+
+        # Instantiate the MLP from adforce_gnn.py
+        self.mlp = MLP(
+            in_features=self.in_features,
+            out_features=self.out_features,
+            activation=activation_type,  # <-- Pass with the correct key 'activation'
+            **mlp_kwargs,  # Pass remaining (hid_features, mlp_layers)
+        )
+
+        if "hid_features" in mlp_kwargs:  # Avoid printing during doctest
+            print(
+                f"MLPModel_new initialized: {self.in_features} input features, "
+                f"{self.out_features} output features."
+            )
+
+    def forward(self, batch):
+        """
+        Forward pass. Ignores all graph structure.
+
+        Args:
+            batch (torch_geometric.data.Batch): The input batch object.
+
+        Returns:
+            torch.Tensor: The model predictions, shape [num_nodes, num_output_features].
+        """
+        # x shape is [num_nodes_in_batch, num_node_features]
+        x = batch.x
+
+        # Apply the MLP directly to the node features
+        out = self.mlp(x)  # shape [num_nodes_in_batch, num_output_features]
+
+        return out
 
 
 class GNNModel_new(nn.Module):
