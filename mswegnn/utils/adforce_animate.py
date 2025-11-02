@@ -10,11 +10,24 @@ import xarray as xr
 from matplotlib import pyplot as plt
 from matplotlib import animation
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
+from sithom.plot import plot_defaults, label_subplots, get_dim
+
+plot_defaults()
 
 
-def run_animation_test(root_dir, nc_file_path, p_t):
+def run_animation_test(
+    root_dir: str, nc_file_path: str, p_t: int, output_gif_path: str = "animation.gif"
+):
     """
-    Runs the animation test using the AdforceLazyDataset.
+    Runs the animation test using the AdforceLazyDataset and saves the
+    result as a GIF.
+
+    Args:
+        root_dir (str): Root directory of the dataset.
+        nc_file_path (str): Path to the NetCDF file.
+        p_t (int): Number of previous time steps (window size).
+        output_gif_path (str, optional): Path to save the output GIF.
+            Defaults to "animation.gif".
     """
     print("Starting animation test...")
 
@@ -51,7 +64,9 @@ def run_animation_test(root_dir, nc_file_path, p_t):
     # 3. Set up Matplotlib Animation
     fig, ax = plt.subplots(figsize=(10, 7))
     # Use scatter. For a real mesh, 'tripcolor' would be better if you load 'element' data.
-    scat = ax.scatter(x_coords, y_coords, c=[], cmap="cividis", s=15, vmin=0, vmax=1)
+    scat = ax.scatter(
+        x_coords, y_coords, c=[], cmap="cividis", s=15
+    )  # , vmin=0, vmax=1)
     cb = fig.colorbar(scat, ax=ax, label="Water Depth (WD)")
     ax.set_title("Frame 0")
     ax.set_xlabel("X Coordinate")
@@ -83,19 +98,54 @@ def run_animation_test(root_dir, nc_file_path, p_t):
             print(f"Error updating frame {frame_index}: {e}")
             return (scat,)
 
+    # Animation parameters
+    interval_ms = 50  # 50ms per frame
+
     ani = animation.FuncAnimation(
         fig,
         update,
         frames=len(dataset),
         init_func=init,
         blit=True,
-        interval=50,  # 50ms per frame
+        interval=interval_ms,
         repeat=False,
     )
 
+    # 4. Save the animation as a GIF
+    # Calculate FPS from interval: FPS = 1000 / interval_ms
+    fps = 1000 / interval_ms
+    print(f"Saving animation to {output_gif_path} (this may take a while)...")
+
+    try:
+        # Use the 'pillow' writer to create the GIF
+        ani.save(output_gif_path, writer="pillow", fps=fps)
+        print(f"Successfully saved animation to {output_gif_path}")
+    except Exception as e:
+        print(f"Failed to save animation: {e}")
+        print("Please ensure the 'Pillow' library is installed (`pip install Pillow`)")
+    finally:
+        # Close the plot to free memory
+        plt.close(fig)
+
+
+if __name__ == "__main__":
+    # python -m mswegnn.utils.adforce_animate
+    root_directory = "/Volumes/s/tcpips/swegnn_5sec/"
+    netcdf_file = os.path.join(root_directory, "152_KATRINA_2005.nc")
+    previous_time_steps = 2  # Adjust based on your data
+
+    # Define the output GIF path
+    output_gif = "adforce_water_depth.gif"
+
+    run_animation_test(
+        root_directory, netcdf_file, previous_time_steps, output_gif_path=output_gif
+    )
+
+    print(f"Animation test complete. GIF saved to {os.path.abspath(output_gif)}")
+
     # print("Showing animation... You should see a wave move from left to right.")
     # print("Close the plot window to exit.")
-    plt.show()
+    # plt.show()
 
 
 if __name__ == "__main__":
