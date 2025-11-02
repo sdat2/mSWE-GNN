@@ -12,8 +12,6 @@ from matplotlib import animation
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 from sithom.plot import plot_defaults, label_subplots, get_dim
 
-plot_defaults()
-
 
 def run_animation_test(
     root_dir: str, nc_file_path: str, p_t: int, output_gif_path: str = "animation.gif"
@@ -29,6 +27,8 @@ def run_animation_test(
         output_gif_path (str, optional): Path to save the output GIF.
             Defaults to "animation.gif".
     """
+    plot_defaults()
+
     print("Starting animation test...")
 
     # 1. Load coordinates once
