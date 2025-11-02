@@ -1,7 +1,7 @@
 # Libraries
 import torch
 from torch_geometric.data import Batch
-from utils.dataset import get_inflow_volume
+from mswegnn.utils.dataset import get_inflow_volume
 
 NUM_WATER_VARS = 2  # water depth and velocity
 

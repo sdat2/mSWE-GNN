@@ -8,18 +8,18 @@ from torch_geometric.data import DataLoader
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 
-from utils.dataset import create_model_dataset, to_temporal_dataset
-from utils.dataset import get_temporal_test_dataset_parameters
-from utils.load import read_config
-from utils.visualization import PlotRollout
-from utils.miscellaneous import (
+from mswegnn.utils.dataset import create_model_dataset, to_temporal_dataset
+from mswegnn.utils.dataset import get_temporal_test_dataset_parameters
+from mswegnn.utils.load import read_config
+from mswegnn.utils.visualization import PlotRollout
+from mswegnn.utils.miscellaneous import (
     get_numerical_times,
     get_speed_up,
     get_model,
     SpatialAnalysis,
     fix_dict_in_config,
 )
-from training.train import LightningTrainer, DataModule, CurriculumLearning
+from mswegnn.training.train import LightningTrainer, DataModule, CurriculumLearning
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = True
