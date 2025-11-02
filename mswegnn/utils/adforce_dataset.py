@@ -126,12 +126,15 @@ variables:
 }
 """
 
+import os
 from typing import Dict
 import warnings
+import yaml
 import numpy as np
 import xarray as xr
 import torch
 from torch_geometric.data import Dataset, Data
+from mswegnn.utils.adforce_scaling import StatsAggregator
 from tqdm import tqdm
 
 
@@ -438,6 +441,7 @@ class AdforceLazyDataset(Dataset):
         root,
         nc_files,
         previous_t,
+        scaling_stats_path: str = None,  # <-- MODIFIED ARG
         device: torch.device = torch.device("cpu"),
         transform=None,
         pre_transform=None,
@@ -447,6 +451,7 @@ class AdforceLazyDataset(Dataset):
             root (str): Root directory to store processed index map.
             nc_files (list[str]): The list of PRE-PROCESSED .nc files.
             previous_t (int): Number of input time steps.
+            scaling_stats_path (str, optional): Path to 'scaling_stats.yaml'.
             device (torch.device, optional): The device (e.g., 'cuda' or 'cpu')
                 to pre-load the static data onto. Defaults to 'cpu'.
         """
@@ -458,15 +463,82 @@ class AdforceLazyDataset(Dataset):
         self.rollout_steps = 1  # Hard-coded for 1-step-ahead training
         self.device = device
 
-        # --- REMOVED Caches ---
-        # self._file_handles = {}  <- Removed to prevent holding handles
-        # self._static_data_cache = {} <- Removed to prevent redundant copies
-
         self.total_nodes = None
         self.index_map = []
         self.static_data = {}  # Will hold the SINGLE copy of static data
 
+        # This super() call will trigger .process() if needed
         super().__init__(root, transform, pre_transform)
+
+        # --- NEW: Load scaling stats from YAML ---
+        self.apply_scaling = False
+        if scaling_stats_path and os.path.exists(scaling_stats_path):
+            print(f"Loading scaling stats from: {scaling_stats_path}")
+            try:
+                with open(scaling_stats_path, "r") as f:
+                    scaling_stats = yaml.safe_load(f)
+
+                # --- Static Features (4 elements) ---
+                # (DEM, slopex, slopey, area)
+                self.x_static_mean = torch.tensor(
+                    scaling_stats["x_static_mean"], dtype=torch.float32
+                ).to(device)
+                self.x_static_std = (
+                    torch.tensor(scaling_stats["x_static_std"], dtype=torch.float32)
+                    .to(device)
+                    .clamp(min=1e-6)
+                )
+
+                # --- Dynamic Input Features (3 elements) ---
+                # (WX, WY, P)
+                x_dyn_mean = torch.tensor(
+                    scaling_stats["x_dynamic_mean"], dtype=torch.float32
+                )
+                x_dyn_std = torch.tensor(
+                    scaling_stats["x_dynamic_std"], dtype=torch.float32
+                ).clamp(min=1e-6)
+
+                # --- Target Features (3 elements) ---
+                # (WD, VX, VY)
+                self.y_mean = torch.tensor(
+                    scaling_stats["y_mean"], dtype=torch.float32
+                ).to(device)
+                self.y_std = (
+                    torch.tensor(scaling_stats["y_std"], dtype=torch.float32)
+                    .to(device)
+                    .clamp(min=1e-6)
+                )
+
+                # --- Create broadcast-ready tensors for dynamic inputs ---
+                # [WX_m, WY_m, P_m] -> [WX_m, WY_m, P_m, WX_m, WY_m, P_m, ...]
+                self.x_dyn_mean_broadcast = x_dyn_mean.repeat(self.previous_t).to(
+                    device
+                )
+                self.x_dyn_std_broadcast = x_dyn_std.repeat(self.previous_t).to(device)
+
+                # Sanity checks
+                assert (
+                    self.x_static_mean.shape[0] == 4
+                ), f"x_static_mean must have 4 elements, got {self.x_static_mean.shape[0]}"
+                assert (
+                    self.x_dyn_mean_broadcast.shape[0] == 3 * self.previous_t
+                ), f"x_dynamic_mean broadcast shape is wrong"
+                assert (
+                    self.y_mean.shape[0] == 3
+                ), f"y_mean must have 3 elements, got {self.y_mean.shape[0]}"
+
+                self.apply_scaling = True
+                print("Scaling stats loaded and tensors created.")
+
+            except (KeyError, TypeError, ValueError, FileNotFoundError) as e:
+                print(
+                    f"ERROR: Failed to load or parse {scaling_stats_path}: {e}. Running unscaled."
+                )
+        else:
+            print(
+                f"WARNING: Scaling stats file not found at '{scaling_stats_path}'. Model will run on raw, unscaled data."
+            )
+        # --- END NEW BLOCK ---
 
         # --- Load the index map from NetCDF (as before) ---
         try:
@@ -674,23 +746,16 @@ class AdforceLazyDataset(Dataset):
     def get(self, idx: int) -> Data:
         """
         THE "LAZY" PART.
-        Loads a single (t...t+p_t -> t+p_t+1) sample from disk.
-
-        - Uses the pre-loaded static data (from self.static_data).
-        - Opens, reads, and closes the .nc file just for the
-        dynamic slices.
+        Loads a single sample and applies scaling if stats were loaded.
         """
         nc_path, t_start = self.index_map[idx]
 
         try:
             # 1. Get static data (from the pre-loaded class attribute)
-            #    It is *already* on self.device.
             static_data = self.static_data
 
             # 2. Open *only this file* and close it immediately after reading
             with xr.open_dataset(nc_path, cache=False) as ds:
-                # 3. Get dynamic slices using helper functions
-                #    Load to CPU first, then move to the device
                 dyn_node_features_t = _get_forcing_slice(
                     ds, t_start, self.previous_t
                 ).to(self.device)
@@ -699,18 +764,34 @@ class AdforceLazyDataset(Dataset):
                     ds, t_start + self.previous_t, self.rollout_steps
                 ).to(self.device)
 
-            # 4. Combine static (already on device) and dynamic (now on device)
-            x_t = torch.cat(
-                [static_data["static_node_features"], dyn_node_features_t], dim=1
-            )  # Shape [num_nodes, 5 + (3 * previous_t)]
+            # 3. --- APPLY SCALING (if enabled) ---
+            static_features = static_data["static_node_features"].clone()
+            y_unscaled = y_tplus1.clone()  # Store for loss function
+
+            if self.apply_scaling:
+                # Scale static features (first 4 columns) IN-PLACE
+                static_features[:, :4] = (
+                    static_features[:, :4] - self.x_static_mean
+                ) / self.x_static_std
+
+                # Scale dynamic features
+                dyn_node_features_t = (
+                    dyn_node_features_t - self.x_dyn_mean_broadcast
+                ) / self.x_dyn_std_broadcast
+
+                # Scale targets
+                y_tplus1 = (y_tplus1 - self.y_mean) / self.y_std
+
+            # 4. Combine static (now scaled) and dynamic (now scaled)
+            x_t = torch.cat([static_features, dyn_node_features_t], dim=1)
 
             # 5. Construct and return the Data object
-            #    All data tensors are already on self.device.
             return Data(
                 x=x_t,
                 edge_index=static_data["edge_index"],
                 edge_attr=static_data["static_edge_attr"],
-                y=y_tplus1,
+                y=y_tplus1,  # Scaled target
+                y_unscaled=y_unscaled,  # <-- Unscaled target for loss
                 node_BC=static_data["node_BC"],
                 edge_BC_length=static_data["edge_BC_length"],
             )

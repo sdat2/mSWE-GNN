@@ -83,7 +83,7 @@ def run_animation_test(
             data = dataset.get(frame_index)
 
             # Water depth is the first column of the target 'y'
-            water_depth = data.y[:, 0].cpu().numpy()
+            water_depth = data.y_unscaled[:, 0].cpu().numpy()
 
             scat.set_array(water_depth)
             ax.set_title(f"Dataset Index: {frame_index} / {len(dataset) - 1}")
