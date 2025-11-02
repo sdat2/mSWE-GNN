@@ -4,8 +4,8 @@
 import torch
 import torch.nn as nn
 from torch_geometric.data.batch import Batch
-from torch_geometric.data import Data # <-- Import Data for doctest
-from mswegnn.models.gnn_new import GNN_new, MSGNN_new
+from torch_geometric.data import Data  # <-- Import Data for doctest
+from mswegnn.models.adforce_gnn import GNN_new, MSGNN_new
 
 
 class GNNModel_new(nn.Module):
@@ -84,10 +84,16 @@ class GNNModel_new(nn.Module):
     ...     print(f"Caught expected error: {e}")
     Caught expected error: Dynamic features (8) are not evenly divisible by previous_t (3). Check num_static_features.
     """
-    def __init__(self, num_node_features, num_edge_features,
-                 previous_t, num_output_features,
-                 num_static_features=5, # From adforce_dataset (DEM, sx, sy, area, type)
-                 **gnn_kwargs):
+
+    def __init__(
+        self,
+        num_node_features,
+        num_edge_features,
+        previous_t,
+        num_output_features,
+        num_static_features=5,  # From adforce_dataset (DEM, sx, sy, area, type)
+        **gnn_kwargs,
+    ):
         super().__init__()
 
         self.previous_t = previous_t
@@ -101,10 +107,12 @@ class GNNModel_new(nn.Module):
         self.dynamic_vars = num_node_features - self.num_static_features
 
         if self.dynamic_vars < 0:
-            raise ValueError("num_node_features cannot be less than num_static_features.")
+            raise ValueError(
+                "num_node_features cannot be less than num_static_features."
+            )
 
         if self.previous_t <= 0:
-             raise ValueError("previous_t must be greater than 0.")
+            raise ValueError("previous_t must be greater than 0.")
 
         if self.dynamic_vars % self.previous_t != 0:
             raise ValueError(
@@ -116,30 +124,36 @@ class GNNModel_new(nn.Module):
         self.num_dynamic_in_features = self.dynamic_vars // self.previous_t
 
         # This print is useful for debugging and for the doctest
-        if 'hid_features' in gnn_kwargs: # Avoid printing during doctest's error check
-            print(f"GNNModel_new initialized: {self.num_static_features} static features, "
-                  f"{self.num_dynamic_in_features} dynamic input features (x{self.previous_t} steps), "
-                  f"{self.num_output_features} output features.")
+        if "hid_features" in gnn_kwargs:  # Avoid printing during doctest's error check
+            print(
+                f"GNNModel_new initialized: {self.num_static_features} static features, "
+                f"{self.num_dynamic_in_features} dynamic input features (x{self.previous_t} steps), "
+                f"{self.num_output_features} output features."
+            )
         # --- END CHANGE ---
 
         self.in_features = num_node_features
 
-        self.gnn = GNN_new(in_features=self.in_features,
-                           num_output_features=self.num_output_features, # <-- Pass new arg
-                           **gnn_kwargs)
+        self.gnn = GNN_new(
+            in_features=self.in_features,
+            num_output_features=self.num_output_features,  # <-- Pass new arg
+            **gnn_kwargs,
+        )
 
     def forward(self, batch):
         x = batch.x
 
         # --- CHANGED: Use self.num_static_features to split ---
-        static_features = x[:, :self.num_static_features]
-        dynamic_features = x[:, self.num_static_features:]
+        static_features = x[:, : self.num_static_features]
+        dynamic_features = x[:, self.num_static_features :]
         # --- END CHANGE ---
 
         edge_index = batch.edge_index
         edge_attr = batch.edge_attr
 
-        out = self.gnn(static_features, dynamic_features, edge_index, edge_attr, batch=batch)
+        out = self.gnn(
+            static_features, dynamic_features, edge_index, edge_attr, batch=batch
+        )
 
         # --- CHANGED: Use self.num_output_features to reshape ---
         out = out.reshape(-1, self.num_output_features)
@@ -159,13 +173,19 @@ class MSGNNModel_new(GNNModel_new):
     requires a mock Batch object with `node_ptr`, `edge_ptr`, etc.
     It is best tested with a dedicated pytest file.
     """
-    def __init__(self, num_node_features, num_edge_features,
-                 previous_t, num_output_features,
-                 num_static_features=5,
-                 **gnn_kwargs):
+
+    def __init__(
+        self,
+        num_node_features,
+        num_edge_features,
+        previous_t,
+        num_output_features,
+        num_static_features=5,
+        **gnn_kwargs,
+    ):
 
         # Call GNNModel_new's __init__ but *without* instantiating self.gnn
-        super(GNNModel_new, self).__init__() # Use super(GNNModel_new, ...)
+        super(GNNModel_new, self).__init__()  # Use super(GNNModel_new, ...)
 
         self.previous_t = previous_t
         self.num_output_features = num_output_features
@@ -175,46 +195,59 @@ class MSGNNModel_new(GNNModel_new):
         self.dynamic_vars = num_node_features - self.num_static_features
 
         if self.dynamic_vars < 0:
-            raise ValueError("num_node_features cannot be less than num_static_features.")
+            raise ValueError(
+                "num_node_features cannot be less than num_static_features."
+            )
 
         if self.previous_t <= 0:
-             raise ValueError("previous_t must be greater than 0.")
+            raise ValueError("previous_t must be greater than 0.")
 
         if self.dynamic_vars % self.previous_t != 0:
-            raise ValueError(f"Dynamic features ({self.dynamic_vars}) not divisible by previous_t.")
+            raise ValueError(
+                f"Dynamic features ({self.dynamic_vars}) not divisible by previous_t."
+            )
 
         self.num_dynamic_in_features = self.dynamic_vars // self.previous_t
 
         # This print is useful for debugging
-        if 'hid_features' in gnn_kwargs: # Avoid printing during potential doctest error checks
-            print(f"MSGNNModel_new initialized: {self.num_static_features} static features, "
-                  f"{self.num_dynamic_in_features} dynamic input features (x{self.previous_t} steps), "
-                  f"{self.num_output_features} output features.")
+        if (
+            "hid_features" in gnn_kwargs
+        ):  # Avoid printing during potential doctest error checks
+            print(
+                f"MSGNNModel_new initialized: {self.num_static_features} static features, "
+                f"{self.num_dynamic_in_features} dynamic input features (x{self.previous_t} steps), "
+                f"{self.num_output_features} output features."
+            )
         # --- END CHANGE ---
 
         self.in_features = num_node_features
 
         # --- CHANGED: Instantiate MSGNN_new ---
-        self.gnn = MSGNN_new(in_features=self.in_features,
-                             num_output_features=self.num_output_features, # <-- Pass new arg
-                             **gnn_kwargs)
+        self.gnn = MSGNN_new(
+            in_features=self.in_features,
+            num_output_features=self.num_output_features,  # <-- Pass new arg
+            **gnn_kwargs,
+        )
 
     def forward(self, batch):
         # This forward is identical to the parent, but is needed
         # to ensure the correct self.gnn (MSGNN_new) is called.
         x = batch.x
-        static_features = x[:, :self.num_static_features]
-        dynamic_features = x[:, self.num_static_features:]
+        static_features = x[:, : self.num_static_features]
+        dynamic_features = x[:, self.num_static_features :]
         edge_index = batch.edge_index
         edge_attr = batch.edge_attr
 
         # This will call the MSGNN_new forward method
-        out = self.gnn(static_features, dynamic_features, edge_index, edge_attr, batch=batch)
+        out = self.gnn(
+            static_features, dynamic_features, edge_index, edge_attr, batch=batch
+        )
 
         out = out.reshape(-1, self.num_output_features)
         return out
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     """
     Run doctests for this module.
 
@@ -222,5 +255,6 @@ if __name__ == '__main__':
     python  models/models_new.py
     """
     import doctest
+
     doctest.testmod(verbose=True)
     print("Doctests complete.")

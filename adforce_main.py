@@ -21,8 +21,8 @@ from sklearn.model_selection import train_test_split
 # Imports from our mSWE-GNN project
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 from mswegnn.utils.load import read_config
-from mswegnn.models.models_new import GNNModel_new, MSGNNModel_new
-from mswegnn.training.train import LightningTrainer, DataModule
+from mswegnn.models.adforce_models import GNNModel_new, MSGNNModel_new
+from mswegnn.training.adforce_train import LightningTrainer, DataModule
 
 # --- Constants based on adforce_dataset.py ---
 #
