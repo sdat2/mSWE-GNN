@@ -76,10 +76,10 @@ class MLPModel_new(nn.Module):
         # (matching the default in the MLP helper class).
         # This maps 'mlp_activation' (from config) to 'activation' (for MLP class).
         activation_type = mlp_kwargs.pop("mlp_activation", "relu")
-        # --- END FIX ---
 
         # Remove keys that GNN/MSGNN models use but the standalone MLP doesn't
         # to avoid passing them to the MLP constructor.
+        mlp_kwargs.pop("model_type", None) # <-- THIS IS THE NEW LINE
         mlp_kwargs.pop("previous_t", None)
         mlp_kwargs.pop("num_static_features", None)
         mlp_kwargs.pop("num_edge_features", None)

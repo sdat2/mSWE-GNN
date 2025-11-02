@@ -4,12 +4,12 @@ Main training script for the mSWE-GNN Adforce pipeline.
 This script ties together all the new components:
 1.  Loads the 'adforce_config.yaml' for all hyperparameters.
 2.  Finds and splits NetCDF files.
-3.  Uses 'AdforceLazyDataset' to create train/val datasets
-   .
-4.  Calculates model dimensions based on the dataset's known structure.
-5.  Instantiates the correct model ('GNNModel_new' or 'MSGNNModel_new')
-   .
-6.  Uses the 'DataModule' and 'LightningTrainer' from train.py to run
+3.  Calculates scaling statistics (mean/std) from the training files.
+4.  Uses 'AdforceLazyDataset' to create train/val datasets
+    (which now apply the scaling).
+5.  Calculates model dimensions based on the dataset's known structure.
+6.  Instantiates the correct model ('GNNModel_new', 'MSGNNModel_new', or 'MLPModel_new').
+7.  Uses the 'DataModule' and 'LightningTrainer' from adforce_train.py to run
     the training loop.
 """
 
@@ -21,8 +21,12 @@ from sklearn.model_selection import train_test_split
 # Imports from our mSWE-GNN project
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 from mswegnn.utils.load import read_config
-from mswegnn.models.adforce_models import GNNModel_new, MSGNNModel_new
+# --- MODIFIED: Added MLPModel_new ---
+from mswegnn.models.adforce_models import GNNModel_new, MSGNNModel_new, MLPModel_new
 from mswegnn.training.adforce_train import LightningTrainer, DataModule
+# --- ADDED: Import for scaling stats calculator ---
+from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
+
 
 # --- Constants based on adforce_dataset.py ---
 #
@@ -72,7 +76,7 @@ def main():
         print("Please check the 'data_dir' path in your config file.")
         return
     print(f"Found {len(all_nc_files)} total simulation files.")
-    all_nc_files = all_nc_files[10:]  # just for quick testing
+    # all_nc_files = all_nc_files[10:]  # just for quick testing
 
     train_files, val_files = train_test_split(
         all_nc_files,
@@ -84,12 +88,32 @@ def main():
     )
 
     try:
-        # 3. Create "lazy" datasets
+        # --- NEW 3: Compute scaling stats if they don't exist ---
+        # Stats are saved in the 'train' processed directory
+        train_root = "data_processed/train"
+        train_stats_path = os.path.join(train_root, "scaling_stats.yaml")
+
+        # Ensure the processed directory exists
+        os.makedirs(train_root, exist_ok=True)
+
+        if not os.path.exists(train_stats_path):
+            print(f"Scaling stats file not found at {train_stats_path}.")
+            print("Calculating stats from training files... This may take a while.")
+            # This function computes stats and saves them to the path
+            compute_and_save_adforce_stats(train_files, train_stats_path)
+            print(f"Stats saved to {train_stats_path}.")
+        else:
+            print(f"Found existing scaling stats: {train_stats_path}")
+        # --- END NEW BLOCK ---
+
+
+        # 4. Create "lazy" datasets
         print("Initializing training dataset (this may run .process()...)")
         train_dataset = AdforceLazyDataset(
-            root="data_processed/train",
+            root=train_root, # Use same root dir
             nc_files=train_files,
             previous_t=p_t,
+            scaling_stats_path=train_stats_path  # <-- PASS THE PATH
         )
 
         print("Initializing validation dataset (this may run .process()...)")
@@ -97,9 +121,10 @@ def main():
             root="data_processed/val",
             nc_files=val_files,
             previous_t=p_t,
+            scaling_stats_path=train_stats_path  # <-- PASS THE *TRAIN* STATS
         )
 
-        # 4. Instantiate Lightning DataModule
+        # 5. Instantiate Lightning DataModule
         # This handles DataLoaders and auto-closes file handles via setup/teardown
         data_module = DataModule(
             train_dataset=train_dataset,
@@ -108,7 +133,7 @@ def main():
             num_workers=data_cfg.get("num_workers", 4),
         )
 
-        # 5. Calculate Model Dimensions
+        # 6. Calculate Model Dimensions
         num_node_features = NUM_STATIC_NODE_FEATURES + (NUM_DYNAMIC_NODE_FEATURES * p_t)
         num_edge_features = NUM_STATIC_EDGE_FEATURES
         num_output_features = NUM_OUTPUT_FEATURES
@@ -122,10 +147,11 @@ def main():
         print(f"  Output Features: {num_output_features}")
         print("-" * 30)
 
-        # 6. Instantiate the Model
+        # 7. Instantiate the Model
         model_type = model_cfg.get("model_type", "GNN")
         print(f"Instantiating model type: {model_type}...")
 
+        # --- MODIFIED: Added 'MLP' option ---
         # Pass all model_params, the constructors will pick what they need
         if model_type == "GNN":
             model = GNNModel_new(
@@ -145,17 +171,24 @@ def main():
                 num_static_features=NUM_STATIC_NODE_FEATURES,
                 **model_cfg,
             )
+        elif model_type == "MLP":
+            model = MLPModel_new(
+                num_node_features=num_node_features,
+                num_output_features=num_output_features,
+                **model_cfg,  # Passes hid_features, mlp_layers, etc.
+            )
         else:
             raise ValueError(
-                f"Unknown model_type in config: {model_type}. Must be 'GNN' or 'MSGNN'."
+                f"Unknown model_type in config: {model_type}. Must be 'GNN', 'MSGNN', or 'MLP'."
             )
+        # --- END MODIFICATION ---
 
-        # 7. Instantiate the LightningTrainer (the module)
+        # 8. Instantiate the LightningTrainer (the module)
         lightning_model = LightningTrainer(
             model=model, lr_info=lr_cfg, trainer_options=trainer_cfg
         )
 
-        # 8. Instantiate the Lightning Trainer (the runner)
+        # 9. Instantiate the Lightning Trainer (the runner)
         # You can add loggers, callbacks, etc., here
         # e.g., from lightning.pytorch.loggers import TensorBoardLogger
         # logger = TensorBoardLogger("tb_logs", name="mswe-gnn-adforce")
@@ -164,7 +197,7 @@ def main():
             # logger=logger,
         )
 
-        # 9. Start Training
+        # 10. Start Training
         print("Starting training... 🚀")
         trainer.fit(lightning_model, datamodule=data_module)
 
@@ -183,5 +216,5 @@ def main():
 
 
 if __name__ == "__main__":
-    # python -m new_main
+    # python -m adforce_main
     main()

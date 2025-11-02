@@ -1,19 +1,19 @@
 # adforce_config.yaml
 #
 # Hyperparameters for the Adforce/SWE-GNN pipeline.
-# This config is designed to work with:
-# - mswegnn/utils/adforce_dataset.py
-# - mswegnn/models/models_new.py
-# - mswegnn/training/train.py
+#
+# NOTE: Scaling statistics (mean/std) are no longer stored here.
+# They are automatically computed from the training files and saved in
+# 'data_processed/train/scaling_stats.yaml' by adforce_main.py.
 
 # -----------------------------------------------------------------------------
-# Data Loading Parameters (for new_main.py and AdforceLazyDataset)
+# Data Loading Parameters (for adforce_main.py and AdforceLazyDataset)
 # -----------------------------------------------------------------------------
 data_params:
   # Path to the directory containing all simulation *.nc files
   data_dir: "/Volumes/s/tcpips/swegnn_5sec/"
 
-  # Split ratio for validation set (from new_main.py)
+  # Split ratio for validation set (from adforce_main.py)
   test_size: 0.2
   random_state: 42
 
@@ -26,24 +26,30 @@ data_params:
   num_workers: 4
 
 # -----------------------------------------------------------------------------
-# Model Parameters (for GNNModel_new or MSGNNModel_new)
+# Model Parameters (for GNNModel_new, MSGNNModel_new, or MLPModel_new)
 # -----------------------------------------------------------------------------
 model_params:
-  # 'GNN' for GNNModel_new or 'MSGNN' for MSGNNModel_new
+  # 'GNN' for GNNModel_new
+  # 'MSGNN' for MSGNNModel_new
+  # 'MLP' for MLPModel_new (baseline)
   #
-  model_type: 'GNN'
+  model_type: 'MLP'
 
-  # --- Common GNN Hyperparameters ---
-  # These are passed as **gnn_kwargs to GNN_new
+  # --- Common Hyperparameters (used by GNN, MSGNN, and MLP) ---
   #
   hid_features: 64
   mlp_layers: 2
+  mlp_activation: 'prelu' # 'relu', 'prelu', 'tanh'
+  
+  # --- GNN-specific parameters ---
+  # (Only used if model_type is 'GNN' or 'MSGNN')
+  #
   type_gnn: 'GCN'         # Options: 'GCN', 'SAGE', 'GIN', 'GAT'
   gnn_activation: 'tanh'  # 'relu', 'prelu', 'tanh'
-  mlp_activation: 'prelu' # 'relu', 'prelu', 'tanh'
 
   # --- MSGNN-specific parameters ---
   # (Only used if model_type is 'MSGNN')
+  #
   num_scales: 3
   learned_pooling: false
   skip_connections: true
@@ -52,7 +58,7 @@ model_params:
 # Trainer Options (for LightningTrainer)
 # -----------------------------------------------------------------------------
 trainer_options:
-  # Batch size (also used by DataModule in new_main.py)
+  # Batch size (also used by DataModule in adforce_main.py)
   batch_size: 32
 
   # Loss function type: 'RMSE' or 'MAE'
@@ -60,6 +66,7 @@ trainer_options:
   type_loss: 'RMSE'
 
   # Whether to only compute loss where water depth (target) > 0.01
+  # This now uses the 'y_unscaled' variable from the dataset
   only_where_water: true
 
   # Weighting factor for velocity components (VX, VY) in the loss
@@ -76,7 +83,7 @@ lr_info:
   gamma: 0.5     # decay factor
 
 # -----------------------------------------------------------------------------
-# Lightning Trainer Parameters (for L.Trainer in new_main.py)
+# Lightning Trainer Parameters (for L.Trainer in adforce_main.py)
 # -----------------------------------------------------------------------------
 lightning_trainer:
   max_epochs: 100
