@@ -33,7 +33,7 @@ model_params:
   # 'MSGNN' for MSGNNModel_new
   # 'MLP' for MLPModel_new (baseline)
   #
-  model_type: 'MLP'
+  model_type: GNN
 
   # --- Common Hyperparameters (used by GNN, MSGNN, and MLP) ---
   #
