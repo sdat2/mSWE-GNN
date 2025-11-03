@@ -19,19 +19,13 @@ import glob
 import os
 import lightning as L
 from sklearn.model_selection import train_test_split
-
-# --- ADDED: Import for ModelCheckpoint ---
 from lightning.pytorch.callbacks import ModelCheckpoint
-
-# Imports from our mSWE-GNN project
-from mswegnn.utils.adforce_dataset import AdforceLazyDataset
+import torch
+import xarray as xr
+from mswegnn.utils.adforce_dataset import AdforceLazyDataset, _load_static_data_from_ds
 from mswegnn.utils.load import read_config
-
-# --- MODIFIED: Added MLPModel_new ---
 from mswegnn.models.adforce_models import GNNModel_new, MSGNNModel_new, MLPModel_new
 from mswegnn.training.adforce_train import LightningTrainer, DataModule
-
-# --- ADDED: Import for scaling stats calculator ---
 from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
 
 
@@ -48,6 +42,17 @@ NUM_OUTPUT_FEATURES = 3
 
 # --- Configuration ---
 CONFIG_PATH = "adforce_config.yaml"
+
+
+def print_tensor_size_mb(tensor_dict):
+    """Helper to print the size of tensors in a dictionary."""
+    total_size = 0
+    for k, v in tensor_dict.items():
+        if isinstance(v, torch.Tensor):
+            size = v.element_size() * v.nelement()
+            total_size += size
+            print(f"  - Static tensor '{k}': {size / (1024**2):.2f} MB")
+    print(f"  --- TOTAL STATIC DATA SIZE: {total_size / (1024**2):.2f} MB ---")
 
 
 def main():
@@ -100,6 +105,19 @@ def main():
     print(
         f"Training on {len(train_files)} files, validating on {len(val_files)} files."
     )
+
+    print(f"Loading shared static data from: {train_files[0]}...")
+        # We load from the first *training* file. Assumes mesh is identical.
+    static_data_cpu = {}
+    try:
+        with xr.open_dataset(train_files[0]) as ds:
+            static_data_cpu = _load_static_data_from_ds(ds)
+        print("Shared static data loaded to CPU. Measuring size...")
+
+        print_tensor_size_mb(static_data_cpu)
+
+    except Exception as e:
+        raise IOError(f"Failed to load static data from {train_files[0]}: {e}")
 
     try:
         # --- NEW 3: Compute scaling stats if they don't exist ---
