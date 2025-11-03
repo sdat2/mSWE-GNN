@@ -330,7 +330,7 @@ def _get_forcing_slice(ds: xr.Dataset, t_start: int, num_steps: int) -> torch.Te
 
     # 4. Now that order is guaranteed (N_nodes, N_steps, N_vars),
     #    convert to tensor.
-    raw_slice = torch.tensor(transposed_da.values, dtype=torch.float)
+    raw_slice = torch.tensor(transposed_da.values.copy(), dtype=torch.float)
 
     # 5. Reshape to [N, T*V]
     num_nodes = raw_slice.shape[0]  # We know this is num_nodes
@@ -409,7 +409,7 @@ def _get_target_slice(ds: xr.Dataset, t_start: int, num_steps: int) -> torch.Ten
 
     # 4. Now that order is guaranteed (N_nodes, N_steps, N_vars),
     #    convert to tensor.
-    raw_slice = torch.tensor(transposed_da.values, dtype=torch.float)
+    raw_slice = torch.tensor(transposed_da.values.copy(), dtype=torch.float)
 
     # 5. Reshape to [N, T*V] and .squeeze() if T=1
     num_nodes = raw_slice.shape[0]  # We know this is num_nodes
@@ -420,6 +420,7 @@ def _get_target_slice(ds: xr.Dataset, t_start: int, num_steps: int) -> torch.Ten
 # ----------------------------------------------------------------------------
 #  TRAINING DATA LOADER CLASS
 # ----------------------------------------------------------------------------
+
 
 class AdforceLazyDataset(Dataset):
     """

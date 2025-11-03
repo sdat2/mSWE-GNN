@@ -32,16 +32,16 @@ from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
 # --- Constants based on adforce_dataset.py ---
 #
 # 5 static node features: (DEM, slopex, slopey, area, node_type)
-NUM_STATIC_NODE_FEATURES = 5
+NUM_STATIC_NODE_FEATURES: int = 5
 # 3 dynamic node features: (WX, WY, P)
-NUM_DYNAMIC_NODE_FEATURES = 3
+NUM_DYNAMIC_NODE_FEATURES: int = 3
 # 2 static edge features: (face_distance, edge_slope)
-NUM_STATIC_EDGE_FEATURES = 2
+NUM_STATIC_EDGE_FEATURES: int = 2
 # 3 target variables: (WD, VX, VY)
-NUM_OUTPUT_FEATURES = 3
+NUM_OUTPUT_FEATURES: int = 3
 
 # --- Configuration ---
-CONFIG_PATH = "adforce_config.yaml"
+CONFIG_PATH: str = "adforce_config.yaml"
 
 
 def print_tensor_size_mb(tensor_dict):
@@ -107,7 +107,7 @@ def main():
     )
 
     print(f"Loading shared static data from: {train_files[0]}...")
-        # We load from the first *training* file. Assumes mesh is identical.
+    # We load from the first *training* file. Assumes mesh is identical.
     static_data_cpu = {}
     try:
         with xr.open_dataset(train_files[0]) as ds:
@@ -255,7 +255,7 @@ def main():
         # because 'start_from_checkpoint_path' was popped out earlier.
         trainer = L.Trainer(
             **lt_cfg,
-            callbacks=all_callbacks
+            callbacks=all_callbacks,
             # logger=logger,
         )
         # --- END MODIFICATION ---
