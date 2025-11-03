@@ -59,7 +59,7 @@ model_params:
 # -----------------------------------------------------------------------------
 trainer_options:
   # Batch size (also used by DataModule in adforce_main.py)
-  batch_size: 32
+  batch_size: 2
 
   # Loss function type: 'RMSE' or 'MAE'
   #
@@ -89,4 +89,4 @@ lightning_trainer:
   max_epochs: 50
   # accelerator: "gpu"
   # devices: 1
-  start_from_checkpoint_path: /Volumes/s/tcpips/mSWE-GNN/checkpoints/GNN/GNN-best-epoch=13-val_loss=0.8860.ckpt # null <-- (This is the default)
+  start_from_checkpoint_path: /Volumes/s/tcpips/mSWE-GNN/checkpoints/GNN/GNN-best-epoch=14-val_loss=0.8840.ckpt # null <-- (This is the default)
