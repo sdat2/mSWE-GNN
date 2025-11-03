@@ -11,12 +11,17 @@ This script ties together all the new components:
 6.  Instantiates the correct model ('GNNModel_new', 'MSGNNModel_new', or 'MLPModel_new').
 7.  Uses the 'DataModule' and 'LightningTrainer' from adforce_train.py to run
     the training loop.
+8.  Includes ModelCheckpoint callback for saving best/last models.
+9.  Allows resuming from a checkpoint specified in the config.
 """
 
 import glob
 import os
 import lightning as L
 from sklearn.model_selection import train_test_split
+
+# --- ADDED: Import for ModelCheckpoint ---
+from lightning.pytorch.callbacks import ModelCheckpoint
 
 # Imports from our mSWE-GNN project
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
@@ -66,6 +71,11 @@ def main():
     trainer_cfg = config.get("trainer_options", {})
     lr_cfg = config.get("lr_info", {})
     lt_cfg = config.get("lightning_trainer", {})
+
+    # --- NEW: Get the checkpoint path from config ---
+    # We get "start_from_checkpoint_path" from the 'lightning_trainer' section.
+    # It defaults to None if not specified.
+    resume_checkpoint_path = lt_cfg.get("start_from_checkpoint_path", None)
 
     p_t = data_cfg.get("previous_t", 1)
     data_dir = data_cfg.get("data_dir", "data/")
@@ -189,20 +199,73 @@ def main():
             model=model, lr_info=lr_cfg, trainer_options=trainer_cfg
         )
 
+        # --- NEW 8.a: Configure Checkpointing ---
+        print(f"Configuring checkpoints for {model_type}...")
+
+        # Define a directory based on the model type
+        checkpoint_dir = os.path.join("checkpoints", model_type)
+
+        # Create a callback to save the best model based on 'val_loss'
+        best_model_callback = ModelCheckpoint(
+            dirpath=checkpoint_dir,
+            filename=f"{model_type}-best-{{epoch:02d}}-{{val_loss:.4f}}",
+            monitor="val_loss",  # Metric to monitor (from validation_step)
+            mode="min",  # 'min' because we want the lowest val_loss
+            save_top_k=1,  # Save only the single best model
+            verbose=True,
+        )
+
+        # Create a callback to save the last checkpoint (for resuming)
+        last_model_callback = ModelCheckpoint(
+            dirpath=checkpoint_dir,
+            filename=f"{model_type}-last-{{epoch:02d}}",
+            save_last=True,  # Saves a 'last.ckpt' file
+        )
+
+        all_callbacks = [best_model_callback, last_model_callback]
+        # --- END NEW BLOCK ---
+
         # 9. Instantiate the Lightning Trainer (the runner)
         # You can add loggers, callbacks, etc., here
         # e.g., from lightning.pytorch.loggers import TensorBoardLogger
         # logger = TensorBoardLogger("tb_logs", name="mswe-gnn-adforce")
+
+        # --- MODIFIED: Pass the callbacks to the Trainer ---
         trainer = L.Trainer(
-            **lt_cfg  # Passes max_epochs, accelerator, devices, etc.
+            **lt_cfg,  # Passes max_epochs, accelerator, devices, etc.
+            callbacks=all_callbacks
             # logger=logger,
         )
+        # --- END MODIFICATION ---
 
         # 10. Start Training
         print("Starting training... 🚀")
-        trainer.fit(lightning_model, datamodule=data_module)
+
+        # --- MODIFICATION: Check if resume_checkpoint_path from config exists ---
+        ckpt_path_to_use = None
+        if resume_checkpoint_path:  # If it's not None or empty
+            if os.path.exists(resume_checkpoint_path):
+                print(f"Resuming training from checkpoint: {resume_checkpoint_path}")
+                ckpt_path_to_use = resume_checkpoint_path
+            else:
+                print(
+                    f"WARNING: Checkpoint path specified in config not found: {resume_checkpoint_path}"
+                )
+                print("Starting a new training run.")
+        else:
+            print("Starting a new training run (no checkpoint specified).")
+        # --- END MODIFICATION ---
+
+        # --- MODIFIED: Pass 'ckpt_path_to_use' to trainer.fit() ---
+        trainer.fit(
+            lightning_model,
+            datamodule=data_module,
+            ckpt_path=ckpt_path_to_use,  # This will be None if starting new
+        )
+        # --- END MODIFICATION ---
 
         print("Training complete. ✅")
+        print(f"Best model checkpoint saved to: {best_model_callback.best_model_path}")
 
     except Exception as e:
         print(f"\nAn error occurred during dataset initialization or training: {e}")

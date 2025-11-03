@@ -86,7 +86,7 @@ lr_info:
 # Lightning Trainer Parameters (for L.Trainer in adforce_main.py)
 # -----------------------------------------------------------------------------
 lightning_trainer:
-  max_epochs: 100
-  # accelerator: 'gpu'
+  max_epochs: 50
+  # accelerator: "gpu"
   # devices: 1
-  # logger: ... (e.g., TensorBoardLogger)
+  # start_from_checkpoint_path: null  <-- (This is the default)
