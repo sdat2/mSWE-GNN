@@ -72,10 +72,12 @@ def main():
     lr_cfg = config.get("lr_info", {})
     lt_cfg = config.get("lightning_trainer", {})
 
-    # --- NEW: Get the checkpoint path from config ---
-    # We get "start_from_checkpoint_path" from the 'lightning_trainer' section.
-    # It defaults to None if not specified.
-    resume_checkpoint_path = lt_cfg.get("start_from_checkpoint_path", None)
+    # --- MODIFICATION: Pop the checkpoint path from lt_cfg ---
+    # Get the path, defaulting to None if not specified.
+    # By using .pop(), we *remove* it from the lt_cfg dictionary,
+    # so it won't be incorrectly passed to the L.Trainer constructor.
+    resume_checkpoint_path = lt_cfg.pop("start_from_checkpoint_path", None)
+    # --- END MODIFICATION ---
 
     p_t = data_cfg.get("previous_t", 1)
     data_dir = data_cfg.get("data_dir", "data/")
@@ -231,8 +233,10 @@ def main():
         # logger = TensorBoardLogger("tb_logs", name="mswe-gnn-adforce")
 
         # --- MODIFIED: Pass the callbacks to the Trainer ---
+        # **lt_cfg now only contains valid L.Trainer arguments
+        # because 'start_from_checkpoint_path' was popped out earlier.
         trainer = L.Trainer(
-            **lt_cfg,  # Passes max_epochs, accelerator, devices, etc.
+            **lt_cfg,
             callbacks=all_callbacks
             # logger=logger,
         )
@@ -243,7 +247,7 @@ def main():
 
         # --- MODIFICATION: Check if resume_checkpoint_path from config exists ---
         ckpt_path_to_use = None
-        if resume_checkpoint_path:  # If it's not None or empty
+        if resume_checkpoint_path:  # This variable was set at the top
             if os.path.exists(resume_checkpoint_path):
                 print(f"Resuming training from checkpoint: {resume_checkpoint_path}")
                 ckpt_path_to_use = resume_checkpoint_path

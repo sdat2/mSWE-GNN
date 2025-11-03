@@ -421,7 +421,6 @@ def _get_target_slice(ds: xr.Dataset, t_start: int, num_steps: int) -> torch.Ten
 #  TRAINING DATA LOADER CLASS
 # ----------------------------------------------------------------------------
 
-
 class AdforceLazyDataset(Dataset):
     """
         A "lazy-loading" PyG Dataset for multiple pre-processed

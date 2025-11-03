@@ -23,7 +23,7 @@ data_params:
   previous_t: 1
 
   # Number of CPU workers for the DataLoader
-  num_workers: 4
+  num_workers: 0
 
 # -----------------------------------------------------------------------------
 # Model Parameters (for GNNModel_new, MSGNNModel_new, or MLPModel_new)
@@ -89,4 +89,4 @@ lightning_trainer:
   max_epochs: 50
   # accelerator: "gpu"
   # devices: 1
-  # start_from_checkpoint_path: null  <-- (This is the default)
+  start_from_checkpoint_path: /Volumes/s/tcpips/mSWE-GNN/checkpoints/GNN/GNN-best-epoch=10-val_loss=0.8937.ckpt # null <-- (This is the default)
