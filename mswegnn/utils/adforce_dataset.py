@@ -764,8 +764,19 @@ class AdforceLazyDataset(Dataset):
                     ds, t_start + self.previous_t, self.rollout_steps
                 ).to(self.device)
 
+            # --- NEW: Convert all NaNs to 0.0 ---
+            # This handles _FillValue=NaN from the NetCDF files
+            dyn_node_features_t = torch.nan_to_num(dyn_node_features_t, nan=0.0)
+            y_tplus1 = torch.nan_to_num(y_tplus1, nan=0.0)
+            # --- END NEW LINES ---
+
             # 3. --- APPLY SCALING (if enabled) ---
             static_features = static_data["static_node_features"].clone()
+
+            # --- NEW: Convert NaNs in static features ---
+            static_features = torch.nan_to_num(static_features, nan=0.0)
+            # --- END NEW LINE ---
+
             y_unscaled = y_tplus1.clone()  # Store for loss function
 
             if self.apply_scaling:
@@ -789,9 +800,11 @@ class AdforceLazyDataset(Dataset):
             return Data(
                 x=x_t,
                 edge_index=static_data["edge_index"],
-                edge_attr=static_data["static_edge_attr"],
+                edge_attr=static_data[
+                    "static_edge_attr"
+                ],  # <-- Corrected key from previous step
                 y=y_tplus1,  # Scaled target
-                y_unscaled=y_unscaled,  # <-- Unscaled target for loss
+                y_unscaled=y_unscaled,  # <-- Unscaled target (now 0.0 for NaNs)
                 node_BC=static_data["node_BC"],
                 edge_BC_length=static_data["edge_BC_length"],
             )

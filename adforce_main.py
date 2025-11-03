@@ -21,9 +21,11 @@ from sklearn.model_selection import train_test_split
 # Imports from our mSWE-GNN project
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 from mswegnn.utils.load import read_config
+
 # --- MODIFIED: Added MLPModel_new ---
 from mswegnn.models.adforce_models import GNNModel_new, MSGNNModel_new, MLPModel_new
 from mswegnn.training.adforce_train import LightningTrainer, DataModule
+
 # --- ADDED: Import for scaling stats calculator ---
 from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
 
@@ -76,7 +78,7 @@ def main():
         print("Please check the 'data_dir' path in your config file.")
         return
     print(f"Found {len(all_nc_files)} total simulation files.")
-    # all_nc_files = all_nc_files[10:]  # just for quick testing
+    all_nc_files = all_nc_files[:10]  # just for quick testing
 
     train_files, val_files = train_test_split(
         all_nc_files,
@@ -106,14 +108,13 @@ def main():
             print(f"Found existing scaling stats: {train_stats_path}")
         # --- END NEW BLOCK ---
 
-
         # 4. Create "lazy" datasets
         print("Initializing training dataset (this may run .process()...)")
         train_dataset = AdforceLazyDataset(
-            root=train_root, # Use same root dir
+            root=train_root,  # Use same root dir
             nc_files=train_files,
             previous_t=p_t,
-            scaling_stats_path=train_stats_path  # <-- PASS THE PATH
+            scaling_stats_path=train_stats_path,  # <-- PASS THE PATH
         )
 
         print("Initializing validation dataset (this may run .process()...)")
@@ -121,7 +122,7 @@ def main():
             root="data_processed/val",
             nc_files=val_files,
             previous_t=p_t,
-            scaling_stats_path=train_stats_path  # <-- PASS THE *TRAIN* STATS
+            scaling_stats_path=train_stats_path,  # <-- PASS THE *TRAIN* STATS
         )
 
         # 5. Instantiate Lightning DataModule
