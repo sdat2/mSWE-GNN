@@ -95,7 +95,7 @@ def main():
         print("Please check the 'data_dir' path in your config file.")
         return
     print(f"Found {len(all_nc_files)} total simulation files.")
-    all_nc_files = all_nc_files[:10]  # just for quick testing
+    # all_nc_files = all_nc_files[:10]  # just for quick testing
 
     train_files, val_files = train_test_split(
         all_nc_files,

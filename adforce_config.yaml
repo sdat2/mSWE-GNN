@@ -23,7 +23,7 @@ data_params:
   previous_t: 1
 
   # Number of CPU workers for the DataLoader
-  num_workers: 0
+  num_workers: 4
 
 # -----------------------------------------------------------------------------
 # Model Parameters (for GNNModel_new, MSGNNModel_new, or MLPModel_new)
@@ -86,7 +86,7 @@ lr_info:
 # Lightning Trainer Parameters (for L.Trainer in adforce_main.py)
 # -----------------------------------------------------------------------------
 lightning_trainer:
-  max_epochs: 50
+  max_epochs: 100
   # accelerator: "gpu"
   # devices: 1
-  start_from_checkpoint_path: /Volumes/s/tcpips/mSWE-GNN/checkpoints/GNN/GNN-best-epoch=14-val_loss=0.8840.ckpt # null <-- (This is the default)
+  start_from_checkpoint_path: /Volumes/s/tcpips/mSWE-GNN/checkpoints/GNN/GNN-best-epoch=46-val_loss=0.7607.ckpt # null <-- (This is the default)
