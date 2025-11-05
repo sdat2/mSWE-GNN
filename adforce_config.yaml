@@ -11,7 +11,7 @@
 # -----------------------------------------------------------------------------
 data_params:
   # Path to the directory containing all simulation *.nc files
-  data_dir: "/Volumes/s/tcpips/swegnn_5sec/"
+  data_dir: "/home/users/sithom/swegnn_5sec/"
 
   # Split ratio for validation set (from adforce_main.py)
   test_size: 0.2
