@@ -38,3 +38,6 @@ echo "Copying results from $TMPDIR back to $RESULTS_DEST_PATH..."
 mkdir -p $RESULTS_DEST_PATH
 rsync -aq $RESULTS_LOCAL_PATH/ $RESULTS_DEST_PATH/
 echo "Job complete."
+
+# data was transferred with:
+# rsync -aPv --stats -e "ssh -o ServerAliveInterval=60" sdat2@archer2-n02:/work/n02/n02/sdat2/adcirc-swan/worstsurge/swegnn_5sec/ /home/users/sithom/swegnn_5sec/
