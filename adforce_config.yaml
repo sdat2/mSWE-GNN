@@ -89,4 +89,4 @@ lightning_trainer:
   max_epochs: 100
   # accelerator: "gpu"
   # devices: 1
-  start_from_checkpoint_path: /Volumes/s/tcpips/mSWE-GNN/checkpoints/GNN/GNN-best-epoch=53-val_loss=0.4979.ckpt # null <-- (This is the default)
+  # start_from_checkpoint_path: /Volumes/s/tcpips/mSWE-GNN/checkpoints/GNN/GNN-best-epoch=53-val_loss=0.4979.ckpt # null <-- (This is the default)

@@ -10,10 +10,12 @@
 #SBATCH --time=48:00:00                  # 48-hour walltime (max for highres)
 #SBATCH -n 10                            # Number of cores
 #SBATCH --mem=20000                      # Memory request in MB
+#SBATCH --ntasks-per-node=10
 
 # --- 1. Environment Setup ---
 echo "Loading conda environment..."
-conda activate mswegnn2
+source ~/.bashrc
+micromamba activate mswegnn2
 
 # --- 2. Data Setup ---
 # DATA_SOURCE_PATH="/home/users/sithom/swegnn_5sec"
