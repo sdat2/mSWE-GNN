@@ -35,6 +35,8 @@ from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
 NUM_STATIC_NODE_FEATURES: int = 5
 # 3 dynamic node features: (WX, WY, P)
 NUM_DYNAMIC_NODE_FEATURES: int = 3
+# 3 current state features: (WD(t), VX(t), VY(t))
+NUM_CURRENT_STATE_FEATURES: int = 3
 # 2 static edge features: (face_distance, edge_slope)
 NUM_STATIC_EDGE_FEATURES: int = 2
 # 3 target variables: (WD, VX, VY)
@@ -165,14 +167,14 @@ def main():
         )
 
         # 6. Calculate Model Dimensions
-        num_node_features = NUM_STATIC_NODE_FEATURES + (NUM_DYNAMIC_NODE_FEATURES * p_t)
+        num_node_features = NUM_STATIC_NODE_FEATURES + (NUM_DYNAMIC_NODE_FEATURES * p_t) + NUM_CURRENT_STATE_FEATURES
         num_edge_features = NUM_STATIC_EDGE_FEATURES
         num_output_features = NUM_OUTPUT_FEATURES
 
         print("-" * 30)
         print(f"Model dimensions calculated:")
         print(
-            f"  Input Node Features: {num_node_features} (5 static + {NUM_DYNAMIC_NODE_FEATURES} dynamic * {p_t} steps)"
+            f"  Input Node Features: {num_node_features} (5 static + {NUM_DYNAMIC_NODE_FEATURES} forcing * {p_t} steps + {NUM_CURRENT_STATE_FEATURES} state)"
         )
         print(f"  Input Edge Features: {num_edge_features}")
         print(f"  Output Features: {num_output_features}")

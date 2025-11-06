@@ -1,5 +1,5 @@
-# models/models_new.py
-# (This is a new file, replacing models/models.py)
+# mswegnn/models/adforce_models.py
+# (This is a new file, replacing mswegnn/models/models.py)
 
 import torch
 import torch.nn as nn
@@ -29,8 +29,9 @@ class MLPModel_new(nn.Module):
     >>>
     >>> # 1. Define test parameters
     >>> N_NODES = 10
-    >>> NUM_IN_FEATURES = 14 # (5 static + 3 dynamic * 3 steps)
-    >>> NUM_OUT_FEATURES = 3 # (WD, VX, VY)
+    >>> # 5 static + (3 forcing * 3 steps) + 3 state = 17
+    >>> NUM_IN_FEATURES = 17
+    >>> NUM_OUT_FEATURES = 3 # (delta WD, delta VX, delta VY)
     >>>
     >>> # 2. Create mock data object (as a batch)
     >>> mock_x = torch.rand(N_NODES, NUM_IN_FEATURES)
@@ -51,7 +52,7 @@ class MLPModel_new(nn.Module):
     ...     num_output_features=NUM_OUT_FEATURES,
     ...     **mlp_kwargs
     ... )
-    MLPModel_new initialized: 14 input features, 3 output features.
+    MLPModel_new initialized: 17 input features, 3 output features.
     >>>
     >>> # 5. Run forward pass
     >>> out = model(batch)
@@ -126,9 +127,10 @@ class GNNModel_new(nn.Module):
     """
     Refactored GNNModel wrapper.
 
-    This model no longer hardcodes the number of static or dynamic features.
-    It infers them from `num_node_features` and `previous_t`.
-    It also passes the new `num_output_features` to the GNN.
+    --- MODIFIED FOR DELTA LEARNING ---
+    This model's __init__ method is updated to validate the new input structure:
+    x = (static features, forcing features, current_state features)
+    e.g., 5 static + (3 forcing * p_t steps) + 3 state
 
     Args:
         num_node_features (int): Total number of features in the input `x` tensor.
@@ -147,13 +149,15 @@ class GNNModel_new(nn.Module):
     >>> N_NODES = 10
     >>> PREVIOUS_T = 3
     >>> NUM_STATIC_FEATURES = 5  # (DEM, sx, sy, area, type)
-    >>> NUM_OUTPUT_FEATURES = 3  # (WD, VX, VY)
-    >>> NUM_DYNAMIC_IN_FEATURES = 3 # (WX, WY, P)
+    >>> NUM_OUTPUT_FEATURES = 3  # (delta WD, delta VX, delta VY)
+    >>> NUM_DYNAMIC_FORCING_FEATURES = 3 # (WX, WY, P)
+    >>> NUM_DYNAMIC_STATE_FEATURES = 3 # (WD, VX, VY)
     >>>
-    >>> # 2. Calculate total input features (5 static + 3 dynamic * 3 steps)
-    >>> num_node_features = NUM_STATIC_FEATURES + (NUM_DYNAMIC_IN_FEATURES * PREVIOUS_T)
+    >>> # 2. Calculate total input features
+    >>> # 5 static + (3 forcing * 3 steps) + 3 state = 17
+    >>> num_node_features = NUM_STATIC_FEATURES + (NUM_DYNAMIC_FORCING_FEATURES * PREVIOUS_T) + NUM_DYNAMIC_STATE_FEATURES
     >>> print(f"Calculated num_node_features: {num_node_features}")
-    Calculated num_node_features: 14
+    Calculated num_node_features: 17
     >>>
     >>> # 3. Create mock data object (as a batch)
     >>> mock_x = torch.rand(N_NODES, num_node_features)
@@ -176,7 +180,7 @@ class GNNModel_new(nn.Module):
     ...     num_static_features=NUM_STATIC_FEATURES,
     ...     **gnn_kwargs
     ... )
-    GNNModel_new initialized: 5 static features, 3 dynamic input features (x3 steps), 3 output features.
+    GNNModel_new initialized: 5 static, 9 forcing (x3), 3 state features. Total input: 17. Output: 3.
     >>>
     >>> # 6. Run forward pass
     >>> out = model(batch)
@@ -188,15 +192,16 @@ class GNNModel_new(nn.Module):
     >>> # 8. Test error case: mismatched features
     >>> try:
     ...     model_fail = GNNModel_new(
-    ...         num_node_features=13, # 13 is not 5 + (3*N)
+    ...         num_node_features=16, # 16 is not 5 + (3*3) + 3
     ...         num_edge_features=2,
     ...         previous_t=PREVIOUS_T,
     ...         num_output_features=NUM_OUTPUT_FEATURES,
+    ...         num_static_features=NUM_STATIC_FEATURES,
     ...         **gnn_kwargs
     ...     )
     ... except ValueError as e:
     ...     print(f"Caught expected error: {e}")
-    Caught expected error: Dynamic features (8) are not evenly divisible by previous_t (3). Check num_static_features.
+    Caught expected error: Feature mismatch! Total features 16 - static features 5 = 11 dynamic features. But expected 12 (forcing=9 + state=3). Check num_static_features in your config and the num_node_features calculation in adforce_main.py.
     """
 
     def __init__(
@@ -212,39 +217,41 @@ class GNNModel_new(nn.Module):
 
         self.previous_t = previous_t
         self.num_output_features = num_output_features
-
-        # --- CHANGED: Dynamic feature calculation ---
-        # No more 'self.NUM_WATER_VARS = 2'
         self.num_static_features = num_static_features
 
-        # Calculate dynamic features based on total node features
+        # --- NEW: Explicit feature calculation for validation ---
+        # 3 dynamic *forcing* vars (WX, WY, P)
+        self.num_dynamic_forcing_features_per_step = 3
+        # 3 dynamic *state* vars (WD, VX, VY) - this is the new part
+        self.num_dynamic_state_features = 3
+
+        # Calculate expected feature counts
+        num_forcing_features = self.num_dynamic_forcing_features_per_step * self.previous_t
+        
+        # This is the total number of "dynamic" features, i.e.,
+        # everything *except* the static features.
         self.dynamic_vars = num_node_features - self.num_static_features
+        
+        # Calculate what the expected dynamic vars should be
+        expected_dynamic_vars = num_forcing_features + self.num_dynamic_state_features
 
-        if self.dynamic_vars < 0:
+        if self.dynamic_vars != expected_dynamic_vars:
             raise ValueError(
-                "num_node_features cannot be less than num_static_features."
+                f"Feature mismatch! Total features {num_node_features} - "
+                f"static features {self.num_static_features} = {self.dynamic_vars} dynamic features. "
+                f"But expected {expected_dynamic_vars} (forcing={num_forcing_features} + state={self.num_dynamic_state_features}). "
+                f"Check num_static_features in your config and the num_node_features calculation in adforce_main.py."
             )
-
-        if self.previous_t <= 0:
-            raise ValueError("previous_t must be greater than 0.")
-
-        if self.dynamic_vars % self.previous_t != 0:
-            raise ValueError(
-                f"Dynamic features ({self.dynamic_vars}) are not evenly "
-                f"divisible by previous_t ({self.previous_t}). "
-                f"Check num_static_features."
-            )
-
-        self.num_dynamic_in_features = self.dynamic_vars // self.previous_t
 
         # This print is useful for debugging and for the doctest
         if "hid_features" in gnn_kwargs:  # Avoid printing during doctest's error check
             print(
-                f"GNNModel_new initialized: {self.num_static_features} static features, "
-                f"{self.num_dynamic_in_features} dynamic input features (x{self.previous_t} steps), "
-                f"{self.num_output_features} output features."
+                f"GNNModel_new initialized: {self.num_static_features} static, "
+                f"{num_forcing_features} forcing (x{self.previous_t}), "
+                f"{self.num_dynamic_state_features} state features. "
+                f"Total input: {num_node_features}. Output: {self.num_output_features}."
             )
-        # --- END CHANGE ---
+        # --- END NEW ---
 
         self.in_features = num_node_features
 
@@ -255,12 +262,14 @@ class GNNModel_new(nn.Module):
         )
 
     def forward(self, batch):
+        """
+        The GNN_new class's forward just concatenates static and dynamic,
+        so we feed all features (forcing + state) as 'dynamic_features'.
+        """
         x = batch.x
 
-        # --- CHANGED: Use self.num_static_features to split ---
         static_features = x[:, : self.num_static_features]
         dynamic_features = x[:, self.num_static_features :]
-        # --- END CHANGE ---
 
         edge_index = batch.edge_index
         edge_attr = batch.edge_attr
@@ -269,9 +278,7 @@ class GNNModel_new(nn.Module):
             static_features, dynamic_features, edge_index, edge_attr, batch=batch
         )
 
-        # --- CHANGED: Use self.num_output_features to reshape ---
         out = out.reshape(-1, self.num_output_features)
-        # --- END CHANGE ---
 
         return out
 
@@ -303,36 +310,33 @@ class MSGNNModel_new(GNNModel_new):
 
         self.previous_t = previous_t
         self.num_output_features = num_output_features
-
-        # --- CHANGED: Dynamic feature calculation (copied from parent) ---
         self.num_static_features = num_static_features
+
+
+        # --- NEW: Explicit feature calculation (copied from parent) ---
+        self.num_dynamic_forcing_features_per_step = 3
+        self.num_dynamic_state_features = 3
+        num_forcing_features = self.num_dynamic_forcing_features_per_step * self.previous_t
         self.dynamic_vars = num_node_features - self.num_static_features
+        expected_dynamic_vars = num_forcing_features + self.num_dynamic_state_features
 
-        if self.dynamic_vars < 0:
+        if self.dynamic_vars != expected_dynamic_vars:
             raise ValueError(
-                "num_node_features cannot be less than num_static_features."
+                f"MSGNN Feature mismatch! Total features {num_node_features} - "
+                f"static features {self.num_static_features} = {self.dynamic_vars} dynamic features. "
+                f"But expected {expected_dynamic_vars} (forcing={num_forcing_features} + state={self.num_dynamic_state_features}). "
             )
 
-        if self.previous_t <= 0:
-            raise ValueError("previous_t must be greater than 0.")
-
-        if self.dynamic_vars % self.previous_t != 0:
-            raise ValueError(
-                f"Dynamic features ({self.dynamic_vars}) not divisible by previous_t."
-            )
-
-        self.num_dynamic_in_features = self.dynamic_vars // self.previous_t
-
-        # This print is useful for debugging
         if (
             "hid_features" in gnn_kwargs
         ):  # Avoid printing during potential doctest error checks
             print(
-                f"MSGNNModel_new initialized: {self.num_static_features} static features, "
-                f"{self.num_dynamic_in_features} dynamic input features (x{self.previous_t} steps), "
-                f"{self.num_output_features} output features."
+                f"MSGNNModel_new initialized: {self.num_static_features} static, "
+                f"{num_forcing_features} dynamic input features (x{self.previous_t} steps), "
+                f"{self.num_dynamic_state_features} state features."
+                f"Total input: {num_node_features}. Output: {self.num_output_features}."
             )
-        # --- END CHANGE ---
+        # --- END NEW ---
 
         self.in_features = num_node_features
 
@@ -366,7 +370,7 @@ if __name__ == "__main__":
     Run doctests for this module.
 
     From the command line, run:
-    python  models/models_new.py
+    python -m  mswegnn.models.adforce_models
     """
     import doctest
 
