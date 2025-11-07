@@ -32,7 +32,8 @@ micromamba activate mswegnn2
 
 # --- 3. Run Executable ---
 echo "Starting python script..."
-python -m adforce_main # .py #--data-path $DATA_LOCAL_PATH --output-dir $RESULTS_LOCAL_PATH
+python -m adforce_main machine=jasmin 
+# python -m adforce_main # .py #--data-path $DATA_LOCAL_PATH --output-dir $RESULTS_LOCAL_PATH
 echo "Script finished."
 
 # --- 4. Copy Results Back ---

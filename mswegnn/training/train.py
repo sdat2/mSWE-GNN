@@ -6,7 +6,6 @@ import lightning as L
 from lightning.pytorch.callbacks import Callback, BatchSizeFinder
 from torch_geometric.loader import DataLoader
 from torch_geometric.data.batch import Batch
-
 from mswegnn.training.loss import loss_function
 from mswegnn.utils.miscellaneous import get_rollout_loss, get_CSI
 from mswegnn.utils.dataset import use_prediction, apply_boundary_condition

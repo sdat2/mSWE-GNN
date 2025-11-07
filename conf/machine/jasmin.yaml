@@ -1,5 +1,5 @@
 # conf/machine/jasmin.yaml
 # Paths for the jasmin cluster
 data_dir: "/home/users/sithom/swegnn_5sec/"
-processed_dir: "/home/users/sithom/swegnn_5sec/data_processed"
-output_dir: "/home/users/sithom/swegnn_5sec/outputs"
+processed_dir: "/home/users/sithom/swegnn_5sec/data_processed2"
+output_dir: "/home/users/sithom/swegnn_5sec/outputs2"
