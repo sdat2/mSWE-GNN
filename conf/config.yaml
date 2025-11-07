@@ -1,0 +1,61 @@
+# conf/config.yaml
+defaults:
+  - machine: mac # Default to mac paths
+  - _self_
+
+# Hydra settings
+hydra:
+  run:
+    # {machine.root_dir}/outputs/{now:%Y-%m-%d}/{now:%H-%M-%S}
+    dir: ${machine.output_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: ${machine.output_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
+
+# Group for machine-specific paths
+machine:
+  data_dir: ???
+  processed_dir: "data_processed"
+  output_dir: "outputs"
+  checkpoint_dir: "checkpoints"
+  resume_checkpoint_path: null # (e.g., /path/to/specific.ckpt)
+
+# W&B settings
+wandb:
+  project: "mswe-gnn-adforce"
+  log_model: "all" # 'all', 'best', or false
+
+# Your original parameters, now grouped
+data_params:
+  test_size: 0.2
+  random_state: 42
+  previous_t: 1
+  num_workers: 4
+
+model_params:
+  model_type: GNN
+  hid_features: 64
+  mlp_layers: 2
+  mlp_activation: 'prelu'
+  type_gnn: 'GCN'
+  gnn_activation: 'tanh'
+  num_scales: 3
+  learned_pooling: false
+  skip_connections: true
+
+trainer_options:
+  batch_size: 2
+  type_loss: 'RMSE'
+  only_where_water: true
+  velocity_scaler: 5.0
+
+lr_info:
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  step_size: 20
+  gamma: 0.5
+
+lightning_trainer:
+  max_epochs: 100
+  # accelerator: "gpu"
+  # devices: 1

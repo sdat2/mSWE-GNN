@@ -1,0 +1,5 @@
+# conf/machine/local.yaml
+# Paths for local development
+data_dir: "/Volumes/s/tcpips/swegnn_5sec/"
+processed_dir: "/Volumes/s/tcpips/mSWE-GNN/data_processed"
+output_dir: "Volumes/s/tcpips/mSWE-GNN/outputs"

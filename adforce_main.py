@@ -3,6 +3,10 @@ Main training script for the mSWE-GNN Adforce pipeline.
 
 This script ties together all the new components:
 1.  Loads the 'adforce_config.yaml' for all hyperparameters.
+    --- HYDRA MODIFICATION ---
+    1.  Uses Hydra for configuration management via @hydra.main.
+    2.  Config is injected into the main() function as 'cfg'.
+    ---
 2.  Finds and splits NetCDF files.
 3.  Calculates scaling statistics (mean/std) from the training files.
 4.  Uses 'AdforceLazyDataset' to create train/val datasets
@@ -13,6 +17,8 @@ This script ties together all the new components:
     the training loop.
 8.  Includes ModelCheckpoint callback for saving best/last models.
 9.  Allows resuming from a checkpoint specified in the config.
+    --- W&B MODIFICATION ---
+10. Integrates WandbLogger for experiment tracking.
 """
 
 import glob
@@ -20,10 +26,15 @@ import os
 import lightning as L
 from sklearn.model_selection import train_test_split
 from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.loggers import WandbLogger  # <-- W&B: Added
 import torch
 import xarray as xr
+import hydra  # <-- HYDRA: Added
+from omegaconf import DictConfig, OmegaConf  # <-- HYDRA: Added
+import wandb # <-- W&B: Added
+
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset, _load_static_data_from_ds
-from mswegnn.utils.load import read_config
+from mswegnn.utils.load import read_config # <-- HYDRA: This is no longer used, but kept for reference
 from mswegnn.models.adforce_models import GNNModel_new, MSGNNModel_new, MLPModel_new
 from mswegnn.training.adforce_train import LightningTrainer, DataModule
 from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
@@ -43,7 +54,7 @@ NUM_STATIC_EDGE_FEATURES: int = 2
 NUM_OUTPUT_FEATURES: int = 3
 
 # --- Configuration ---
-CONFIG_PATH: str = "adforce_config.yaml"
+# CONFIG_PATH: str = "adforce_config.yaml" # <-- HYDRA: No longer needed
 
 
 def print_tensor_size_mb(tensor_dict):
@@ -57,37 +68,59 @@ def print_tensor_size_mb(tensor_dict):
     print(f"  --- TOTAL STATIC DATA SIZE: {total_size / (1024**2):.2f} MB ---")
 
 
-def main():
+@hydra.main(config_path="conf", config_name="config", version_base=None) # <-- HYDRA: Added decorator
+def main(cfg: DictConfig): # <-- HYDRA: Config injected
     """
     Main function to run the data loading and training pipeline.
     """
     # 1. Load Configuration
-    print(f"Loading configuration from {CONFIG_PATH}...")
-    try:
-        config = read_config(CONFIG_PATH)
-    except FileNotFoundError:
-        print(f"ERROR: Configuration file not found at {CONFIG_PATH}")
-        print("Please create 'adforce_config.yaml' based on the example provided.")
-        return
-    except Exception as e:
-        print(f"Error reading config file: {e}")
-        return
+    # --- HYDRA: Configuration is now injected as 'cfg' ---
+    print("--- Configuration (from Hydra) ---")
+    print(OmegaConf.to_yaml(cfg))
+    print("----------------------------------")
+    print(f"Hydra working directory: {os.getcwd()}")
+    # ---
 
-    data_cfg = config.get("data_params", {})
-    model_cfg = config.get("model_params", {})
-    trainer_cfg = config.get("trainer_options", {})
-    lr_cfg = config.get("lr_info", {})
-    lt_cfg = config.get("lightning_trainer", {})
+    # --- HYDRA: Old config loading removed ---
+    # print(f"Loading configuration from {CONFIG_PATH}...")
+    # try:
+    #     config = read_config(CONFIG_PATH)
+    # except FileNotFoundError:
+    #     print(f"ERROR: Configuration file not found at {CONFIG_PATH}")
+    #     print("Please create 'adforce_config.yaml' based on the example provided.")
+    #     return
+    # except Exception as e:
+    #     print(f"Error reading config file: {e}")
+    #     return
+    #
+    # data_cfg = config.get("data_params", {})
+    # model_cfg = config.get("model_params", {})
+    # trainer_cfg = config.get("trainer_options", {})
+    # lr_cfg = config.get("lr_info", {})
+    # lt_cfg = config.get("lightning_trainer", {})
+    # --- END HYDRA MODIFICATION ---
 
+
+    # --- HYDRA: Access params from cfg object ---
     # --- MODIFICATION: Pop the checkpoint path from lt_cfg ---
     # Get the path, defaulting to None if not specified.
     # By using .pop(), we *remove* it from the lt_cfg dictionary,
     # so it won't be incorrectly passed to the L.Trainer constructor.
-    resume_checkpoint_path = lt_cfg.pop("start_from_checkpoint_path", None)
+    # resume_checkpoint_path = lt_cfg.pop("start_from_checkpoint_path", None) # <-- HYDRA: Old way
+    
+    # HYDRA: Get resume path from machine config
+    resume_checkpoint_path = cfg.machine.resume_checkpoint_path
+    if resume_checkpoint_path:
+        # Resolve path relative to original directory
+        resume_checkpoint_path = hydra.utils.to_absolute_path(resume_checkpoint_path)
+
     # --- END MODIFICATION ---
 
-    p_t = data_cfg.get("previous_t", 1)
-    data_dir = data_cfg.get("data_dir", "data/")
+    p_t = cfg.data_params.previous_t # data_cfg.get("previous_t", 1)
+    
+    # HYDRA: Resolve data_dir relative to original CWD
+    data_dir = hydra.utils.to_absolute_path(cfg.machine.data_dir)
+    processed_dir = hydra.utils.to_absolute_path(cfg.machine.processed_dir)
 
     # 2. Find and split data files
     print(f"Searching for NetCDF files in {data_dir}...")
@@ -101,8 +134,8 @@ def main():
 
     train_files, val_files = train_test_split(
         all_nc_files,
-        test_size=data_cfg.get("test_size", 0.2),
-        random_state=data_cfg.get("random_state", 42),
+        test_size=cfg.data_params.test_size, # data_cfg.get("test_size", 0.2),
+        random_state=cfg.data_params.random_state, # data_cfg.get("random_state", 42),
     )
     print(
         f"Training on {len(train_files)} files, validating on {len(val_files)} files."
@@ -124,7 +157,7 @@ def main():
     try:
         # --- NEW 3: Compute scaling stats if they don't exist ---
         # Stats are saved in the 'train' processed directory
-        train_root = "data_processed/train"
+        train_root = os.path.join(processed_dir, "train") # <-- HYDRA: Use processed_dir
         train_stats_path = os.path.join(train_root, "scaling_stats.yaml")
 
         # Ensure the processed directory exists
@@ -151,7 +184,7 @@ def main():
 
         print("Initializing validation dataset (this may run .process()...)")
         val_dataset = AdforceLazyDataset(
-            root="data_processed/val",
+            root=os.path.join(processed_dir, "val"), # <-- HYDRA: Use processed_dir
             nc_files=val_files,
             previous_t=p_t,
             scaling_stats_path=train_stats_path,  # <-- PASS THE *TRAIN* STATS
@@ -162,8 +195,8 @@ def main():
         data_module = DataModule(
             train_dataset=train_dataset,
             val_dataset=val_dataset,
-            batch_size=trainer_cfg.get("batch_size", 32),
-            num_workers=data_cfg.get("num_workers", 4),
+            batch_size=cfg.trainer_options.batch_size, # trainer_cfg.get("batch_size", 32),
+            num_workers=cfg.data_params.num_workers, # data_cfg.get("num_workers", 4),
         )
 
         # 6. Calculate Model Dimensions
@@ -181,8 +214,12 @@ def main():
         print("-" * 30)
 
         # 7. Instantiate the Model
-        model_type = model_cfg.get("model_type", "GNN")
+        model_type = cfg.model_params.model_type # model_cfg.get("model_type", "GNN")
         print(f"Instantiating model type: {model_type}...")
+
+        # --- HYDRA: Convert model_params group to a dict for **kwargs
+        model_cfg_dict = OmegaConf.to_container(cfg.model_params, resolve=True)
+        # ---
 
         # --- MODIFIED: Added 'MLP' option ---
         # Pass all model_params, the constructors will pick what they need
@@ -193,7 +230,7 @@ def main():
                 previous_t=p_t,
                 num_output_features=num_output_features,
                 num_static_features=NUM_STATIC_NODE_FEATURES,
-                **model_cfg,
+                **model_cfg_dict, # **model_cfg,
             )
         elif model_type == "MSGNN":
             model = MSGNNModel_new(
@@ -202,13 +239,13 @@ def main():
                 previous_t=p_t,
                 num_output_features=num_output_features,
                 num_static_features=NUM_STATIC_NODE_FEATURES,
-                **model_cfg,
+                **model_cfg_dict, # **model_cfg,
             )
         elif model_type == "MLP":
             model = MLPModel_new(
                 num_node_features=num_node_features,
                 num_output_features=num_output_features,
-                **model_cfg,  # Passes hid_features, mlp_layers, etc.
+                **model_cfg_dict,  # **model_cfg,
             )
         else:
             raise ValueError(
@@ -218,14 +255,19 @@ def main():
 
         # 8. Instantiate the LightningTrainer (the module)
         lightning_model = LightningTrainer(
-            model=model, lr_info=lr_cfg, trainer_options=trainer_cfg
+            model=model,
+            lr_info=cfg.lr_info, # lr_cfg,
+            trainer_options=cfg.trainer_options # trainer_cfg
         )
 
         # --- NEW 8.a: Configure Checkpointing ---
         print(f"Configuring checkpoints for {model_type}...")
 
         # Define a directory based on the model type
-        checkpoint_dir = os.path.join("checkpoints", model_type)
+        # --- HYDRA: Use path from config, which defaults to hydra's run dir ---
+        checkpoint_dir = cfg.machine.checkpoint_dir # os.path.join("checkpoints", model_type)
+        os.makedirs(checkpoint_dir, exist_ok=True) # HYDRA: Ensure it exists
+        # ---
 
         # Create a callback to save the best model based on 'val_loss'
         best_model_callback = ModelCheckpoint(
@@ -247,18 +289,35 @@ def main():
         all_callbacks = [best_model_callback, last_model_callback]
         # --- END NEW BLOCK ---
 
+
+        # --- W&B: Configure Logger ---
+        print("Initializing Weights & Biases Logger...")
+        wandb_logger = WandbLogger(
+            project=cfg.wandb.project,
+            log_model=cfg.wandb.log_model,
+            # Save the flattened config to W&B
+            config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+        )
+        wandb_logger.watch(model, log="all", log_freq=100)
+        # --- END W&B BLOCK ---
+
+
         # 9. Instantiate the Lightning Trainer (the runner)
         # You can add loggers, callbacks, etc., here
         # e.g., from lightning.pytorch.loggers import TensorBoardLogger
         # logger = TensorBoardLogger("tb_logs", name="mswe-gnn-adforce")
 
-        # --- MODIFIED: Pass the callbacks to the Trainer ---
+        # --- HYDRA: Convert lightning_trainer config to dict ---
         # **lt_cfg now only contains valid L.Trainer arguments
         # because 'start_from_checkpoint_path' was popped out earlier.
+        lt_cfg_dict = OmegaConf.to_container(cfg.lightning_trainer, resolve=True)
+        # ---
+
+        # --- MODIFIED: Pass the callbacks to the Trainer ---
         trainer = L.Trainer(
-            **lt_cfg,
+            **lt_cfg_dict, # **lt_cfg,
             callbacks=all_callbacks,
-            # logger=logger,
+            logger=wandb_logger, # <-- W&B: Pass logger
         )
         # --- END MODIFICATION ---
 
@@ -290,6 +349,10 @@ def main():
 
         print("Training complete. ✅")
         print(f"Best model checkpoint saved to: {best_model_callback.best_model_path}")
+        
+        # --- W&B: Finish the run ---
+        wandb.finish()
+        # ---
 
     except Exception as e:
         print(f"\nAn error occurred during dataset initialization or training: {e}")
