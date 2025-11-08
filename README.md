@@ -4,6 +4,9 @@
 
 We created additional training data through forcing the ADCIRC model with storm surge scenarios from the ADFORCE python package.
 
+Look at the `generate_training_data.py` script for how we generated the training data:
+<https://github.com/sdat2/PotentialHeight/blob/main/adforce/generate_training_data.py>
+
 ## Environment setup
 
 Using `micromamba` and flexible yaml settings for a robust pure-cpu environment:
@@ -28,8 +31,16 @@ micromamba create -n mswegnn -f env.yml
         - `adforce_loss.py`: loss functions.
     - `utils/`: Utility functions for various tasks.
         - `adforce_dataset.py`: dataset loading and batching.
+        - `adforce_scaling.py`: data normalization and scaling.
         - `adforce_animate.py`: animate adforce inputs and outputs using dataloader.
 - `jasmin.slurm`: SLURM job script for running on the JASMIN supercomputer.
+
+## Run instructions
+To run the training pipeline, use the following command:
+
+```bash
+python -m adforce_main
+```
 
 # Old README content:
 # mSWE-GNN (Repository for paper "Multi-scale hydraulic graph neural networks for flood modelling")
