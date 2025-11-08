@@ -17,7 +17,18 @@ micromamba create -n mswegnn -f env.yml
 - `adforce_main.py`: Main script to run the Adforce/SWE-GNN training pipeline.
 - `conf/`: Configuration files for hyperparameters and settings.
 - `archer2.slurm`: SLURM job script for running on the Archer2 supercomputer.
-- `mswegnn`: All the main code turned into a python package for easier management.
+- `mswegnn/`: All the main code turned into a python package for easier management.
+    - `database/`: Data handling and preprocessing modules.
+       - `graph_creation.py`: Funcs to process original D-Hydro output.
+    - `models/`: Model definitions and architectures.
+        - `adforce_gnn.py`: graph neural network layers.
+        - `adforce_models.py`: full model architectures.
+    - `training/`: Training routines and loss functions.
+        - `adforce_train.py`: training loop and evaluation.
+        - `adforce_loss.py`: loss functions.
+    - `utils/`: Utility functions for various tasks.
+        - `adforce_dataset.py`: dataset loading and batching.
+        - `adforce_animate.py`: animate adforce inputs and outputs using dataloader.
 - `jasmin.slurm`: SLURM job script for running on the JASMIN supercomputer.
 
 # Old README content:

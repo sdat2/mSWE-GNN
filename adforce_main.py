@@ -30,11 +30,17 @@ import torch
 import xarray as xr
 import hydra  # <-- HYDRA: Added
 from omegaconf import DictConfig, OmegaConf  # <-- HYDRA: Added
-import wandb # <-- W&B: Added
+import wandb  # <-- W&B: Added
 
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset, _load_static_data_from_ds
-from mswegnn.utils.load import read_config # <-- HYDRA: This is no longer used, but kept for reference
-from mswegnn.models.adforce_models import GNNModelAdforce, MSGNNModelAdforce, PointwiseMLPModel
+from mswegnn.utils.load import (
+    read_config,
+)  # <-- HYDRA: This is no longer used, but kept for reference
+from mswegnn.models.adforce_models import (
+    GNNModelAdforce,
+    MSGNNModelAdforce,
+    PointwiseMLPModel,
+)
 from mswegnn.training.adforce_train import LightningTrainer, DataModule
 from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
 
@@ -67,8 +73,10 @@ def print_tensor_size_mb(tensor_dict):
     print(f"  --- TOTAL STATIC DATA SIZE: {total_size / (1024**2):.2f} MB ---")
 
 
-@hydra.main(config_path="conf", config_name="config", version_base=None) # <-- HYDRA: Added decorator
-def main(cfg: DictConfig): # <-- HYDRA: Config injected
+@hydra.main(
+    config_path="conf", config_name="config", version_base=None
+)  # <-- HYDRA: Added decorator
+def main(cfg: DictConfig):  # <-- HYDRA: Config injected
     """
     Main function to run the data loading and training pipeline.
     """
@@ -99,14 +107,13 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
     # lt_cfg = config.get("lightning_trainer", {})
     # --- END HYDRA MODIFICATION ---
 
-
     # --- HYDRA: Access params from cfg object ---
     # --- MODIFICATION: Pop the checkpoint path from lt_cfg ---
     # Get the path, defaulting to None if not specified.
     # By using .pop(), we *remove* it from the lt_cfg dictionary,
     # so it won't be incorrectly passed to the L.Trainer constructor.
     # resume_checkpoint_path = lt_cfg.pop("start_from_checkpoint_path", None) # <-- HYDRA: Old way
-    
+
     # HYDRA: Get resume path from machine config
     resume_checkpoint_path = cfg.machine.resume_checkpoint_path
     if resume_checkpoint_path:
@@ -115,8 +122,8 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
 
     # --- END MODIFICATION ---
 
-    p_t = cfg.data_params.previous_t # data_cfg.get("previous_t", 1)
-    
+    p_t = cfg.data_params.previous_t  # data_cfg.get("previous_t", 1)
+
     # HYDRA: Resolve data_dir relative to original CWD
     data_dir = hydra.utils.to_absolute_path(cfg.machine.data_dir)
     processed_dir = hydra.utils.to_absolute_path(cfg.machine.processed_dir)
@@ -133,8 +140,8 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
 
     train_files, val_files = train_test_split(
         all_nc_files,
-        test_size=cfg.data_params.test_size, # data_cfg.get("test_size", 0.2),
-        random_state=cfg.data_params.random_state, # data_cfg.get("random_state", 42),
+        test_size=cfg.data_params.test_size,  # data_cfg.get("test_size", 0.2),
+        random_state=cfg.data_params.random_state,  # data_cfg.get("random_state", 42),
     )
     print(
         f"Training on {len(train_files)} files, validating on {len(val_files)} files."
@@ -156,7 +163,9 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
     try:
         # --- NEW 3: Compute scaling stats if they don't exist ---
         # Stats are saved in the 'train' processed directory
-        train_root = os.path.join(processed_dir, "train") # <-- HYDRA: Use processed_dir
+        train_root = os.path.join(
+            processed_dir, "train"
+        )  # <-- HYDRA: Use processed_dir
         train_stats_path = os.path.join(train_root, "scaling_stats.yaml")
 
         # Ensure the processed directory exists
@@ -183,7 +192,7 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
 
         print("Initializing validation dataset (this may run .process()...)")
         val_dataset = AdforceLazyDataset(
-            root=os.path.join(processed_dir, "val"), # <-- HYDRA: Use processed_dir
+            root=os.path.join(processed_dir, "val"),  # <-- HYDRA: Use processed_dir
             nc_files=val_files,
             previous_t=p_t,
             scaling_stats_path=train_stats_path,  # <-- PASS THE *TRAIN* STATS
@@ -194,12 +203,16 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
         data_module = DataModule(
             train_dataset=train_dataset,
             val_dataset=val_dataset,
-            batch_size=cfg.trainer_options.batch_size, # trainer_cfg.get("batch_size", 32),
-            num_workers=cfg.data_params.num_workers, # data_cfg.get("num_workers", 4),
+            batch_size=cfg.trainer_options.batch_size,  # trainer_cfg.get("batch_size", 32),
+            num_workers=cfg.data_params.num_workers,  # data_cfg.get("num_workers", 4),
         )
 
         # 6. Calculate Model Dimensions
-        num_node_features = NUM_STATIC_NODE_FEATURES + (NUM_DYNAMIC_NODE_FEATURES * p_t) + NUM_CURRENT_STATE_FEATURES
+        num_node_features = (
+            NUM_STATIC_NODE_FEATURES
+            + (NUM_DYNAMIC_NODE_FEATURES * p_t)
+            + NUM_CURRENT_STATE_FEATURES
+        )
         num_edge_features = NUM_STATIC_EDGE_FEATURES
         num_output_features = NUM_OUTPUT_FEATURES
 
@@ -213,7 +226,7 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
         print("-" * 30)
 
         # 7. Instantiate the Model
-        model_type = cfg.model_params.model_type # model_cfg.get("model_type", "GNN")
+        model_type = cfg.model_params.model_type  # model_cfg.get("model_type", "GNN")
         print(f"Instantiating model type: {model_type}...")
 
         # --- HYDRA: Convert model_params group to a dict for **kwargs
@@ -229,7 +242,7 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
                 previous_t=p_t,
                 num_output_features=num_output_features,
                 num_static_features=NUM_STATIC_NODE_FEATURES,
-                **model_cfg_dict, # **model_cfg,
+                **model_cfg_dict,  # **model_cfg,
             )
         elif model_type == "MSGNN":
             model = MSGNNModelAdforce(
@@ -238,7 +251,7 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
                 previous_t=p_t,
                 num_output_features=num_output_features,
                 num_static_features=NUM_STATIC_NODE_FEATURES,
-                **model_cfg_dict, # **model_cfg,
+                **model_cfg_dict,  # **model_cfg,
             )
         elif model_type == "MLP":
             model = PointwiseMLPModel(
@@ -255,8 +268,8 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
         # 8. Instantiate the LightningTrainer (the module)
         lightning_model = LightningTrainer(
             model=model,
-            lr_info=cfg.lr_info, # lr_cfg,
-            trainer_options=cfg.trainer_options # trainer_cfg
+            lr_info=cfg.lr_info,  # lr_cfg,
+            trainer_options=cfg.trainer_options,  # trainer_cfg
         )
 
         # --- NEW 8.a: Configure Checkpointing ---
@@ -264,8 +277,10 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
 
         # Define a directory based on the model type
         # --- HYDRA: Use path from config, which defaults to hydra's run dir ---
-        checkpoint_dir = cfg.machine.checkpoint_dir # os.path.join("checkpoints", model_type)
-        os.makedirs(checkpoint_dir, exist_ok=True) # HYDRA: Ensure it exists
+        checkpoint_dir = (
+            cfg.machine.checkpoint_dir
+        )  # os.path.join("checkpoints", model_type)
+        os.makedirs(checkpoint_dir, exist_ok=True)  # HYDRA: Ensure it exists
         # ---
 
         # Create a callback to save the best model based on 'val_loss'
@@ -288,18 +303,16 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
         all_callbacks = [best_model_callback, last_model_callback]
         # --- END NEW BLOCK ---
 
-
         # --- W&B: Configure Logger ---
         print("Initializing Weights & Biases Logger...")
         wandb_logger = WandbLogger(
             project=cfg.wandb.project,
             log_model=cfg.wandb.log_model,
             # Save the flattened config to W&B
-            config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+            config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
         )
         wandb_logger.watch(model, log="all", log_freq=100)
         # --- END W&B BLOCK ---
-
 
         # 9. Instantiate the Lightning Trainer (the runner)
         # You can add loggers, callbacks, etc., here
@@ -314,9 +327,9 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
 
         # --- MODIFIED: Pass the callbacks to the Trainer ---
         trainer = L.Trainer(
-            **lt_cfg_dict, # **lt_cfg,
+            **lt_cfg_dict,  # **lt_cfg,
             callbacks=all_callbacks,
-            logger=wandb_logger, # <-- W&B: Pass logger
+            logger=wandb_logger,  # <-- W&B: Pass logger
         )
         # --- END MODIFICATION ---
 
@@ -348,7 +361,7 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
 
         print("Training complete. ✅")
         print(f"Best model checkpoint saved to: {best_model_callback.best_model_path}")
-        
+
         # --- W&B: Finish the run ---
         wandb.finish()
         # ---

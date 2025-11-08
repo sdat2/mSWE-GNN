@@ -40,7 +40,7 @@ class StatsAggregator:
     """
     Helper class to compute mean/std in a single pass using the
     numerically stable 'sum' and 'sum-of-squares' method.
-    
+
     This is fast because it relies on vectorized numpy operations.
     (This class is from your original script)
     """
@@ -108,14 +108,14 @@ def compute_and_save_adforce_stats(nc_files: list[str], output_path: str):
     for nc_path in tqdm(nc_files, desc="Calculating Scaling Stats"):
         try:
             with xr.open_dataset(nc_path) as ds:
-                
+
                 # --- Check for variable existence ---
                 missing_vars = []
                 # Check static/dynamic first
-                for v in (VARS_STATIC + VARS_DYNAMIC):
+                for v in VARS_STATIC + VARS_DYNAMIC:
                     if v not in ds.data_vars:
                         missing_vars.append(v)
-                
+
                 # Special check for targets, as they are crucial
                 missing_targets = []
                 for v in VARS_TARGET:
@@ -123,61 +123,64 @@ def compute_and_save_adforce_stats(nc_files: list[str], output_path: str):
                         missing_targets.append(v)
 
                 if missing_targets:
-                     warnings.warn(
+                    warnings.warn(
                         f"Skipping file {nc_path}: Missing CRITICAL target variables: {missing_targets}"
                     )
-                     continue
-                
+                    continue
+
                 if missing_vars:
                     warnings.warn(
                         f"WARNING: File {nc_path} is missing non-critical variables: {missing_vars}"
                     )
                 # --- End Check ---
 
-
                 # Static variables
                 for var in VARS_STATIC:
-                    if var in ds: # Only update if it exists
+                    if var in ds:  # Only update if it exists
                         static_agg.update(var, ds[var].values)
 
                 # Dynamic variables
                 for var in VARS_DYNAMIC:
-                    if var in ds: # Only update if it exists
+                    if var in ds:  # Only update if it exists
                         dynamic_agg.update(var, ds[var].values)
 
                 # --- MODIFIED: Process targets and deltas WITH MASKING ---
-                
+
                 # 1. Load all target data
                 #    .to_array() creates shape (variable, time, nodes)
                 y_data = ds[VARS_TARGET].to_array().load().values
-                
+
                 # 2. **CRITICAL FIX 1:** Mask fill values
                 #    Identify non-physical Water Depth (e.g., WD < -1m)
                 #    VARS_TARGET = ["WD", "VX", "VY"], so WD is at index 0.
-                wd_data = y_data[0] # Shape (time, nodes)
-                
+                wd_data = y_data[0]  # Shape (time, nodes)
+
                 # Create a mask where water depth is non-physical
                 fill_mask = wd_data < -1.0
-                
+
                 # Apply this mask to all target variables
                 y_data_cleaned = y_data.copy()
-                y_data_cleaned[0, fill_mask] = np.nan # Mask WD
-                y_data_cleaned[1, fill_mask] = np.nan # Mask VX
-                y_data_cleaned[2, fill_mask] = np.nan # Mask VY
+                y_data_cleaned[0, fill_mask] = np.nan  # Mask WD
+                y_data_cleaned[1, fill_mask] = np.nan  # Mask VX
+                y_data_cleaned[2, fill_mask] = np.nan  # Mask VY
 
                 # 3. Update stats for the raw targets (y)
                 for i, var in enumerate(VARS_TARGET):
                     target_agg.update(var, y_data_cleaned[i])
-                    
+
                 # 4. **CRITICAL FIX 2:** Calculate deltas along the TIME axis
                 #    y_data_cleaned shape is (variable, time, nodes)
                 #    We must diff along axis=1 (the time dimension)
-                deltas = np.diff(y_data_cleaned, axis=1) # Shape (variable, time-1, nodes)
-                
+                deltas = np.diff(
+                    y_data_cleaned, axis=1
+                )  # Shape (variable, time-1, nodes)
+
                 # 5. Update stats for the deltas (y_delta)
                 for i, var in enumerate(VARS_TARGET):
-                    target_delta_agg.update(var, deltas[i]) # deltas[i] is (time-1, nodes)
-                
+                    target_delta_agg.update(
+                        var, deltas[i]
+                    )  # deltas[i] is (time-1, nodes)
+
                 # --- END MODIFIED ---
 
         except Exception as e:
@@ -234,13 +237,13 @@ if __name__ == "__main__":
         "--output",
         type=str,
         help="Path to save the output scaling_stats.yaml. If specified, runs the main script.",
-        required=True
+        required=True,
     )
     parser.add_argument(
         "--files",
         nargs="+",
         help="List of training .nc files (can use glob patterns like 'data/*.nc'). Required.",
-        required=True
+        required=True,
     )
 
     args = parser.parse_args()
@@ -248,11 +251,11 @@ if __name__ == "__main__":
     train_files = []
     for pattern in args.files:
         train_files.extend(glob.glob(pattern))
-    
+
     if not train_files:
         print("Error: No files found matching the patterns in --files.")
         sys.exit(1)
-    
+
     compute_and_save_adforce_stats(
         train_files=sorted(list(set(train_files))),
         output_path=args.output,

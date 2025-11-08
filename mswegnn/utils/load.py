@@ -2,13 +2,14 @@ import pickle
 import yaml
 import random
 
+
 def read_config(config_file):
-    '''
+    """
     Creates configuration variables from file
     ------
     config_file: .yaml file
         file containing dictionary with dataset creation information
-    '''
+    """
 
     with open(config_file) as f:
         cfg = yaml.safe_load(f)
@@ -16,8 +17,8 @@ def read_config(config_file):
     return cfg
 
 
-def load_dataset(dataset_name, size, seed=42, dataset_folder='database/datasets'):
-    '''
+def load_dataset(dataset_name, size, seed=42, dataset_folder="database/datasets"):
+    """
     Loads dataset, composed by a list of pytorch geometric data objects
     ------
     dataset_name: str
@@ -25,13 +26,13 @@ def load_dataset(dataset_name, size, seed=42, dataset_folder='database/datasets'
         options: 'grid' or 'mesh'
     size: int
         number of simulations selected
-    '''
+    """
     path = f"{dataset_folder}/{dataset_name}.pkl"
 
-    with open(path, 'rb') as file:
+    with open(path, "rb") as file:
         dataset = pickle.load(file)
 
-    if seed!=0:
+    if seed != 0:
         random.seed(seed)
         random.shuffle(dataset)
 

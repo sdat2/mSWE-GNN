@@ -3,10 +3,10 @@
 from typing import Union
 import torch
 import torch.nn as nn
+
 # from torch_geometric.data.batch import Batch
 from torch_geometric.data import Data, Batch  # <-- Import Data for doctest
 from mswegnn.models.adforce_gnn import GNN_new, MSGNN_new, MLP
-
 
 
 class MonolithicMLPModel(nn.Module):
@@ -98,9 +98,7 @@ class MonolithicMLPModel(nn.Module):
         super().__init__()
 
         if not isinstance(n_nodes, int) or n_nodes <= 0:
-            raise ValueError(
-                f"n_nodes must be a positive integer. Got: {n_nodes}"
-            )
+            raise ValueError(f"n_nodes must be a positive integer. Got: {n_nodes}")
 
         self.n_nodes = n_nodes
         self.in_features_per_node = num_node_features
@@ -162,7 +160,7 @@ class MonolithicMLPModel(nn.Module):
 
         # 1. Get batch size (B).
         # This works for both a single Data object (B=1) and a Batch (B > 1).
-        batch_size = getattr(batch, 'num_graphs', 1)
+        batch_size = getattr(batch, "num_graphs", 1)
 
         # 2. Validate input shape
         # Check that the total nodes in x matches B * N
@@ -176,9 +174,7 @@ class MonolithicMLPModel(nn.Module):
 
         # 3. Reshape and Flatten
         # [B * N, F_in] -> [B, N, F_in]
-        x_reshaped = x.view(
-            batch_size, self.n_nodes, self.in_features_per_node
-        )
+        x_reshaped = x.view(batch_size, self.n_nodes, self.in_features_per_node)
 
         # [B, N, F_in] -> [B, N * F_in]
         x_flat = x_reshaped.view(batch_size, -1)
@@ -272,7 +268,7 @@ class PointwiseMLPModel(nn.Module):
 
         # Remove keys that GNN/MSGNN models use but the standalone MLP doesn't
         # to avoid passing them to the MLP constructor.
-        mlp_kwargs.pop("model_type", None) # <-- THIS IS THE NEW LINE
+        mlp_kwargs.pop("model_type", None)  # <-- THIS IS THE NEW LINE
         mlp_kwargs.pop("previous_t", None)
         mlp_kwargs.pop("num_static_features", None)
         mlp_kwargs.pop("num_edge_features", None)
@@ -418,12 +414,14 @@ class GNNModelAdforce(nn.Module):
         self.num_dynamic_state_features = 3
 
         # Calculate expected feature counts
-        num_forcing_features = self.num_dynamic_forcing_features_per_step * self.previous_t
-        
+        num_forcing_features = (
+            self.num_dynamic_forcing_features_per_step * self.previous_t
+        )
+
         # This is the total number of "dynamic" features, i.e.,
         # everything *except* the static features.
         self.dynamic_vars = num_node_features - self.num_static_features
-        
+
         # Calculate what the expected dynamic vars should be
         expected_dynamic_vars = num_forcing_features + self.num_dynamic_state_features
 
@@ -504,11 +502,12 @@ class MSGNNModelAdforce(GNNModelAdforce):
         self.num_output_features = num_output_features
         self.num_static_features = num_static_features
 
-
         # --- NEW: Explicit feature calculation (copied from parent) ---
         self.num_dynamic_forcing_features_per_step = 3
         self.num_dynamic_state_features = 3
-        num_forcing_features = self.num_dynamic_forcing_features_per_step * self.previous_t
+        num_forcing_features = (
+            self.num_dynamic_forcing_features_per_step * self.previous_t
+        )
         self.dynamic_vars = num_node_features - self.num_static_features
         expected_dynamic_vars = num_forcing_features + self.num_dynamic_state_features
 
@@ -533,7 +532,7 @@ class MSGNNModelAdforce(GNNModelAdforce):
         self.in_features = num_node_features
 
         # --- CHANGED: Instantiate MSGNN_new ---
-        self.gnn = MSGNN_new(
+        self.gnn = MSGNN_Adforce(
             in_features=self.in_features,
             num_output_features=self.num_output_features,  # <-- Pass new arg
             **gnn_kwargs,
