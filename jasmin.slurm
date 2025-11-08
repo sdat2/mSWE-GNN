@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- SLURM Directives (Corrected for New Cluster) ---
-#SBATCH --job-name=gnn
+#SBATCH --job-name=GAT
 #SBATCH --account=no-project             # I'm not back on AI4ER yet
 #SBATCH --partition=standard              # Use the 'highres' partition
 #SBATCH --qos=high                    # Use the 'highres' QoS
@@ -32,7 +32,11 @@ micromamba activate mswegnn2
 
 # --- 3. Run Executable ---
 echo "Starting python script..."
-python -m adforce_main machine=jasmin 
+# python -m adforce_main machine=jasmin 
+
+# python -m adforce_main machine=jasmin model_params.model_type=MonolithicMLP
+
+python -m adforce_main machine=jasmin  model_params.model_type=GNN model_params.type_gnn=GAT
 # python -m adforce_main # .py #--data-path $DATA_LOCAL_PATH --output-dir $RESULTS_LOCAL_PATH
 echo "Script finished."
 

@@ -12,7 +12,7 @@ This script ties together all the new components:
 4.  Uses 'AdforceLazyDataset' to create train/val datasets
     (which now apply the scaling).
 5.  Calculates model dimensions based on the dataset's known structure.
-6.  Instantiates the correct model ('GNNModelAdforce', 'MSGNNModelAdforce', or 'PointwiseMLPModel').
+6.  Instantiates the correct model ('GNNModelAdforce', 'MonoliticMLPModel' or 'PointwiseMLPModel').
 7.  Uses the 'DataModule' and 'LightningTrainer' from adforce_train.py to run
     the training loop.
 8.  Includes ModelCheckpoint callback for saving best/last models.
@@ -38,9 +38,8 @@ from mswegnn.utils.load import (
 )  # <-- HYDRA: This is no longer used, but kept for reference
 from mswegnn.models.adforce_models import (
     GNNModelAdforce,
-    MSGNNModelAdforce,
     PointwiseMLPModel,
-    MonolithicMLPModel
+    MonolithicMLPModel,
 )
 from mswegnn.training.adforce_train import LightningTrainer, DataModule
 from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
@@ -245,15 +244,6 @@ def main(cfg: DictConfig):  # <-- HYDRA: Config injected
                 num_static_features=NUM_STATIC_NODE_FEATURES,
                 **model_cfg_dict,  # **model_cfg,
             )
-        elif model_type == "MSGNN":
-            model = MSGNNModelAdforce(
-                num_node_features=num_node_features,
-                num_edge_features=num_edge_features,
-                previous_t=p_t,
-                num_output_features=num_output_features,
-                num_static_features=NUM_STATIC_NODE_FEATURES,
-                **model_cfg_dict,  # **model_cfg,
-            )
         elif model_type == "MLP":
             model = PointwiseMLPModel(
                 num_node_features=num_node_features,
@@ -263,7 +253,9 @@ def main(cfg: DictConfig):  # <-- HYDRA: Config injected
         elif model_type == "MonolithicMLP":
             n_nodes_fixed = int(train_dataset.total_nodes)
             if n_nodes_fixed is None:
-                raise ValueError("Could not determine n_nodes from train_dataset.total_nodes")
+                raise ValueError(
+                    "Could not determine n_nodes from train_dataset.total_nodes"
+                )
             print(f"Found fixed n_nodes from dataset: {n_nodes_fixed}")
             model = MonolithicMLPModel(
                 n_nodes=n_nodes_fixed,  # <-- ADDED THIS

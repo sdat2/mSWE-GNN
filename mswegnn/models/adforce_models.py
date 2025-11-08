@@ -441,7 +441,8 @@ class GNNModelAdforce(nn.Module):
             )
 
         # This print is useful for debugging and for the doctest
-        if "hid_features" in gnn_kwargs:  # Avoid printing during doctest's error check
+        if "hid_features" in gnn_kwargs:
+            # Avoid printing during doctest's error check
             print(
                 f"GNNModelAdforce initialized: {self.num_static_features} static, "
                 f"{num_forcing_features} forcing (x{self.previous_t}), "

@@ -39,9 +39,6 @@ model_params:
   mlp_activation: 'prelu'
   type_gnn: 'GCN'
   gnn_activation: 'tanh'
-  num_scales: 3
-  learned_pooling: false
-  skip_connections: true
 
 trainer_options:
   batch_size: 2
