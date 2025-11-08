@@ -1,4 +1,5 @@
-from torch import nn, Sequential
+from torch import nn
+
 
 def make_mlp(
     input_size: int,
@@ -68,7 +69,7 @@ def make_mlp(
             device=device,
         )
 
-    mlp = Sequential(*layers)
+    mlp = nn.Sequential(*layers)
     # mlp.apply(init_weights)
 
     return mlp
