@@ -4,20 +4,19 @@ Main training script for the mSWE-GNN Adforce pipeline.
 This script ties together all the new components:
 1.  Loads the 'adforce_config.yaml' for all hyperparameters.
     --- HYDRA MODIFICATION ---
-    1.  Uses Hydra for configuration management via @hydra.main.
-    2.  Config is injected into the main() function as 'cfg'.
+    a.  Uses Hydra for configuration management via @hydra.main.
+    b.  Config is injected into the main() function as 'cfg'.
     ---
 2.  Finds and splits NetCDF files.
 3.  Calculates scaling statistics (mean/std) from the training files.
 4.  Uses 'AdforceLazyDataset' to create train/val datasets
     (which now apply the scaling).
 5.  Calculates model dimensions based on the dataset's known structure.
-6.  Instantiates the correct model ('GNNModel_new', 'MSGNNModel_new', or 'MLPModel_new').
+6.  Instantiates the correct model ('GNNModelAdforce', 'MSGNNModelAdforce', or 'PointwiseMLPModel').
 7.  Uses the 'DataModule' and 'LightningTrainer' from adforce_train.py to run
     the training loop.
 8.  Includes ModelCheckpoint callback for saving best/last models.
 9.  Allows resuming from a checkpoint specified in the config.
-    --- W&B MODIFICATION ---
 10. Integrates WandbLogger for experiment tracking.
 """
 
@@ -35,7 +34,7 @@ import wandb # <-- W&B: Added
 
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset, _load_static_data_from_ds
 from mswegnn.utils.load import read_config # <-- HYDRA: This is no longer used, but kept for reference
-from mswegnn.models.adforce_models import GNNModel_new, MSGNNModel_new, MLPModel_new
+from mswegnn.models.adforce_models import GNNModelAdforce, MSGNNModelAdforce, PointwiseMLPModel
 from mswegnn.training.adforce_train import LightningTrainer, DataModule
 from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
 
@@ -224,7 +223,7 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
         # --- MODIFIED: Added 'MLP' option ---
         # Pass all model_params, the constructors will pick what they need
         if model_type == "GNN":
-            model = GNNModel_new(
+            model = GNNModelAdforce(
                 num_node_features=num_node_features,
                 num_edge_features=num_edge_features,
                 previous_t=p_t,
@@ -233,7 +232,7 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
                 **model_cfg_dict, # **model_cfg,
             )
         elif model_type == "MSGNN":
-            model = MSGNNModel_new(
+            model = MSGNNModelAdforce(
                 num_node_features=num_node_features,
                 num_edge_features=num_edge_features,
                 previous_t=p_t,
@@ -242,7 +241,7 @@ def main(cfg: DictConfig): # <-- HYDRA: Config injected
                 **model_cfg_dict, # **model_cfg,
             )
         elif model_type == "MLP":
-            model = MLPModel_new(
+            model = PointwiseMLPModel(
                 num_node_features=num_node_features,
                 num_output_features=num_output_features,
                 **model_cfg_dict,  # **model_cfg,

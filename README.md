@@ -1,3 +1,26 @@
+# Simon's Branch of the mSWE-GNN Repository, for using the same models for storm surge emulation
+
+## Introduction
+
+We created additional training data through forcing the ADCIRC model with storm surge scenarios from the ADFORCE python package.
+
+## Environment setup
+
+Using `micromamba` and flexible yaml settings for a robust pure-cpu environment:
+
+```bash
+micromamba create -n mswegnn -f env.yml
+```
+
+## ADFORCE pipeline file structure
+
+- `adforce_main.py`: Main script to run the Adforce/SWE-GNN training pipeline.
+- `conf/`: Configuration files for hyperparameters and settings.
+- `archer2.slurm`: SLURM job script for running on the Archer2 supercomputer.
+- `mswegnn`: All the main code turned into a python package for easier management.
+- `jasmin.slurm`: SLURM job script for running on the JASMIN supercomputer.
+
+# Old README content:
 # mSWE-GNN (Repository for paper "Multi-scale hydraulic graph neural networks for flood modelling")
 (Version 1.1 - Nov. 28th, 2024)
 
@@ -31,7 +54,3 @@ Also contains the output of the hydrodynamic simulations (**raw_datasets**: for 
 ## Environment setup
 
 The required libraries are in requirements.txt.
-
-```bash
-micromamba create -n mswegnn -f env.yml
-```
