@@ -40,6 +40,11 @@ To run the training pipeline, use the following command:
 
 ```bash
 python -m adforce_main
+
+python -m adforce_main model_params.model_type=MonolithicMLP
+
+python -m adforce_main model_params.model_type=MLP
+
 ```
 
 # Old README content:

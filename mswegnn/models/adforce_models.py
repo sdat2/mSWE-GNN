@@ -112,6 +112,12 @@ class MonolithicMLPModel(nn.Module):
             activation = nn.ReLU()
         elif mlp_activation.lower() == "gelu":
             activation = nn.GELU()
+        elif mlp_activation.lower() == "tanh":
+            activation = nn.Tanh()
+        elif mlp_activation.lower() == "sigmoid":
+            activation = nn.Sigmoid()
+        elif mlp_activation.lower() == "prelu":
+            activation = nn.PReLU()
         else:
             raise ValueError(f"Unknown activation: {mlp_activation}")
 
