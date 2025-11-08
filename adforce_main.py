@@ -390,6 +390,7 @@ def main(cfg: DictConfig):  # <-- HYDRA: Config injected
         print("File handles (if any) will be closed by the DataModule's teardown hook.")
 
 
+
 if __name__ == "__main__":
     # python -m adforce_main
     main()

@@ -1,12 +1,13 @@
 # mswegnn/models/adforce_models.py
 # (This is a new file, replacing mswegnn/models/models.py)
-from typing import Union
+from typing import Union, Optional
 import torch
+from torch import Tensor
 import torch.nn as nn
 
 # from torch_geometric.data.batch import Batch
 from torch_geometric.data import Data, Batch  # <-- Import Data for doctest
-from mswegnn.models.adforce_gnn import GNN_Adforce, MSGNN_Adforce, MLP
+from mswegnn.models.adforce_gnn import GNN_Adforce, SWEGNN, MLP
 
 
 class MonolithicMLPModel(nn.Module):
@@ -479,87 +480,123 @@ class GNNModelAdforce(nn.Module):
         return out
 
 
-class MSGNNModelAdforce(GNNModelAdforce):
+class SWEGNN_Adforce(nn.Module):
     """
-    Refactored MSGNNModel wrapper.
+    Wrapper for the SWEGNN layer to match the Adforce pipeline.
 
-    Inherits the new dynamic feature calculations from GNNModelAdforce.
-    Passes `num_output_features` to the `MSGNN_Adforce` constructor.
-
-    NOTE: This class is too complex to doctest effectively, as it
-    requires a mock Batch object with `node_ptr`, `edge_ptr`, etc.
-    It is best tested with a dedicated pytest file.
+    This class replicates the encoder-processor-decoder structure
+    from the original gnn.py. It takes raw static and dynamic features,
+    encodes them, processes them with SWEGNN, and decodes them.
     """
-
     def __init__(
         self,
-        num_node_features,
-        num_edge_features,
-        previous_t,
-        num_output_features,
-        num_static_features=5,
-        **gnn_kwargs,
+        static_node_features: int,  # Raw static feature count
+        dynamic_node_features: int, # Raw dynamic feature count
+        edge_features: int,         # Raw edge feature count
+        hid_features: int,
+        num_output_features: int,
+        mlp_layers: int,
+        mlp_activation: str = "prelu",
+        gnn_activation: str = "tanh",
+        type_gnn: str = "SWEGNN",     # Catches this arg
+        **gnn_kwargs,                 # For K, normalize, edge_mlp etc.
     ):
+        super().__init__()
+        
+        self.hid_features = hid_features
 
-        # Call GNNModelAdforce's __init__ but *without* instantiating self.gnn
-        super(GNNModelAdforce, self).__init__()  # Use super(GNNModelAdforce, ...)
-
-        self.previous_t = previous_t
-        self.num_output_features = num_output_features
-        self.num_static_features = num_static_features
-
-        # --- NEW: Explicit feature calculation (copied from parent) ---
-        self.num_dynamic_forcing_features_per_step = 3
-        self.num_dynamic_state_features = 3
-        num_forcing_features = (
-            self.num_dynamic_forcing_features_per_step * self.previous_t
+        # 1. Encoders (mirroring gnn.py)
+        # We use the existing MLP class from adforce_gnn.py
+        self.static_node_encoder = MLP(
+            in_features=static_node_features,
+            out_features=hid_features,
+            hid_features=hid_features,
+            mlp_layers=mlp_layers,
+            activation=mlp_activation,
         )
-        self.dynamic_vars = num_node_features - self.num_static_features
-        expected_dynamic_vars = num_forcing_features + self.num_dynamic_state_features
-
-        if self.dynamic_vars != expected_dynamic_vars:
-            raise ValueError(
-                f"MSGNN Feature mismatch! Total features {num_node_features} - "
-                f"static features {self.num_static_features} = {self.dynamic_vars} dynamic features. "
-                f"But expected {expected_dynamic_vars} (forcing={num_forcing_features} + state={self.num_dynamic_state_features}). "
+        self.dynamic_node_encoder = MLP(
+            in_features=dynamic_node_features,
+            out_features=hid_features,
+            hid_features=hid_features,
+            mlp_layers=mlp_layers,
+            activation=mlp_activation,
+        )
+        
+        # 2. Optional Edge Encoder (mirroring gnn.py)
+        self.edge_mlp_flag = gnn_kwargs.get("edge_mlp", True)
+        self.num_edge_features_for_gnn = edge_features
+        
+        if self.edge_mlp_flag:
+            self.num_edge_features_for_gnn = hid_features
+            self.edge_encoder = MLP(
+                in_features=edge_features,
+                out_features=hid_features,
+                hid_features=hid_features,
+                mlp_layers=mlp_layers,
+                activation=mlp_activation,
             )
 
-        if (
-            "hid_features" in gnn_kwargs
-        ):  # Avoid printing during potential doctest error checks
-            print(
-                f"MSGNNModelAdforce initialized: {self.num_static_features} static, "
-                f"{num_forcing_features} dynamic input features (x{self.previous_t} steps), "
-                f"{self.num_dynamic_state_features} state features."
-                f"Total input: {num_node_features}. Output: {self.num_output_features}."
-            )
-        # --- END NEW ---
-
-        self.in_features = num_node_features
-
-        # --- CHANGED: Instantiate MSGNN_Adforce ---
-        self.gnn = MSGNN_Adforce(
-            in_features=self.in_features,
-            num_output_features=self.num_output_features,  # <-- Pass new arg
-            **gnn_kwargs,
+        # 3. GNN Processor (The SWEGNN layer itself)
+        # It expects hidden_size for static/dynamic inputs.
+        # We also pass mlp_layers and activation for its *internal* edge MLP.
+        self.gnn = SWEGNN(
+            static_node_features=hid_features,
+            dynamic_node_features=hid_features,
+            edge_features=self.num_edge_features_for_gnn,
+            mlp_layers=mlp_layers,
+            activation=mlp_activation,
+            **gnn_kwargs # Passes K, normalize, with_gradient, etc.
         )
 
-    def forward(self, batch):
-        # This forward is identical to the parent, but is needed
-        # to ensure the correct self.gnn (MSGNN_Adforce) is called.
-        x = batch.x
-        static_features = x[:, : self.num_static_features]
-        dynamic_features = x[:, self.num_static_features :]
-        edge_index = batch.edge_index
-        edge_attr = batch.edge_attr
-
-        # This will call the MSGNN_Adforce forward method
-        out = self.gnn(
-            static_features, dynamic_features, edge_index, edge_attr, batch=batch
+        # 4. GNN Activation (mirroring gnn.py)
+        if gnn_activation == "relu":
+            self.gnn_activation = nn.ReLU()
+        elif gnn_activation == "prelu":
+            self.gnn_activation = nn.PReLU()
+        elif gnn_activation == "tanh":
+            self.gnn_activation = nn.Tanh()
+        else:
+            self.gnn_activation = nn.Identity() # No activation
+            
+        # 5. Decoder (mirroring gnn.py)
+        self.decoder = MLP(
+            in_features=hid_features,
+            out_features=num_output_features,
+            hid_features=hid_features,
+            mlp_layers=mlp_layers,
+            activation=mlp_activation,
         )
-
-        out = out.reshape(-1, self.num_output_features)
-        return out
+    
+    def forward(
+        self, 
+        static_features: Tensor, 
+        dynamic_features: Tensor, 
+        edge_index: Tensor, 
+        edge_attr: Optional[Tensor], 
+        **kwargs # Catches the 'batch' argument
+    ) -> Tensor:
+        
+        # 1. Encode Nodes
+        x_s = self.static_node_encoder(static_features)
+        x_d = self.dynamic_node_encoder(dynamic_features)
+        
+        # 2. Encode Edges
+        e_attr_for_gnn = edge_attr
+        if self.edge_mlp_flag and edge_attr is not None:
+            e_attr_for_gnn = self.edge_encoder(edge_attr)
+        
+        # 3. Process
+        # SWEGNN.forward needs (static, dynamic, edge_index, edge_features)
+        x = self.gnn(
+            x_s, x_d, edge_index, edge_features=e_attr_for_gnn
+        )
+        
+        # 4. GNN Activation
+        x = self.gnn_activation(x)
+            
+        # 5. Decode
+        x = self.decoder(x)
+        return x
 
 
 if __name__ == "__main__":
