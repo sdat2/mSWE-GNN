@@ -1,11 +1,12 @@
 # mswegnn/models/adforce_models.py
 # (This is a new file, replacing mswegnn/models/models.py)
-
+from typing import Union
 import torch
 import torch.nn as nn
-from torch_geometric.data.batch import Batch
-from torch_geometric.data import Data  # <-- Import Data for doctest
+# from torch_geometric.data.batch import Batch
+from torch_geometric.data import Data, Batch  # <-- Import Data for doctest
 from mswegnn.models.adforce_gnn import GNN_new, MSGNN_new, MLP
+
 
 
 class MonolithicMLPModel(nn.Module):
@@ -86,12 +87,12 @@ class MonolithicMLPModel(nn.Module):
 
     def __init__(
         self,
-        n_nodes,
-        num_node_features,
-        num_output_features,
-        hid_features=128,
-        mlp_layers=3,
-        mlp_activation="relu",
+        n_nodes: int,
+        num_node_features: int,
+        num_output_features: int,
+        hid_features: int,
+        mlp_layers: int,
+        mlp_activation: str,
         **kwargs,  # Catch unused args
     ):
         super().__init__()
@@ -142,7 +143,7 @@ class MonolithicMLPModel(nn.Module):
             f"  Hidden Dim: {hid_features} | Layers: {mlp_layers}"
         )
 
-    def forward(self, batch):
+    def forward(self, batch: Union[Data, Batch]) -> torch.Tensor:
         """
         Forward pass.
         Assumes batch contains one or more graphs, each with *exactly*
@@ -161,7 +162,7 @@ class MonolithicMLPModel(nn.Module):
 
         # 1. Get batch size (B).
         # This works for both a single Data object (B=1) and a Batch (B > 1).
-        batch_size = batch.num_graphs
+        batch_size = getattr(batch, 'num_graphs', 1)
 
         # 2. Validate input shape
         # Check that the total nodes in x matches B * N
