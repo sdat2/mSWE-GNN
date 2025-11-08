@@ -12,7 +12,7 @@ This script ties together all the new components:
 4.  Uses 'AdforceLazyDataset' to create train/val datasets
     (which now apply the scaling).
 5.  Calculates model dimensions based on the dataset's known structure.
-6.  Instantiates the correct model ('GNNModelAdforce', 'MSGNNModelAdforce', or 'PointwiseMLPModel').
+6.  Instantiates the correct model ('GNNModelAdforce', 'MonoliticMLPModel' or 'PointwiseMLPModel').
 7.  Uses the 'DataModule' and 'LightningTrainer' from adforce_train.py to run
     the training loop.
 8.  Includes ModelCheckpoint callback for saving best/last models.
@@ -38,7 +38,6 @@ from mswegnn.utils.load import (
 )  # <-- HYDRA: This is no longer used, but kept for reference
 from mswegnn.models.adforce_models import (
     GNNModelAdforce,
-    MSGNNModelAdforce,
     PointwiseMLPModel,
     MonolithicMLPModel
 )
@@ -238,15 +237,6 @@ def main(cfg: DictConfig):  # <-- HYDRA: Config injected
         # Pass all model_params, the constructors will pick what they need
         if model_type == "GNN":
             model = GNNModelAdforce(
-                num_node_features=num_node_features,
-                num_edge_features=num_edge_features,
-                previous_t=p_t,
-                num_output_features=num_output_features,
-                num_static_features=NUM_STATIC_NODE_FEATURES,
-                **model_cfg_dict,  # **model_cfg,
-            )
-        elif model_type == "MSGNN":
-            model = MSGNNModelAdforce(
                 num_node_features=num_node_features,
                 num_edge_features=num_edge_features,
                 previous_t=p_t,

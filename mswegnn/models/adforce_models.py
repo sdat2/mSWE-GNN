@@ -440,7 +440,8 @@ class GNNModelAdforce(nn.Module):
             )
 
         # This print is useful for debugging and for the doctest
-        if "hid_features" in gnn_kwargs:  # Avoid printing during doctest's error check
+        if "hid_features" in gnn_kwargs:
+            # Avoid printing during doctest's error check
             print(
                 f"GNNModelAdforce initialized: {self.num_static_features} static, "
                 f"{num_forcing_features} forcing (x{self.previous_t}), "
@@ -476,89 +477,6 @@ class GNNModelAdforce(nn.Module):
 
         out = out.reshape(-1, self.num_output_features)
 
-        return out
-
-
-class MSGNNModelAdforce(GNNModelAdforce):
-    """
-    Refactored MSGNNModel wrapper.
-
-    Inherits the new dynamic feature calculations from GNNModelAdforce.
-    Passes `num_output_features` to the `MSGNN_Adforce` constructor.
-
-    NOTE: This class is too complex to doctest effectively, as it
-    requires a mock Batch object with `node_ptr`, `edge_ptr`, etc.
-    It is best tested with a dedicated pytest file.
-    """
-
-    def __init__(
-        self,
-        num_node_features,
-        num_edge_features,
-        previous_t,
-        num_output_features,
-        num_static_features=5,
-        **gnn_kwargs,
-    ):
-
-        # Call GNNModelAdforce's __init__ but *without* instantiating self.gnn
-        super(GNNModelAdforce, self).__init__()  # Use super(GNNModelAdforce, ...)
-
-        self.previous_t = previous_t
-        self.num_output_features = num_output_features
-        self.num_static_features = num_static_features
-
-        # --- NEW: Explicit feature calculation (copied from parent) ---
-        self.num_dynamic_forcing_features_per_step = 3
-        self.num_dynamic_state_features = 3
-        num_forcing_features = (
-            self.num_dynamic_forcing_features_per_step * self.previous_t
-        )
-        self.dynamic_vars = num_node_features - self.num_static_features
-        expected_dynamic_vars = num_forcing_features + self.num_dynamic_state_features
-
-        if self.dynamic_vars != expected_dynamic_vars:
-            raise ValueError(
-                f"MSGNN Feature mismatch! Total features {num_node_features} - "
-                f"static features {self.num_static_features} = {self.dynamic_vars} dynamic features. "
-                f"But expected {expected_dynamic_vars} (forcing={num_forcing_features} + state={self.num_dynamic_state_features}). "
-            )
-
-        if (
-            "hid_features" in gnn_kwargs
-        ):  # Avoid printing during potential doctest error checks
-            print(
-                f"MSGNNModelAdforce initialized: {self.num_static_features} static, "
-                f"{num_forcing_features} dynamic input features (x{self.previous_t} steps), "
-                f"{self.num_dynamic_state_features} state features."
-                f"Total input: {num_node_features}. Output: {self.num_output_features}."
-            )
-        # --- END NEW ---
-
-        self.in_features = num_node_features
-
-        # --- CHANGED: Instantiate MSGNN_Adforce ---
-        self.gnn = MSGNN_Adforce(
-            in_features=self.in_features,
-            num_output_features=self.num_output_features,  # <-- Pass new arg
-            **gnn_kwargs,
-        )
-
-    def forward(self, batch):
-        # This forward is identical to the parent, but is needed
-        # to ensure the correct self.gnn (MSGNN_Adforce) is called.
-        x = batch.x
-        static_features = x[:, : self.num_static_features]
-        dynamic_features = x[:, self.num_static_features :]
-        edge_index = batch.edge_index
-        edge_attr = batch.edge_attr
-
-        # This will call the MSGNN_Adforce forward method
-        out = self.gnn(
-            static_features, dynamic_features, edge_index, edge_attr, batch=batch
-        )
-
-        out = out.reshape(-1, self.num_output_features)
         return out
 
 
