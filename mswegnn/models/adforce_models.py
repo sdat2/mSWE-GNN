@@ -6,7 +6,7 @@ import torch.nn as nn
 
 # from torch_geometric.data.batch import Batch
 from torch_geometric.data import Data, Batch  # <-- Import Data for doctest
-from mswegnn.models.adforce_gnn import GNN_new, MSGNN_new, MLP
+from mswegnn.models.adforce_gnn import GNN_Adforce, MSGNN_Adforce, MLP
 
 
 class MonolithicMLPModel(nn.Module):
@@ -327,7 +327,7 @@ class GNNModelAdforce(nn.Module):
         num_output_features (int): Number of output features to predict.
         num_static_features (int, optional): Number of static features at the
             start of the `x` tensor. Defaults to 5.
-        **gnn_kwargs: Additional keyword arguments passed to the GNN_new constructor.
+        **gnn_kwargs: Additional keyword arguments passed to the GNN_Adforce constructor.
 
     Doctest:
     >>> import torch
@@ -445,7 +445,7 @@ class GNNModelAdforce(nn.Module):
 
         self.in_features = num_node_features
 
-        self.gnn = GNN_new(
+        self.gnn = GNN_Adforce(
             in_features=self.in_features,
             num_output_features=self.num_output_features,  # <-- Pass new arg
             **gnn_kwargs,
@@ -453,7 +453,7 @@ class GNNModelAdforce(nn.Module):
 
     def forward(self, batch):
         """
-        The GNN_new class's forward just concatenates static and dynamic,
+        The GNN_Adforce class's forward just concatenates static and dynamic,
         so we feed all features (forcing + state) as 'dynamic_features'.
         """
         x = batch.x
@@ -478,7 +478,7 @@ class MSGNNModelAdforce(GNNModelAdforce):
     Refactored MSGNNModel wrapper.
 
     Inherits the new dynamic feature calculations from GNNModelAdforce.
-    Passes `num_output_features` to the `MSGNN_new` constructor.
+    Passes `num_output_features` to the `MSGNN_Adforce` constructor.
 
     NOTE: This class is too complex to doctest effectively, as it
     requires a mock Batch object with `node_ptr`, `edge_ptr`, etc.
@@ -531,7 +531,7 @@ class MSGNNModelAdforce(GNNModelAdforce):
 
         self.in_features = num_node_features
 
-        # --- CHANGED: Instantiate MSGNN_new ---
+        # --- CHANGED: Instantiate MSGNN_Adforce ---
         self.gnn = MSGNN_Adforce(
             in_features=self.in_features,
             num_output_features=self.num_output_features,  # <-- Pass new arg
@@ -540,14 +540,14 @@ class MSGNNModelAdforce(GNNModelAdforce):
 
     def forward(self, batch):
         # This forward is identical to the parent, but is needed
-        # to ensure the correct self.gnn (MSGNN_new) is called.
+        # to ensure the correct self.gnn (MSGNN_Adforce) is called.
         x = batch.x
         static_features = x[:, : self.num_static_features]
         dynamic_features = x[:, self.num_static_features :]
         edge_index = batch.edge_index
         edge_attr = batch.edge_attr
 
-        # This will call the MSGNN_new forward method
+        # This will call the MSGNN_Adforce forward method
         out = self.gnn(
             static_features, dynamic_features, edge_index, edge_attr, batch=batch
         )
