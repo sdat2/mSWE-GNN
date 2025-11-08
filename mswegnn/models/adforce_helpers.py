@@ -10,7 +10,7 @@ def make_mlp(
     activation: str = "relu",
     dropout: float = 0,
     layer_norm: bool = False,
-    device: str ="cpu",
+    device: str = "cpu",
 ):
     """Builds an MLP. A factory function for nn.Sequential MLPs.
 

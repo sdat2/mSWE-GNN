@@ -39,7 +39,7 @@ from mswegnn.utils.load import (
 from mswegnn.models.adforce_models import (
     GNNModelAdforce,
     PointwiseMLPModel,
-    MonolithicMLPModel
+    MonolithicMLPModel,
 )
 from mswegnn.training.adforce_train import LightningTrainer, DataModule
 from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
@@ -253,7 +253,9 @@ def main(cfg: DictConfig):  # <-- HYDRA: Config injected
         elif model_type == "MonolithicMLP":
             n_nodes_fixed = int(train_dataset.total_nodes)
             if n_nodes_fixed is None:
-                raise ValueError("Could not determine n_nodes from train_dataset.total_nodes")
+                raise ValueError(
+                    "Could not determine n_nodes from train_dataset.total_nodes"
+                )
             print(f"Found fixed n_nodes from dataset: {n_nodes_fixed}")
             model = MonolithicMLPModel(
                 n_nodes=n_nodes_fixed,  # <-- ADDED THIS

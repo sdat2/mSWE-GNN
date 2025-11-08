@@ -6,7 +6,7 @@ import torch.nn as nn
 
 # from torch_geometric.data.batch import Batch
 from torch_geometric.data import Data, Batch  # <-- Import Data for doctest
-from mswegnn.models.adforce_gnn import GNN_Adforce, MSGNN_Adforce, MLP
+from mswegnn.models.adforce_gnn import GNN_Adforce, MSGNN_Adforce, MLP, SWEGNN
 
 
 class MonolithicMLPModel(nn.Module):
