@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- SLURM Directives (CPU Job) ---
-#SBATCH --job-name=MonolithicMLP_JASMIN
+#SBATCH --job-name=GNN_GCN
 #SBATCH --account=no-project             
 #SBATCH --partition=standard              
 #SBATCH --qos=high                    
@@ -43,8 +43,8 @@ python -m adforce_main \
     machine=jasmin \
     machine.data_dir=$DATA_LOCAL_PATH \
     machine.output_dir=$RESULTS_LOCAL_PATH \
-    model_params.model_type=MonolithicMLP \
-    model_params.type_gnn=GAT \
+    model_params.model_type=GNN \
+    model_params.type_gnn=GCN \
     model_params.hid_features=64 \
     model_params.K=3 \
     model_params.normalize=True \
