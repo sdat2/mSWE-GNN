@@ -10,7 +10,8 @@ def make_mlp(
     activation: str = "relu",
     dropout: float = 0,
     layer_norm: bool = False,
-    device: str = "cpu",
+    # device: str = "cpu",
+    **kwargs,
 ):
     """Builds an MLP. A factory function for nn.Sequential MLPs.
 
@@ -32,13 +33,19 @@ def make_mlp(
     """
     layers = []
     if n_layers == 1:
-        layers.append(nn.Linear(input_size, output_size, bias=bias, device=device))
+        layers.append(
+            nn.Linear(
+                input_size,
+                output_size,
+                bias=bias,  # device=device
+            )
+        )
         layers = layers + add_norm_dropout_activation(
             output_size,
             layer_norm=layer_norm,
             dropout=dropout,
             activation=activation,
-            device=device,
+            # device=device,
         )
     else:
         layers.append(nn.Linear(input_size, hidden_size, bias=bias, device=device))
@@ -47,26 +54,38 @@ def make_mlp(
             layer_norm=layer_norm,
             dropout=dropout,
             activation=activation,
-            device=device,
+            # device=device,
         )
 
         for layer in range(n_layers - 2):
-            layers.append(nn.Linear(hidden_size, hidden_size, bias=bias, device=device))
+            layers.append(
+                nn.Linear(
+                    hidden_size,
+                    hidden_size,
+                    bias=bias,  #  device=device
+                )
+            )
             layers = layers + add_norm_dropout_activation(
                 hidden_size,
                 layer_norm=layer_norm,
                 dropout=dropout,
                 activation=activation,
-                device=device,
+                # device=device,
             )
 
-        layers.append(nn.Linear(hidden_size, output_size, bias=bias, device=device))
+        layers.append(
+            nn.Linear(
+                hidden_size,
+                output_size,
+                bias=bias,  # device=device
+            )
+        )
         layers = layers + add_norm_dropout_activation(
             output_size,
             layer_norm=layer_norm,
             dropout=dropout,
             activation=activation,
-            device=device,
+            # device=device,
         )
 
     mlp = nn.Sequential(*layers)
@@ -91,7 +110,7 @@ def activation_functions(activation_name, device="cpu"):
     if activation_name == "relu":
         return nn.ReLU()
     elif activation_name == "prelu":
-        return nn.PReLU(device=device)
+        return nn.PReLU()  # device=device
     elif activation_name == "leakyrelu":
         return nn.LeakyReLU(0.1)
     elif activation_name == "elu":

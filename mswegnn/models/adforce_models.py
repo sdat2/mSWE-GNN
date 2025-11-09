@@ -321,6 +321,7 @@ class PointwiseMLPModel(nn.Module):
 # In mswegnn/models/models.py
 # (You can add this right after the old BaseFloodModel)
 
+
 class AdforceBaseModel(nn.Module):
     """
     Base class for Adforce models.
@@ -328,7 +329,7 @@ class AdforceBaseModel(nn.Module):
     This class handles residual connections and output masking specifically
     for the Adforce data pipeline, which uses 3 output variables
     (WD, VX, VY).
-    
+
     Args:
         previous_t (int): Number of previous time steps (for residual init).
         num_output_vars (int): Number of output variables. Must be 3 for Adforce.
@@ -340,28 +341,30 @@ class AdforceBaseModel(nn.Module):
     def __init__(
         self,
         previous_t=1,
-        num_output_vars=3, # <-- NEW: Parameterized output
+        num_output_vars=3,  # <-- NEW: Parameterized output
         learned_residuals=None,
         seed=42,
         residuals_base=2,
         residual_init="exp",
         device="cpu",
-        **kwargs, # Catches unused args like 'with_WL'
+        **kwargs,  # Catches unused args like 'with_WL'
     ):
         super().__init__()
         torch.manual_seed(seed)
         self.previous_t = previous_t
         self.learned_residuals = learned_residuals
         self.device = device
-        
+
         # --- FIXED for Adforce ---
         self.num_output_vars = num_output_vars
         self.out_dim = self.num_output_vars
-        
+
         if self.num_output_vars != 3:
-            raise ValueError(f"AdforceBaseModel is designed for 3 output variables (WD, VX, VY), but got {num_output_vars}")
+            raise ValueError(
+                f"AdforceBaseModel is designed for 3 output variables (WD, VX, VY), but got {num_output_vars}"
+            )
         # ---
-        
+
         # NOTE: The Adforce data structure (static, forcing, state)
         # is only compatible with `learned_residuals=False`.
         # The other modes read state history from `x` which is not there.
@@ -374,33 +377,35 @@ class AdforceBaseModel(nn.Module):
     def _add_residual_connection(self, x_input):
         """
         Add residual connection from the *input state* to the *output delta*.
-        
+
         Args:
             x_input (Tensor): The *original* model input `x`, which has the
                               shape [N, static + forcing + state(3)].
         """
-        residual_output = torch.zeros(x_input.shape[0], self.out_dim, device=self.device)
+        residual_output = torch.zeros(
+            x_input.shape[0], self.out_dim, # device=self.device
+        )
 
         if self.learned_residuals == False:
             # `x_input` is [static, forcing, state]
             # We want the last `self.out_dim` (3) features, which is the input state
             x0_state = x_input[:, -self.out_dim :]
             residual_output = x0_state
-        
+
         return residual_output
 
     def _mask_small_WD(self, x_output, epsilon=0.001):
         """
         Mask water depth below a threshold and velocities where water is 0.
-        
+
         Args:
             x_output (Tensor): The model output *after* the residual
                                connection. Shape [N, 3] (WD, VX, VY).
         """
-        
+
         # --- FIXED for Adforce (WD, VX, VY) ---
-        wd_col = x_output[:, 0:1] # Shape [N, 1]
-        v_cols = x_output[:, 1:3] # Shape [N, 2]
+        wd_col = x_output[:, 0:1]  # Shape [N, 1]
+        v_cols = x_output[:, 1:3]  # Shape [N, 2]
 
         # Create mask based on water depth
         # 1.0 where water > epsilon, 0.0 otherwise
@@ -408,10 +413,9 @@ class AdforceBaseModel(nn.Module):
 
         # Apply mask
         wd_masked = wd_col * mask
-        v_masked = v_cols * mask # Zeros out velocity where wd is zero
+        v_masked = v_cols * mask  # Zeros out velocity where wd is zero
 
         return torch.cat((wd_masked, v_masked), dim=1)
-
 
 
 # In mswegnn/models/adforce_models.py
@@ -433,7 +437,7 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
     Its forward() method is the single entry point that splits the
     PyG 'batch' object, passes the tensors down to the internal GNN,
     and then applies the residual connection and masking.
-    
+
     Args:
         num_node_features (int): Total number of features in the input `x` tensor.
         num_edge_features (int): Total number of features in the `edge_attr` tensor.
@@ -515,23 +519,29 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
         num_node_features,
         num_edge_features,
         previous_t,
-        num_output_features, # This is 3
+        num_output_features,  # This is 3
         num_static_features=5,
         **kwargs,  # Catches all other config args
     ):
-        
+
         # --- NEW: Split kwargs for AdforceBaseModel ---
         base_model_kwargs = {}
         # List of args for AdforceBaseModel
-        base_keys = ['learned_residuals', 'seed', 'residuals_base', 'residual_init', 'device']
+        base_keys = [
+            "learned_residuals",
+            "seed",
+            "residuals_base",
+            "residual_init",
+            "device",
+        ]
         for k in list(kwargs.keys()):
             if k in base_keys:
                 base_model_kwargs[k] = kwargs.pop(k)
-        
+
         # Pass required args to the new base model
-        base_model_kwargs['previous_t'] = previous_t
-        base_model_kwargs['num_output_vars'] = num_output_features
-        
+        base_model_kwargs["previous_t"] = previous_t
+        base_model_kwargs["num_output_vars"] = num_output_features
+
         # Call the parent __init__ with its args
         super().__init__(**base_model_kwargs)
         # --- END NEW ---
@@ -565,8 +575,8 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
                 f"{self.num_dynamic_state_features} state features. "
                 f"Total input: {num_node_features}. Output: {self.num_output_features}."
             )
-        
-        self.in_features = num_node_features # Total features
+
+        self.in_features = num_node_features  # Total features
 
         # --- GNN Switch Logic (unchanged) ---
         # All remaining kwargs are for the GNN
@@ -581,7 +591,7 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
                 in_features_dynamic=self.dynamic_vars,
                 in_features_edge=num_edge_features,
                 num_output_features=self.num_output_features,
-                **kwargs  # Pass all remaining GNN args
+                **kwargs,  # Pass all remaining GNN args
             )
         else:
             # Build the standard GNN "Inner Box"
@@ -590,7 +600,7 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
                 in_features=self.in_features,
                 num_output_features=self.num_output_features,
                 type_gnn=self.type_GNN,
-                **kwargs, # Pass all remaining GNN args
+                **kwargs,  # Pass all remaining GNN args
             )
 
     def forward(self, batch):
@@ -601,7 +611,7 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
         """
         x = batch.x
         x0_input = x.clone()  # <-- Save original input for residual
-        
+
         static_features = x[:, : self.num_static_features]
         dynamic_features = x[:, self.num_static_features :]
 
@@ -615,17 +625,17 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
         )
 
         # --- CORRECTED LOGIC from AdforceBaseModel ---
-        
+
         # 1. Add residual connection
         #    self._add_residual_connection(x0_input) gets the input state [N, 3]
         #    out = delta + state(t) = state(t+1)
         out = out_delta + self._add_residual_connection(x0_input)
-        
-        # 2. Apply activation 
+
+        # 2. Apply activation
         #    (This matches the old GNN.forward() logic)
         out = torch.relu(out)
-        
-        # 3. Apply masking 
+
+        # 3. Apply masking
         #    This uses the new, correct 3-variable masking logic
         out = self._mask_small_WD(out, epsilon=0.0001)
         # --- END ---
@@ -633,6 +643,7 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
         # Reshape to be safe (though it should already be correct)
         out = out.reshape(-1, self.num_output_features)
         return out
+
 
 class SWEGNN_Adforce(nn.Module):
     """
@@ -705,6 +716,7 @@ class SWEGNN_Adforce(nn.Module):
     >>> print(f"Output shape: {out.shape}")
     Output shape: torch.Size([10, 3])
     """
+
     def __init__(
         self,
         in_features_static: int,
@@ -715,11 +727,11 @@ class SWEGNN_Adforce(nn.Module):
         mlp_layers: int,
         mlp_activation: str = "prelu",
         gnn_activation: str = "tanh",
-        type_gnn: str = "SWEGNN",     # Catches 'type_gnn' from config
-        **gnn_kwargs,                 # 'model_type' will land in here
+        type_gnn: str = "SWEGNN",  # Catches 'type_gnn' from config
+        **gnn_kwargs,  # 'model_type' will land in here
     ):
         super().__init__()
-        
+
         self.hid_features = hid_features
 
         # 1. Encoders
@@ -737,11 +749,11 @@ class SWEGNN_Adforce(nn.Module):
             mlp_layers=mlp_layers,
             activation=mlp_activation,
         )
-        
+
         # 2. Optional Edge Encoder
         self.edge_mlp_flag = gnn_kwargs.get("edge_mlp", True)
         self.num_edge_features_for_gnn = in_features_edge
-        
+
         if self.edge_mlp_flag:
             self.num_edge_features_for_gnn = hid_features
             self.edge_encoder = MLP(
@@ -755,8 +767,8 @@ class SWEGNN_Adforce(nn.Module):
         # --- FIX: Remove keys from kwargs that SWEGNN does not need ---
         # 'model_type' is used by adforce_main.py for logic, not the model.
         # 'type_gnn' is used by GNNModelAdforce, but not SWEGNN_Adforce.
-        gnn_kwargs.pop('model_type', None)
-        gnn_kwargs.pop('type_gnn', None) # Pop this too just in case
+        gnn_kwargs.pop("model_type", None)
+        gnn_kwargs.pop("type_gnn", None)  # Pop this too just in case
         # --- END FIX ---
 
         # 3. GNN Processor (The SWEGNN layer itself)
@@ -766,7 +778,7 @@ class SWEGNN_Adforce(nn.Module):
             edge_features=self.num_edge_features_for_gnn,
             mlp_layers=mlp_layers,
             activation=mlp_activation,
-            **gnn_kwargs # Now 'model_type' is removed
+            **gnn_kwargs,  # Now 'model_type' is removed
         )
 
         # 4. GNN Activation
@@ -777,8 +789,8 @@ class SWEGNN_Adforce(nn.Module):
         elif gnn_activation == "tanh":
             self.gnn_activation = nn.Tanh()
         else:
-            self.gnn_activation = nn.Identity() # No activation
-            
+            self.gnn_activation = nn.Identity()  # No activation
+
         # 5. Decoder
         self.decoder = MLP(
             in_features=hid_features,
@@ -787,33 +799,31 @@ class SWEGNN_Adforce(nn.Module):
             mlp_layers=mlp_layers,
             activation=mlp_activation,
         )
-    
+
     def forward(
-        self, 
-        static_features: Tensor, 
-        dynamic_features: Tensor, 
-        edge_index: Tensor, 
-        edge_attr: Optional[Tensor], 
-        **kwargs # Catches the 'batch' argument
+        self,
+        static_features: Tensor,
+        dynamic_features: Tensor,
+        edge_index: Tensor,
+        edge_attr: Optional[Tensor],
+        **kwargs,  # Catches the 'batch' argument
     ) -> Tensor:
-        
+
         # 1. Encode Nodes
         x_s = self.static_node_encoder(static_features)
         x_d = self.dynamic_node_encoder(dynamic_features)
-        
+
         # 2. Encode Edges
         e_attr_for_gnn = edge_attr
         if self.edge_mlp_flag and edge_attr is not None:
             e_attr_for_gnn = self.edge_encoder(edge_attr)
-        
+
         # 3. Process
-        x = self.gnn(
-            x_s, x_d, edge_index, edge_features=e_attr_for_gnn
-        )
-        
+        x = self.gnn(x_s, x_d, edge_index, edge_features=e_attr_for_gnn)
+
         # 4. GNN Activation
         x = self.gnn_activation(x)
-            
+
         # 5. Decode
         x = self.decoder(x)
         return x

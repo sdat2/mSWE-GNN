@@ -356,7 +356,7 @@ class SWEGNN(nn.Module):
         with_filter_matrix: bool = True,
         with_gradient: bool = True,
         upwind_mode: bool = False,
-        device: str = "cpu",
+        # device: str = "cpu",
         **mlp_kwargs,
     ):
         """
@@ -403,13 +403,13 @@ class SWEGNN(nn.Module):
         self.upwind_mode = upwind_mode
 
         # --- FIX 1: Rename 'mlp_layers' to 'n_layers' for make_mlp ---
-        n_layers = mlp_kwargs.pop('mlp_layers', 2)
-        mlp_kwargs['n_layers'] = n_layers
-        
+        n_layers = mlp_kwargs.pop("mlp_layers", 2)
+        mlp_kwargs["n_layers"] = n_layers
+
         # --- FIX 2: Remove 'edge_mlp' from kwargs ---
         # This argument is used by the *wrapper* (SWEGNN_Adforce),
         # not by the internal `make_mlp` function.
-        mlp_kwargs.pop('edge_mlp', None)
+        mlp_kwargs.pop("edge_mlp", None)
         # --- END FIXES ---
 
         # This MLP learns the edge-wise message, m_ij
@@ -417,7 +417,7 @@ class SWEGNN(nn.Module):
             self.edge_input_size,
             self.edge_output_size,
             hidden_size=hidden_size,
-            device=device,
+            # device=device,
             **mlp_kwargs,  # Now contains 'n_layers' and NOT 'edge_mlp'
         )
 
@@ -430,7 +430,7 @@ class SWEGNN(nn.Module):
                         dynamic_node_features,
                         dynamic_node_features,
                         bias=False,
-                        device=device,
+                        # device=device,
                     )
                     for _ in range(K + 1)
                 ]
