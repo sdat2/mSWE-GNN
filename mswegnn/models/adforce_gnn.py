@@ -381,7 +381,7 @@ class SWEGNN(nn.Module):
             device (str, optional): Device to place tensors on.
                                     Defaults to "cpu".
             **mlp_kwargs: Additional keyword arguments passed to the
-                          `make_mlp` factory function (e.g., `num_layers`).
+                          `make_mlp` factory function (e.g., `mlp_layers`, `activation`).
         """
         super().__init__()
         self.edge_features = edge_features
@@ -402,13 +402,23 @@ class SWEGNN(nn.Module):
         self.with_gradient = with_gradient
         self.upwind_mode = upwind_mode
 
+        # --- FIX 1: Rename 'mlp_layers' to 'n_layers' for make_mlp ---
+        n_layers = mlp_kwargs.pop('mlp_layers', 2)
+        mlp_kwargs['n_layers'] = n_layers
+        
+        # --- FIX 2: Remove 'edge_mlp' from kwargs ---
+        # This argument is used by the *wrapper* (SWEGNN_Adforce),
+        # not by the internal `make_mlp` function.
+        mlp_kwargs.pop('edge_mlp', None)
+        # --- END FIXES ---
+
         # This MLP learns the edge-wise message, m_ij
         self.edge_mlp = make_mlp(
             self.edge_input_size,
             self.edge_output_size,
             hidden_size=hidden_size,
             device=device,
-            **mlp_kwargs,
+            **mlp_kwargs,  # Now contains 'n_layers' and NOT 'edge_mlp'
         )
 
         if with_filter_matrix:

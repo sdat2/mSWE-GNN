@@ -488,49 +488,111 @@ class SWEGNN_Adforce(nn.Module):
     This class replicates the encoder-processor-decoder structure
     from the original gnn.py. It takes raw static and dynamic features,
     encodes them, processes them with SWEGNN, and decodes them.
+
+    Args:
+        in_features_static (int): Number of raw static node features.
+        in_features_dynamic (int): Number of raw dynamic node features
+            (forcing + state).
+        in_features_edge (int): Number of raw edge features.
+        hid_features (int): The hidden dimension for encoders, GNN,
+            and decoder.
+        num_output_features (int): The final number of output features
+            (e.g., 3 for delta_WD, delta_VX, delta_VY).
+        mlp_layers (int): Number of layers to use in the encoder/decoder MLPs.
+        mlp_activation (str, optional): Activation for MLPs. Defaults to "prelu".
+        gnn_activation (str, optional): Activation *after* the GNN layer.
+            Defaults to "tanh".
+        **gnn_kwargs: Additional arguments passed to the SWEGNN layer,
+            such as `K`, `normalize`, `with_gradient`, `edge_mlp`, etc.
+
+    Doctest:
+    >>> import torch
+    >>> from torch_geometric.data import Data
+    >>>
+    >>> # 1. Define test parameters
+    >>> N_NODES = 10
+    >>> IN_FEAT_STATIC = 5
+    >>> IN_FEAT_DYNAMIC = 12  # (3 forcing * 3 steps) + 3 state
+    >>> IN_FEAT_EDGE = 2
+    >>> NUM_OUTPUT = 3
+    >>> HID_FEAT = 16
+    >>>
+    >>> # 2. Create mock tensors
+    >>> mock_static_x = torch.rand(N_NODES, IN_FEAT_STATIC)
+    >>> mock_dynamic_x = torch.rand(N_NODES, IN_FEAT_DYNAMIC)
+    >>> mock_edge_index = torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long)
+    >>> mock_edge_attr = torch.rand(mock_edge_index.shape[1], IN_FEAT_EDGE)
+    >>>
+    >>> # 3. Instantiate the model
+    >>> # We pass SWEGNN-specific args like K and edge_mlp via kwargs
+    >>> model = SWEGNN_Adforce(
+    ...     in_features_static=IN_FEAT_STATIC,
+    ...     in_features_dynamic=IN_FEAT_DYNAMIC,
+    ...     in_features_edge=IN_FEAT_EDGE,
+    ...     hid_features=HID_FEAT,
+    ...     num_output_features=NUM_OUTPUT,
+    ...     mlp_layers=2,
+    ...     mlp_activation='relu',
+    ...     gnn_activation='tanh',
+    ...     K=2,
+    ...     edge_mlp=True,
+    ...     normalize=True,
+    ...     with_gradient=True
+    ... )
+    >>>
+    >>> # 4. Run forward pass
+    >>> out = model(
+    ...     static_features=mock_static_x,
+    ...     dynamic_features=mock_dynamic_x,
+    ...     edge_index=mock_edge_index,
+    ...     edge_attr=mock_edge_attr
+    ... )
+    >>>
+    >>> # 5. Check output shape
+    >>> print(f"Output shape: {out.shape}")
+    Output shape: torch.Size([10, 3])
     """
     def __init__(
         self,
-        static_node_features: int,  # Raw static feature count
-        dynamic_node_features: int, # Raw dynamic feature count
-        edge_features: int,         # Raw edge feature count
+        in_features_static: int,
+        in_features_dynamic: int,
+        in_features_edge: int,
         hid_features: int,
         num_output_features: int,
         mlp_layers: int,
         mlp_activation: str = "prelu",
         gnn_activation: str = "tanh",
-        type_gnn: str = "SWEGNN",     # Catches this arg
+        type_gnn: str = "SWEGNN",     # Catches this arg if passed
         **gnn_kwargs,                 # For K, normalize, edge_mlp etc.
     ):
         super().__init__()
         
         self.hid_features = hid_features
 
-        # 1. Encoders (mirroring gnn.py)
-        # We use the existing MLP class from adforce_gnn.py
+        # 1. Encoders
         self.static_node_encoder = MLP(
-            in_features=static_node_features,
+            in_features=in_features_static,
             out_features=hid_features,
             hid_features=hid_features,
             mlp_layers=mlp_layers,
             activation=mlp_activation,
         )
         self.dynamic_node_encoder = MLP(
-            in_features=dynamic_node_features,
+            in_features=in_features_dynamic,
             out_features=hid_features,
             hid_features=hid_features,
             mlp_layers=mlp_layers,
             activation=mlp_activation,
         )
         
-        # 2. Optional Edge Encoder (mirroring gnn.py)
+        # 2. Optional Edge Encoder
         self.edge_mlp_flag = gnn_kwargs.get("edge_mlp", True)
-        self.num_edge_features_for_gnn = edge_features
+        self.num_edge_features_for_gnn = in_features_edge
         
         if self.edge_mlp_flag:
             self.num_edge_features_for_gnn = hid_features
             self.edge_encoder = MLP(
-                in_features=edge_features,
+                in_features=in_features_edge,
                 out_features=hid_features,
                 hid_features=hid_features,
                 mlp_layers=mlp_layers,
@@ -549,7 +611,7 @@ class SWEGNN_Adforce(nn.Module):
             **gnn_kwargs # Passes K, normalize, with_gradient, etc.
         )
 
-        # 4. GNN Activation (mirroring gnn.py)
+        # 4. GNN Activation
         if gnn_activation == "relu":
             self.gnn_activation = nn.ReLU()
         elif gnn_activation == "prelu":
@@ -559,7 +621,7 @@ class SWEGNN_Adforce(nn.Module):
         else:
             self.gnn_activation = nn.Identity() # No activation
             
-        # 5. Decoder (mirroring gnn.py)
+        # 5. Decoder
         self.decoder = MLP(
             in_features=hid_features,
             out_features=num_output_features,
@@ -587,7 +649,6 @@ class SWEGNN_Adforce(nn.Module):
             e_attr_for_gnn = self.edge_encoder(edge_attr)
         
         # 3. Process
-        # SWEGNN.forward needs (static, dynamic, edge_index, edge_features)
         x = self.gnn(
             x_s, x_d, edge_index, edge_features=e_attr_for_gnn
         )

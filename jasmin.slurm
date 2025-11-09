@@ -36,7 +36,9 @@ echo "Starting python script..."
 
 # python -m adforce_main machine=jasmin model_params.model_type=MonolithicMLP
 
-python -m adforce_main machine=jasmin  model_params.model_type=GNN model_params.type_gnn=GAT
+# python -m adforce_main machine=jasmin  model_params.model_type=GNN model_params.type_gnn=GAT
+python -m adforce_main machine=jasmin  model_params.model_type=SWEGNN
+
 # python -m adforce_main # .py #--data-path $DATA_LOCAL_PATH --output-dir $RESULTS_LOCAL_PATH
 echo "Script finished."
 

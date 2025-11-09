@@ -109,3 +109,28 @@ def activation_functions(activation_name, device="cpu"):
             "Please choose one of the following options:\n"
             '"relu", "prelu", "leakyrelu", "elu", "gelu", "sigmoid", "tanh"'
         )
+
+
+def add_norm_dropout_activation(
+    hidden_size, layer_norm=False, dropout=0, activation="relu", device="cpu"
+):
+    """Add LayerNorm, Dropout, and activation function.
+
+    Args:
+        hidden_size (int): Size of the hidden layer for LayerNorm.
+        layer_norm (bool, optional): If True, add LayerNorm. Defaults to False.
+        dropout (float, optional): Dropout rate. Defaults to 0.
+        activation (str, optional): Activation function name. Defaults to "relu".
+        device (str, optional): Device to place tensors on. Defaults to "cpu".
+
+    Returns:
+        list: A list of nn.Module layers.
+    """
+    layers = []
+    if layer_norm:
+        layers.append(nn.LayerNorm(hidden_size, eps=1e-5, device=device))
+    if dropout > 0:  # Only add dropout if it's greater than 0
+        layers.append(nn.Dropout(dropout))
+    if activation is not None:
+        layers.append(activation_functions(activation, device=device))
+    return layers
