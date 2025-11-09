@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- SLURM Directives (CPU Job) ---
-#SBATCH --job-name=SWEGNN_cpu
+#SBATCH --job-name=MLP
 #SBATCH --account=no-project             
 #SBATCH --partition=standard              
 #SBATCH --qos=high                    
@@ -43,7 +43,7 @@ python -m adforce_main \
     machine=jasmin \
     machine.data_dir=$DATA_LOCAL_PATH \
     machine.output_dir=$RESULTS_LOCAL_PATH \
-    model_params.model_type=GNN \
+    model_params.model_type=MLP \
     model_params.type_gnn=SWEGNN \
     model_params.hid_features=64 \
     model_params.K=3 \

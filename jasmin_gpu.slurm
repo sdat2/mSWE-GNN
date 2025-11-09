@@ -9,7 +9,7 @@
 #SBATCH -o log/%j.out                # Standard output log
 #SBATCH -e log/%j.err                # Standard error log
 #SBATCH --time=23:00:00              # Set to 23 hours (under the likely 24-hour limit)
-#SBATCH -n 5                         # 5 CPU cores (1 for main process + 4 for data_loaders)
+#SBATCH --ntasks-per-node=5
 #SBATCH --mem=20000                  # Memory request in MB (for data loaders)
 
 # --- 1. Environment Setup ---
