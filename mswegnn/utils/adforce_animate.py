@@ -7,19 +7,14 @@ into *both* a high-quality MP4 (for video) and a quantized GIF
 (for markdown/previews).
 
 ---
-V8 (Merged):
-- Merged all user plot preferences (from V5) into the
-  dual-output (GIF + MP4) script.
-- User preferences include:
-  - figsize=(9, 5)
-  - cmocean.cm.balance
-  - "Storm Surge Height"
-  - LaTeX-style units ("m s$^{-1}$")
-  - "Longitude" and "Latitude" labels
-- **FIXED:** Removed the crashing `iio.immeta` check at the top.
-  The try/except block in `compile_video...` is the
-  correct and only necessary check.
-- Cleanup is commented out per user's V5.
+V9 (Timestamp Titles):
+- All user preferences from V8 are retained.
+- The `plot_single_frame` function now reads the 'time'
+  coordinate from the source NetCDF file for each frame.
+- The `suptitle` is set to the actual datetime of the
+  plotted data (e.g., "2005-08-28 12:00:00").
+- A try/except block provides a fallback to the index
+  number if the time lookup fails.
 ---
 """
 
@@ -148,8 +143,8 @@ def calculate_global_climits(
         data_dict = get_frame_data(dataset, idx, dem)
         for key, data in data_dict.items():
             if data.size > 0:
-                p2_vals[key].append(np.nanpercentile(data, 2))
-                p98_vals[key].append(np.nanpercentile(data, 98))
+                p2_vals[key].append(np.nanpercentile(data, 1))
+                p98_vals[key].append(np.nanpercentile(data, 99))
 
     climits = {}
     for key in plot_order:
@@ -195,19 +190,28 @@ def plot_single_frame(
     # 1. Get data for this specific frame
     data_dict = get_frame_data(dataset, idx, dem)
 
-    # 2. Create a new figure and axes for this frame
-    # (Using user's preferred figsize)
+    # 2. Get timestamp for title
+    try:
+        nc_path, t_start = dataset.index_map[idx]
+        # The plotted data is the target, which is at t_start + previous_t
+        t_plot_idx = t_start + dataset.previous_t 
+        with xr.open_dataset(nc_path, cache=True) as ds: # Use cache
+            timestamp = ds.time[t_plot_idx].values
+            # Format to 'YYYY-MM-DD HH:MM:SS'
+            title = np.datetime_as_string(timestamp, unit='s').replace('T', ' ')[:-6] + ":00"
+    except Exception as e:
+        # Fallback title if time lookup fails
+        if idx == 0: # Only warn once to avoid spam
+            print(f"Warning: Could not read timestamp. Falling back to index. Error: {e}")
+        title = f"Dataset Index: {idx} / {total_frames - 1}"
+
+    # 3. Create a new figure and axes for this frame
     fig, axs = plt.subplots(
-        2, 3, figsize=(6, 4), 
+        2, 3, figsize=(6*1.2, 4*1.2), 
         sharex=True, sharey=True
     )
 
-    # (Using user's preferred titles)
-    #titles = [
-    #    ["Pressure (P) [m]", "X-Wind (WX) [m s$^{-1}$]", "Y-Wind (WY) [m s$^{-1}$]"],
-    #    ["Storm Surge Height (SSH) [m]", "X-Velocity (VX) [m s$^{-1}$]", "Y-Velocity (VY) [m s$^{-1}$]"],
-    # ]
-    # just the symbol and units
+    # 4. Define titles, keys, and colormaps
     titles = [
         ["P [m]", "WX [m s$^{-1}$]", "WY [m s$^{-1}$]"],
         ["SSH [m]", "VX [m s$^{-1}$]", "VY [m s$^{-1}$]"],
@@ -216,13 +220,12 @@ def plot_single_frame(
         ["P", "WX", "WY"],
         ["SSH", "VX", "VY"]
     ]
-    # (Using user's preferred colormaps)
     cmaps = [
         [cmocean.cm.thermal, cmocean.cm.balance, cmocean.cm.balance],
         [cmocean.cm.balance, cmocean.cm.balance, cmocean.cm.balance],
     ]
     
-    # 3. Plot all 6 subplots
+    # 5. Plot all 6 subplots
     for i in range(2):
         for j in range(3):
             ax = axs[i, j]
@@ -248,7 +251,6 @@ def plot_single_frame(
             ax.set_title(titles[i][j])
             ax.set_aspect("equal")
             
-            # (Using user's preferred axis labels)
             if i == 1:
                 ax.set_xlabel("Longitude [$^{\circ}$E]")
             if j == 0:
@@ -259,15 +261,13 @@ def plot_single_frame(
                 ax.set_xlim(np.nanmin(x_coords), np.nanmax(x_coords))
                 ax.set_ylim(np.nanmin(y_coords), np.nanmax(y_coords))
 
-    # 4. Add title and save
-
-    # fig.suptitle(f"Dataset Index: {idx} / {total_frames - 1}") # this was too high
-    fig.suptitle(f"Dataset Index: {idx} / {total_frames - 1}", y=0.9)
+    # 6. Add title and save
+    fig.suptitle(title, y=0.92) # Use new timestamp title
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     label_subplots(axs)
     fig.savefig(frame_path, dpi=150, bbox_inches='tight')
     
-    # 5. --- VITAL --- Close the figure to free memory
+    # 7. --- VITAL --- Close the figure to free memory
     plt.close(fig)
 
 
@@ -405,7 +405,7 @@ def create_animation_from_frames(
     if output_video_path:
         compile_video_from_frames(frame_dir, output_video_path, fps, images)
 
-    # 9. Clean up (Matching user's V5, this is commented out)
+    # 9. Clean up (Commented out per user request)
     #try:
     #    shutil.rmtree(frame_dir)
     #    print(f"Cleaned up temporary directory: {frame_dir}")
