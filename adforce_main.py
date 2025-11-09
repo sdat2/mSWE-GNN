@@ -12,7 +12,7 @@ This script ties together all the new components:
 4.  Uses 'AdforceLazyDataset' to create train/val datasets
     (which now apply the scaling).
 5.  Calculates model dimensions based on the dataset's known structure.
-6.  Instantiates the correct model ('GNNModelAdforce', 'MonolithicMLPModel', 'SWEGNN_Adforce', or 'PointwiseMLPModel').
+6.  Instantiates the correct model ('GNNModelAdforce', 'MonolithicMLPModel', or 'PointwiseMLPModel').
 7.  Uses the 'DataModule' and 'LightningTrainer' from adforce_train.py to run
     the training loop.
 8.  Includes ModelCheckpoint callback for saving best/last models.
@@ -40,7 +40,6 @@ from mswegnn.models.adforce_models import (
     GNNModelAdforce,
     PointwiseMLPModel,
     MonolithicMLPModel,
-    SWEGNN_Adforce,  # <-- Import the new wrapper
 )
 from mswegnn.training.adforce_train import LightningTrainer, DataModule
 from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
@@ -224,24 +223,6 @@ def main(cfg: DictConfig):  # <-- HYDRA: Config injected
                 num_static_features=NUM_STATIC_NODE_FEATURES,
                 **model_cfg_dict,  # **model_cfg,
             )
-        
-        # --- NEW BLOCK: Handle SWEGNN ---
-        elif model_type == "SWEGNN":
-            # This wrapper needs the feature counts *split*
-            
-            # Total input features (17) - static (5) = 12 dynamic
-            total_dynamic_features = num_node_features - NUM_STATIC_NODE_FEATURES
-            
-            print(f"Instantiating SWEGNN_Adforce with {NUM_STATIC_NODE_FEATURES} static, {total_dynamic_features} dynamic, {num_edge_features} edge features.")
-            
-            model = SWEGNN_Adforce(
-                in_features_static=NUM_STATIC_NODE_FEATURES,
-                in_features_dynamic=total_dynamic_features,
-                in_features_edge=num_edge_features,
-                num_output_features=num_output_features,
-                **model_cfg_dict,  # Passes hid_features, mlp_layers, K, etc.
-            )
-        # --- END NEW BLOCK ---
 
         elif model_type == "MLP":
             model = PointwiseMLPModel(
