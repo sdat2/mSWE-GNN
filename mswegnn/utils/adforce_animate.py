@@ -1,34 +1,37 @@
 """
 Improved animation function for the AdforceLazyDataset.
 
-This script creates a 6-panel animation of a full simulation event,
-displaying both the model inputs (forcing) and the corresponding
-ground-truth outputs (state).
+This script creates a 6-panel animation of a full simulation event
+by rendering each frame as a PNG and then compiling them into a GIF
+using `imageio`.
 
-It uses the `AdforceLazyDataset` to access the data for each time step.
-
-The 6 panels are:
-[[Pressure (P),     Wind X (WX),  Wind Y (WY)],
- [Sea Surface (SSH), Velocity X (VX), Velocity Y (VY)]]
-
-*** MODIFIED to use zero-centered diverging colormaps ('cmo.diff')
-    for velocity, wind, and SSH. ***
+---
+V5 (Final Fix):
+- Corrected the `compile_gif_from_frames` function.
+- The `imageio.v3.imwrite` function (for GIFs) expects a
+  *list of image arrays (numpy)*, not a *list of filenames*.
+- This version now correctly reads all the saved PNGs back
+  into a list (`images = [iio.imread(f) for f in ...]`)
+  and passes that list of arrays to `iio.imwrite`.
+---
 """
 
 import os
+import shutil
+import glob
 import warnings
 from typing import List, Tuple, Dict
 import numpy as np
 import xarray as xr
 import torch
 from matplotlib import pyplot as plt
-from matplotlib import animation
-from matplotlib.collections import PathCollection
+from tqdm import tqdm
+import imageio.v3 as iio
+
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 from sithom.plot import plot_defaults
-from sithom.time import timeit
 
-# --- NEW IMPORT ---
+# Try to import cmocean
 try:
     import cmocean
 except ImportError:
@@ -38,30 +41,16 @@ except ImportError:
     )
     exit()
 
-# Suppress Matplotlib warnings for dynamic color limits
+# Suppress Matplotlib/Numpy warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
 def load_static_data(
     nc_file_path: str, dataset: AdforceLazyDataset
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Loads all static (non-time-series) data required for plotting.
-
-    This includes the node coordinates (x, y) from the original NetCDF file
-    and the Digital Elevation Model (DEM) from the dataset's cached static
-    data.
-
-    Args:
-        nc_file_path (str): Path to the NetCDF file to get coordinates from.
-        dataset (AdforceLazyDataset): The initialized dataset object, which
-            holds the cached static features (including DEM).
-
-    Returns:
-        Tuple[np.ndarray, np.ndarray, np.ndarray]:
-            - x_coords: Node x-coordinates.
-            - y_coords: Node y-coordinates.
-            - dem: DEM (bathymetry) at each node.
+    Loads static coordinates and DEM data.
     """
     print("Loading static data (coordinates and DEM)...")
     try:
@@ -74,7 +63,6 @@ def load_static_data(
 
     try:
         # DEM is the 0-th column of the static_node_features
-        # [dem, slopex, slopey, area, node_type]
         dem = dataset.static_data["static_node_features"][:, 0].cpu().numpy()
     except Exception as e:
         print(f"Failed to get DEM from dataset.static_data: {e}")
@@ -83,114 +71,31 @@ def load_static_data(
     return x_coords, y_coords, dem
 
 
-def setup_animation_plots(
-    fig: plt.Figure, x_coords: np.ndarray, y_coords: np.ndarray
-) -> Tuple[np.ndarray, List[PathCollection], List[plt.colorbar]]:
-    """
-    Creates the 2x3 subplot grid and initializes scatter plots.
-
-    Args:
-        fig (plt.Figure): The main Matplotlib figure object.
-        x_coords (np.ndarray): Node x-coordinates.
-        y_coords (np.ndarray): Node y-coordinates.
-
-    Returns:
-        Tuple[np.ndarray, List[PathCollection], List[plt.colorbar]]:
-            - axs: A (2, 3) numpy array of Matplotlib Axes objects.
-            - scats: A list of 6 PathCollection (scatter) objects.
-            - cbs: A list of 6 Colorbar objects.
-    """
-    axs = fig.subplots(2, 3, sharex=True, sharey=True)
-    scats = []
-    cbs = []
-
-    # Panel titles and colorbar labels
-    # Row 0: Inputs (Forcing)
-    # Row 1: Outputs (State)
-    titles = [
-        ["Pressure (P) [m]", "X-Wind (WX) [m/s]", "Y-Wind (WY) [m/s]"],
-        ["Sea Surface (SSH) [m]", "X-Velocity (VX) [m/s]", "Y-Velocity (VY) [m/s]"],
-    ]
-    
-    # --- MODIFIED CMAPS ---
-    # Use 'cmo.thermal' for sequential (Pressure)
-    # Use 'cmo.diff' for diverging (all others)
-    cmaps = [
-        [cmocean.cm.thermal, cmocean.cm.diff, cmocean.cm.diff],
-        [cmocean.cm.diff, cmocean.cm.diff, cmocean.cm.diff],
-    ]
-    # --- END MODIFICATION ---
-
-    for i in range(2):
-        for j in range(3):
-            ax = axs[i, j]
-            scat = ax.scatter(
-                x_coords, y_coords, c=[], cmap=cmaps[i][j], s=1, vmin=0, vmax=1
-            )
-            cb = fig.colorbar(scat, ax=ax, label=titles[i][j])
-            
-            ax.set_title(titles[i][j].split(" [")[0]) # Title without units
-            ax.set_aspect("equal")
-            if i == 1:
-                ax.set_xlabel("X Coordinate")
-            if j == 0:
-                ax.set_ylabel("Y Coordinate")
-                
-            scats.append(scat)
-            cbs.append(cb)
-
-    return axs, scats, cbs
-
-
 def get_frame_data(
     dataset: AdforceLazyDataset, idx: int, dem: np.ndarray
 ) -> Dict[str, np.ndarray]:
     """
     Retrieves and processes all 6 variables for a single animation frame.
 
-    This function:
-    1.  Calls `dataset.get(idx)` to get the PyG Data object.
-    2.  Extracts the *scaled* input forcing from `data.x`.
-    3.  Un-scales the forcing data using the dataset's cached stats.
-    4.  Extracts the *unscaled* output state from `data.y_unscaled`.
-    5.  Calculates Sea Surface Height (SSH) = Water Depth (WD) + DEM.
-
-    Args:
-        dataset (AdforceLazyDataset): The initialized dataset.
-        idx (int): The frame index to retrieve.
-        dem (np.ndarray): The DEM array (for SSH calculation).
-
-    Returns:
-        Dict[str, np.ndarray]: A dictionary mapping variable names
-        ('P', 'WX', 'WY', 'SSH', 'VX', 'VY') to their data arrays.
+    This function un-scales inputs and calculates SSH from outputs.
     """
     data = dataset.get(idx)
     p_t = dataset.previous_t
     x_data = data.x.cpu()
 
     # --- 1. Extract and Un-scale Inputs (P, WX, WY) ---
-    # The `data.x` tensor is structured as:
-    # [static (5), forcing (3*p_t), state_y_t (3)]
-    
-    # We want the *last* time step of the input forcing
     forcing_start_idx = 5
     forcing_end_idx = 5 + (3 * p_t)
     last_forcing_step_scaled = x_data[:, forcing_end_idx - 3 : forcing_end_idx]
 
     if dataset.apply_scaling:
         if not hasattr(dataset, "x_dyn_mean_broadcast"):
-            raise ValueError(
-                "Dataset scaling is on but stats (e.g., 'x_dyn_mean_broadcast') "
-                "were not found. Check scaling_stats.yaml path."
-            )
-        # Get the mean/std for a single forcing step (last 3 elements)
-        mean = dataset.x_dyn_mean_broadcast[-3:].cpu()
-        std = dataset.x_dyn_std_broadcast[-3:].cpu()
-        
-        # Unscale: (scaled * std) + mean
-        inputs_unscaled = (last_forcing_step_scaled * std) + mean
+            inputs_unscaled = last_forcing_step_scaled
+        else:
+            mean = dataset.x_dyn_mean_broadcast[-3:].cpu()
+            std = dataset.x_dyn_std_broadcast[-3:].cpu()
+            inputs_unscaled = (last_forcing_step_scaled * std) + mean
     else:
-        # Data was never scaled
         inputs_unscaled = last_forcing_step_scaled
 
     # Forcing order from _get_forcing_slice is ["WX", "WY", "P"]
@@ -219,160 +124,246 @@ def get_frame_data(
     }
 
 
-@timeit
-def create_animation(
+def calculate_global_climits(
+    dataset: AdforceLazyDataset, dem: np.ndarray
+) -> Dict[str, Tuple[float, float]]:
+    """
+    Calculates global vmin/vmax by iterating through the entire dataset.
+
+    This is a slow but necessary step to ensure fixed color scales.
+    It uses robust percentiles (2nd, 98th) to handle outliers.
+    """
+    print(f"Calculating global color limits for {len(dataset)} frames...")
+    
+    plot_order = ["P", "WX", "WY", "SSH", "VX", "VY"]
+    diverging_vars = ["WX", "WY", "SSH", "VX", "VY"]
+    
+    # Store the 2nd and 98th percentiles for each frame
+    p2_vals = {key: [] for key in plot_order}
+    p98_vals = {key: [] for key in plot_order}
+
+    for idx in tqdm(range(len(dataset)), desc="Scanning data"):
+        data_dict = get_frame_data(dataset, idx, dem)
+        for key, data in data_dict.items():
+            if data.size > 0:
+                p2_vals[key].append(np.nanpercentile(data, 2))
+                p98_vals[key].append(np.nanpercentile(data, 98))
+
+    climits = {}
+    for key in plot_order:
+        if not p2_vals[key]: # Handle case of no valid data
+             climits[key] = (0.0, 1.0)
+             continue
+
+        global_p2 = np.nanmin(p2_vals[key])
+        global_p98 = np.nanmax(p98_vals[key])
+
+        if key in diverging_vars:
+            # Center on zero using the largest absolute percentile
+            v_abs = np.nanmax([np.abs(global_p2), np.abs(global_p98)])
+            if v_abs == 0: v_abs = 0.1 # Avoid vmin=vmax
+            climits[key] = (-v_abs, v_abs)
+        else:
+            # Sequential (Pressure)
+            if global_p2 == global_p98: global_p98 += 0.1
+            climits[key] = (global_p2, global_p98)
+    
+    print("Global color limits calculated.")
+    for key, (vmin, vmax) in climits.items():
+        print(f"  {key}: ({vmin:.2f}, {vmax:.2f})")
+        
+    return climits
+
+
+def plot_single_frame(
+    idx: int,
+    total_frames: int,
+    dataset: AdforceLazyDataset,
+    x_coords: np.ndarray,
+    y_coords: np.ndarray,
+    dem: np.ndarray,
+    climits: Dict[str, Tuple[float, float]],
+    frame_path: str,
+):
+    """
+    Creates, plots, and saves a *single* frame from scratch.
+
+    This function is called in a loop and is designed to be stateless.
+    It creates a new figure and closes it to prevent memory leaks.
+    """
+    
+    # 1. Get data for this specific frame
+    data_dict = get_frame_data(dataset, idx, dem)
+
+    # 2. Create a new figure and axes for this frame
+    fig, axs = plt.subplots(
+        2, 3, figsize=(18, 10), sharex=True, sharey=True
+    )
+
+    titles = [
+        ["Pressure (P) [m]", "X-Wind (WX) [m/s]", "Y-Wind (WY) [m/s]"],
+        ["Sea Surface (SSH) [m]", "X-Velocity (VX) [m/s]", "Y-Velocity (VY) [m/Container's's]"],
+    ]
+    keys = [
+        ["P", "WX", "WY"],
+        ["SSH", "VX", "VY"]
+    ]
+    cmaps = [
+        [cmocean.cm.thermal, cmocean.cm.diff, cmocean.cm.diff],
+        [cmocean.cm.diff, cmocean.cm.diff, cmocean.cm.diff],
+    ]
+    
+    # 3. Plot all 6 subplots
+    for i in range(2):
+        for j in range(3):
+            ax = axs[i, j]
+            key = keys[i][j]
+            data = data_dict[key]
+            vmin, vmax = climits[key]
+            
+            # Plot data *directly* into the new axes
+            scat = ax.scatter(
+                x_coords,
+                y_coords,
+                c=data,
+                cmap=cmaps[i][j],
+                s=1,
+                vmin=vmin,
+                vmax=vmax
+            )
+
+            # Add colorbar without label
+            fig.colorbar(scat, ax=ax)
+            
+            ax.set_title(titles[i][j])
+            ax.set_aspect("equal")
+            
+            if i == 1:
+                ax.set_xlabel("X Coordinate")
+            if j == 0:
+                ax.set_ylabel("Y Coordinate")
+            
+            # Fix axes limits to prevent plot jitter
+            if x_coords.size > 0 and y_coords.size > 0:
+                ax.set_xlim(np.nanmin(x_coords), np.nanmax(x_coords))
+                ax.set_ylim(np.nanmin(y_coords), np.nanmax(y_coords))
+
+    # 4. Add title and save
+    fig.suptitle(f"Dataset Index: {idx} / {total_frames - 1}")
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    fig.savefig(frame_path, dpi=150, bbox_inches='tight')
+    
+    # 5. --- VITAL --- Close the figure to free memory
+    plt.close(fig)
+
+
+# --- *** CORRECTED FUNCTION *** ---
+def compile_gif_from_frames(
+    frame_dir: str, 
+    output_gif_path: str, 
+    fps: int
+):
+    """
+    Uses imageio.v3.imwrite to compile all PNGs into a single GIF.
+    """
+    # Find all frame files and sort them
+    frame_files = sorted(glob.glob(os.path.join(frame_dir, "frame_*.png")))
+    if not frame_files:
+        print(f"Error: No frames found in {frame_dir}")
+        return
+
+    print(f"Compiling {len(frame_files)} frames into {output_gif_path}...")
+    
+    # --- *** FIX *** ---
+    # We must read the images into a list of numpy arrays first.
+    # `iio.imwrite` (with the pillow backend) expects image data,
+    # not filenames.
+    images = []
+    for frame_file in tqdm(frame_files, desc="Reading frames for GIF"):
+        images.append(iio.imread(frame_file))
+
+    # Now, pass the list of *images (arrays)* to imwrite
+    iio.imwrite(output_gif_path, images, fps=fps, loop=0)
+    # --- *** END FIX *** ---
+    
+    print("GIF compilation complete.")
+
+
+def create_animation_from_frames(
     root_dir: str,
     nc_file_path: str,
     p_t: int,
     scaling_stats_path: str = None,
     output_gif_path: str = "adforce_6panel_animation.gif",
+    fps: int = 10,
 ):
     """
-    Runs the full 6-panel animation test and saves the result as a GIF.
-
-    Args:
-        root_dir (str): Root directory of the dataset (for 'processed' folder).
-        nc_file_path (str): Path to the single NetCDF file to animate.
-        p_t (int): Number of previous time steps (window size).
-        scaling_stats_path (str, optional): Path to 'scaling_stats.yaml'.
-            This is REQUIRED if the model was trained with scaling,
-            to correctly un-scale the inputs for visualization.
-        output_gif_path (str, optional): Path to save the output GIF.
+    Main function to run the full animation process.
     """
     plot_defaults()
-    print("Starting 6-panel animation test...")
+    frame_dir = "./animation_frames_temp"
 
-    # 1. Initialize Dataset
+    # 1. Clean up and create temporary frame directory
+    shutil.rmtree(frame_dir, ignore_errors=True)
+    os.makedirs(frame_dir, exist_ok=True)
+    print(f"Temporary frame directory created at {frame_dir}")
+
+    # 2. Initialize Dataset
     try:
         dataset = AdforceLazyDataset(
             root=root_dir,
             nc_files=[nc_file_path],
             previous_t=p_t,
-            scaling_stats_path=scaling_stats_path,  # Pass in the stats path
+            scaling_stats_path=scaling_stats_path,
         )
     except Exception as e:
         print(f"Failed to initialize AdforceLazyDataset: {e}")
-        if "Window mismatch" in str(e):
-            print(
-                f"Please delete the 'processed' directory inside '{root_dir}' and try again."
-            )
         return
 
     if len(dataset) == 0:
         print("Dataset is empty. Check time steps and p_t.")
         return
+    
+    total_frames = len(dataset)
+    print(f"Dataset loaded. Total samples: {total_frames}")
 
-    print(f"Dataset loaded. Total samples: {len(dataset)}")
-    if not dataset.apply_scaling:
-        print("WARNING: Running without scaling stats. Input plots will be unscaled.")
-
-    # 2. Load static data (coords, DEM)
+    # 3. Load static data (coords, DEM)
     x_coords, y_coords, dem = load_static_data(nc_file_path, dataset)
 
-    # 3. Set up Matplotlib Animation
-    fig, axs = plt.subplots(
-        2, 3, figsize=(18, 10), sharex=True, sharey=True
-    )
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust for suptitle
+    # 4. Pre-calculate global color limits
+    climits = calculate_global_climits(dataset, dem)
 
-    axs_flat, scats, cbs = setup_animation_plots(fig, x_coords, y_coords)
+    # 5. Render all frames
+    print("Rendering frames (recreating plot for each frame)...")
     
-    # Define the order of data to match the plot layout
-    plot_order = ["P", "WX", "WY", "SSH", "VX", "VY"]
+    for idx in tqdm(range(total_frames), desc="Rendering frames"):
+        frame_path = os.path.join(frame_dir, f"frame_{idx:05d}.png")
+        
+        # Call the stateless plotting function
+        plot_single_frame(
+            idx,
+            total_frames,
+            dataset,
+            x_coords,
+            y_coords,
+            dem,
+            climits,
+            frame_path
+        )
     
-    # --- NEW: Define which variables are diverging ---
-    diverging_vars = ["WX", "WY", "SSH", "VX", "VY"]
+    # 6. Compile GIF
+    compile_gif_from_frames(frame_dir, output_gif_path, fps)
 
-    def init():
-        """Initializes the animation."""
-        for scat in scats:
-            scat.set_array(np.array([]))
-        return scats
-
-    # --- MODIFIED UPDATE FUNCTION ---
-    def update(frame_index):
-        """Updates one frame of the animation."""
-        try:
-            # Get all 6 data arrays
-            data_dict = get_frame_data(dataset, frame_index, dem)
-            
-            # Update each of the 6 plots
-            for i, key in enumerate(plot_order):
-                data = data_dict[key]
-                scat = scats[i]
-                
-                # Set the data
-                scat.set_array(data)
-                
-                # Dynamically update color limits
-                with warnings.catch_warnings():
-                    # Suppress warnings if data is all NaN
-                    warnings.simplefilter("ignore", category=RuntimeWarning)
-                    
-                    if key in diverging_vars:
-                        # --- New Logic: Center on zero ---
-                        # Use 98th percentile of absolute value for robust range
-                        v_abs = np.nanpercentile(np.abs(data), 98)
-                        vmin = -v_abs
-                        vmax = v_abs
-                    else:
-                        # --- Old Logic: (for Pressure) ---
-                        vmin = np.nanpercentile(data, 2)
-                        vmax = np.nanpercentile(data, 98)
-                
-                # Handle edge case where vmin == vmax (e.g., all zeros)
-                if vmin == vmax:
-                    # Add a small epsilon to prevent error
-                    vmin -= 0.1
-                    vmax += 0.1
-                
-                scat.set_clim(vmin=vmin, vmax=vmax)
-
-            fig.suptitle(f"Dataset Index: {frame_index} / {len(dataset) - 1}")
-            
-            # Print progress to console
-            if frame_index % 20 == 0:
-                print(f"Processing frame {frame_index}...")
-
-            return scats
-
-        except Exception as e:
-            print(f"Error updating frame {frame_index}: {e}")
-            return scats
-    # --- END MODIFIED UPDATE FUNCTION ---
-
-    # 4. Create and Save Animation
-    interval_ms = 100  # 100ms per frame = 10 FPS
-    fps = 1000 / interval_ms
-    print(f"Creating animation ({len(dataset)} frames, {fps} FPS)...")
-
-    ani = animation.FuncAnimation(
-        fig,
-        update,
-        frames=len(dataset),
-        init_func=init,
-        blit=True,
-        interval=interval_ms,
-        repeat=False,
-    )
-
-    print(f"Saving animation to {output_gif_path} (this may take a while)...")
+    # 7. Clean up
     try:
-        # Use the 'pillow' writer to create the GIF
-        ani.save(output_gif_path, writer="pillow", fps=fps)
-        print(f"Successfully saved animation to {output_gif_path}")
+        shutil.rmtree(frame_dir)
+        print(f"Cleaned up temporary directory: {frame_dir}")
     except Exception as e:
-        print(f"Failed to save animation: {e}")
-        print("Please ensure 'Pillow' is installed (`pip install Pillow`)")
-    finally:
-        # Close the plot to free memory
-        plt.close(fig)
+        print(f"Warning: Failed to clean up {frame_dir}. Error: {e}")
 
 
 if __name__ == "__main__":
     # --- CONFIGURE YOUR PATHS HERE ---
-    # python -m mswegnn.utils.adforce_animate
-
     
     # This should be the directory containing your NetCDF file
     # and the 'scaling_stats.yaml' file.
@@ -390,29 +381,21 @@ if __name__ == "__main__":
     previous_time_steps = 2
     
     # Define the output GIF path
-    output_gif = "adforce_6panel_animation.gif"
+    output_gif = "adforce_6panel_animation_robust.gif"
+    
+    # Frames per second for the final GIF
+    gif_fps = 10
     # --- END CONFIGURATION ---
 
     if not os.path.exists(netcdf_file):
         print(f"Error: NetCDF file not found at {netcdf_file}")
-        print("Please update the 'root_directory' and 'netcdf_file' variables.")
-    elif scaling_stats_file and not os.path.exists(scaling_stats_file):
-        print(f"Warning: Scaling stats file not found at {scaling_stats_file}")
-        print("Inputs will be plotted as-is (which may be scaled).")
-        create_animation(
-            root_directory,
-            netcdf_file,
-            previous_time_steps,
-            scaling_stats_path=None,
-            output_gif_path=output_gif,
-        )
     else:
-        create_animation(
+        create_animation_from_frames(
             root_directory,
             netcdf_file,
             previous_time_steps,
             scaling_stats_path=scaling_stats_file,
             output_gif_path=output_gif,
+            fps=gif_fps,
         )
-
-    print(f"Animation test complete. GIF saved to {os.path.abspath(output_gif)}")
+        print(f"\nAnimation test complete. GIF saved to {os.path.abspath(output_gif)}")
