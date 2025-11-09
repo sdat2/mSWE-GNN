@@ -383,7 +383,8 @@ class AdforceBaseModel(nn.Module):
                               shape [N, static + forcing + state(3)].
         """
         residual_output = torch.zeros(
-            x_input.shape[0], self.out_dim, # device=self.device
+            x_input.shape[0],
+            self.out_dim,  # device=self.device
         )
 
         if self.learned_residuals == False:

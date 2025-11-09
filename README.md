@@ -2,7 +2,7 @@
 
 ## Introduction
 
-We created additional training data through forcing the ADCIRC model with storm surge scenarios from the ADFORCE python package.
+We created additional training data through forcing the ADCIRC model with storm surge scenarios from the ADFORCE python package using data from IBTraCS.
 
 Look at the `generate_training_data.py` script for how we generated the training data:
 <https://github.com/sdat2/PotentialHeight/blob/main/adforce/generate_training_data.py>
@@ -15,6 +15,18 @@ Using `micromamba` and flexible yaml settings for a robust pure-cpu environment:
 
 ```bash
 micromamba create -n mswegnn -f env.yml
+```
+
+If you want to run on JASMIN GPU nodes, use:
+
+```bash
+micromamba create -n mswegnn-gpu -f env_jas_gpu.yml
+```
+
+If you are installing the python environment through a different method instead, to locally install the `mswegnn` package, run:
+
+```bash
+pip install -e .
 ```
 
 ## ADFORCE pipeline file structure
