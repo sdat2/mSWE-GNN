@@ -356,7 +356,7 @@ class SWEGNN(nn.Module):
         with_filter_matrix: bool = True,
         with_gradient: bool = True,
         upwind_mode: bool = False,
-        # device: str = "cpu",
+        device: str = "cpu",
         **mlp_kwargs,
     ):
         """

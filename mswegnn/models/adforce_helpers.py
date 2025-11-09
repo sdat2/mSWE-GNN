@@ -48,7 +48,13 @@ def make_mlp(
             # device=device,
         )
     else:
-        layers.append(nn.Linear(input_size, hidden_size, bias=bias, device=device))
+        layers.append(
+            nn.Linear(
+                input_size,
+                hidden_size,
+                bias=bias,  # device=device
+            )
+        )
         layers = layers + add_norm_dropout_activation(
             hidden_size,
             layer_norm=layer_norm,
@@ -147,9 +153,18 @@ def add_norm_dropout_activation(
     """
     layers = []
     if layer_norm:
-        layers.append(nn.LayerNorm(hidden_size, eps=1e-5, device=device))
+        layers.append(
+            nn.LayerNorm(
+                hidden_size,
+                eps=1e-5,  # device=device
+            )
+        )
     if dropout > 0:  # Only add dropout if it's greater than 0
         layers.append(nn.Dropout(dropout))
     if activation is not None:
-        layers.append(activation_functions(activation, device=device))
+        layers.append(
+            activation_functions(
+                activation,  # device=device
+            )
+        )
     return layers
