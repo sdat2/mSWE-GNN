@@ -12,7 +12,7 @@ This script ties together all the new components:
 4.  Uses 'AdforceLazyDataset' to create train/val datasets
     (which now apply the scaling).
 5.  Calculates model dimensions based on the dataset's known structure.
-6.  Instantiates the correct model ('GNNModelAdforce', 'MonoliticMLPModel', "SWEGNN_Adforce", or 'PointwiseMLPModel').
+6.  Instantiates the correct model ('GNNModelAdforce', 'MonolithicMLPModel', 'SWEGNN_Adforce', or 'PointwiseMLPModel').
 7.  Uses the 'DataModule' and 'LightningTrainer' from adforce_train.py to run
     the training loop.
 8.  Includes ModelCheckpoint callback for saving best/last models.
@@ -33,11 +33,14 @@ from omegaconf import DictConfig, OmegaConf  # <-- HYDRA: Added
 import wandb  # <-- W&B: Added
 
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset, _load_static_data_from_ds
+from mswegnn.utils.load import (
+    read_config,
+)  # <-- HYDRA: This is no longer used, but kept for reference
 from mswegnn.models.adforce_models import (
     GNNModelAdforce,
     PointwiseMLPModel,
     MonolithicMLPModel,
-    SWEGNN_Adforce,
+    SWEGNN_Adforce,  # <-- Import the new wrapper
 )
 from mswegnn.training.adforce_train import LightningTrainer, DataModule
 from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
@@ -87,31 +90,10 @@ def main(cfg: DictConfig):  # <-- HYDRA: Config injected
     # ---
 
     # --- HYDRA: Old config loading removed ---
-    # print(f"Loading configuration from {CONFIG_PATH}...")
-    # try:
-    #     config = read_config(CONFIG_PATH)
-    # except FileNotFoundError:
-    #     print(f"ERROR: Configuration file not found at {CONFIG_PATH}")
-    #     print("Please create 'adforce_config.yaml' based on the example provided.")
-    #     return
-    # except Exception as e:
-    #     print(f"Error reading config file: {e}")
-    #     return
-    #
-    # data_cfg = config.get("data_params", {})
-    # model_cfg = config.get("model_params", {})
-    # trainer_cfg = config.get("trainer_options", {})
-    # lr_cfg = config.get("lr_info", {})
-    # lt_cfg = config.get("lightning_trainer", {})
+    # ... (omitted for brevity)
     # --- END HYDRA MODIFICATION ---
 
     # --- HYDRA: Access params from cfg object ---
-    # --- MODIFICATION: Pop the checkpoint path from lt_cfg ---
-    # Get the path, defaulting to None if not specified.
-    # By using .pop(), we *remove* it from the lt_cfg dictionary,
-    # so it won't be incorrectly passed to the L.Trainer constructor.
-    # resume_checkpoint_path = lt_cfg.pop("start_from_checkpoint_path", None) # <-- HYDRA: Old way
-
     # HYDRA: Get resume path from machine config
     resume_checkpoint_path = cfg.machine.resume_checkpoint_path
     if resume_checkpoint_path:
@@ -242,17 +224,24 @@ def main(cfg: DictConfig):  # <-- HYDRA: Config injected
                 num_static_features=NUM_STATIC_NODE_FEATURES,
                 **model_cfg_dict,  # **model_cfg,
             )
+        
+        # --- NEW BLOCK: Handle SWEGNN ---
         elif model_type == "SWEGNN":
+            # This wrapper needs the feature counts *split*
+            
+            # Total input features (17) - static (5) = 12 dynamic
+            total_dynamic_features = num_node_features - NUM_STATIC_NODE_FEATURES
+            
+            print(f"Instantiating SWEGNN_Adforce with {NUM_STATIC_NODE_FEATURES} static, {total_dynamic_features} dynamic, {num_edge_features} edge features.")
+            
             model = SWEGNN_Adforce(
-                dynamic_node_features=NUM_DYNAMIC_NODE_FEATURES,
-                static_node_features=NUM_STATIC_NODE_FEATURES,
-                num_node_features=num_node_features,
-                num_edge_features=num_edge_features,
-                previous_t=p_t,
+                in_features_static=NUM_STATIC_NODE_FEATURES,
+                in_features_dynamic=total_dynamic_features,
+                in_features_edge=num_edge_features,
                 num_output_features=num_output_features,
-                num_static_features=NUM_STATIC_NODE_FEATURES,
-                **model_cfg_dict,  # **model_cfg,
+                **model_cfg_dict,  # Passes hid_features, mlp_layers, K, etc.
             )
+        # --- END NEW BLOCK ---
 
         elif model_type == "MLP":
             model = PointwiseMLPModel(
@@ -275,7 +264,7 @@ def main(cfg: DictConfig):  # <-- HYDRA: Config injected
             )
         else:
             raise ValueError(
-                f"Unknown model_type in config: {model_type}. Must be 'GNN', 'MSGNN', or 'MLP'."
+                f"Unknown model_type in config: {model_type}. Must be 'GNN', 'SWEGNN', 'MLP', or 'MonolithicMLP'."
             )
         # --- END MODIFICATION ---
 
@@ -390,7 +379,6 @@ def main(cfg: DictConfig):  # <-- HYDRA: Config injected
         # data_module.teardown(), which closes the file handles.
         #
         print("File handles (if any) will be closed by the DataModule's teardown hook.")
-
 
 
 if __name__ == "__main__":

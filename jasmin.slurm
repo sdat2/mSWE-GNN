@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- SLURM Directives (Corrected for New Cluster) ---
-#SBATCH --job-name=GAT
+#SBATCH --job-name=SWEGNN
 #SBATCH --account=no-project             # I'm not back on AI4ER yet
 #SBATCH --partition=standard              # Use the 'highres' partition
 #SBATCH --qos=high                    # Use the 'highres' QoS

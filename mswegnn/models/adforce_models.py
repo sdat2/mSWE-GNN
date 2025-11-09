@@ -480,6 +480,7 @@ class GNNModelAdforce(nn.Module):
 
         return out
 
+# In mswegnn/models/adforce_models.py
 
 class SWEGNN_Adforce(nn.Module):
     """
@@ -562,8 +563,8 @@ class SWEGNN_Adforce(nn.Module):
         mlp_layers: int,
         mlp_activation: str = "prelu",
         gnn_activation: str = "tanh",
-        type_gnn: str = "SWEGNN",     # Catches this arg if passed
-        **gnn_kwargs,                 # For K, normalize, edge_mlp etc.
+        type_gnn: str = "SWEGNN",     # Catches 'type_gnn' from config
+        **gnn_kwargs,                 # 'model_type' will land in here
     ):
         super().__init__()
         
@@ -599,16 +600,21 @@ class SWEGNN_Adforce(nn.Module):
                 activation=mlp_activation,
             )
 
+        # --- FIX: Remove keys from kwargs that SWEGNN does not need ---
+        # 'model_type' is used by adforce_main.py for logic, not the model.
+        # 'type_gnn' is used by GNNModelAdforce, but not SWEGNN_Adforce.
+        gnn_kwargs.pop('model_type', None)
+        gnn_kwargs.pop('type_gnn', None) # Pop this too just in case
+        # --- END FIX ---
+
         # 3. GNN Processor (The SWEGNN layer itself)
-        # It expects hidden_size for static/dynamic inputs.
-        # We also pass mlp_layers and activation for its *internal* edge MLP.
         self.gnn = SWEGNN(
             static_node_features=hid_features,
             dynamic_node_features=hid_features,
             edge_features=self.num_edge_features_for_gnn,
             mlp_layers=mlp_layers,
             activation=mlp_activation,
-            **gnn_kwargs # Passes K, normalize, with_gradient, etc.
+            **gnn_kwargs # Now 'model_type' is removed
         )
 
         # 4. GNN Activation
