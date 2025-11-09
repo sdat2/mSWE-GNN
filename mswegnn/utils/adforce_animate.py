@@ -11,6 +11,8 @@ The 6 panels are:
 [[Pressure (P),     Wind X (WX),  Wind Y (WY)],
  [Sea Surface (SSH), Velocity X (VX), Velocity Y (VY)]]
 
+*** MODIFIED to use zero-centered diverging colormaps ('cmo.diff')
+    for velocity, wind, and SSH. ***
 """
 
 import os
@@ -25,6 +27,16 @@ from matplotlib.collections import PathCollection
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 from sithom.plot import plot_defaults
 from sithom.time import timeit
+
+# --- NEW IMPORT ---
+try:
+    import cmocean
+except ImportError:
+    print(
+        "Error: 'cmocean' library not found. Please install it:"
+        "\n  pip install cmocean"
+    )
+    exit()
 
 # Suppress Matplotlib warnings for dynamic color limits
 warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
@@ -100,11 +112,14 @@ def setup_animation_plots(
         ["Sea Surface (SSH) [m]", "X-Velocity (VX) [m/s]", "Y-Velocity (VY) [m/s]"],
     ]
     
-    # Use 'plasma' for inputs and 'viridis' for outputs
+    # --- MODIFIED CMAPS ---
+    # Use 'cmo.thermal' for sequential (Pressure)
+    # Use 'cmo.diff' for diverging (all others)
     cmaps = [
-        ["plasma", "plasma", "plasma"],
-        ["viridis", "viridis", "viridis"],
+        [cmocean.cm.thermal, cmocean.cm.diff, cmocean.cm.diff],
+        [cmocean.cm.diff, cmocean.cm.diff, cmocean.cm.diff],
     ]
+    # --- END MODIFICATION ---
 
     for i in range(2):
         for j in range(3):
@@ -264,6 +279,9 @@ def create_animation(
     
     # Define the order of data to match the plot layout
     plot_order = ["P", "WX", "WY", "SSH", "VX", "VY"]
+    
+    # --- NEW: Define which variables are diverging ---
+    diverging_vars = ["WX", "WY", "SSH", "VX", "VY"]
 
     def init():
         """Initializes the animation."""
@@ -271,6 +289,7 @@ def create_animation(
             scat.set_array(np.array([]))
         return scats
 
+    # --- MODIFIED UPDATE FUNCTION ---
     def update(frame_index):
         """Updates one frame of the animation."""
         try:
@@ -289,11 +308,21 @@ def create_animation(
                 with warnings.catch_warnings():
                     # Suppress warnings if data is all NaN
                     warnings.simplefilter("ignore", category=RuntimeWarning)
-                    vmin = np.nanpercentile(data, 2)
-                    vmax = np.nanpercentile(data, 98)
+                    
+                    if key in diverging_vars:
+                        # --- New Logic: Center on zero ---
+                        # Use 98th percentile of absolute value for robust range
+                        v_abs = np.nanpercentile(np.abs(data), 98)
+                        vmin = -v_abs
+                        vmax = v_abs
+                    else:
+                        # --- Old Logic: (for Pressure) ---
+                        vmin = np.nanpercentile(data, 2)
+                        vmax = np.nanpercentile(data, 98)
                 
-                # Handle edge case where vmin == vmax
+                # Handle edge case where vmin == vmax (e.g., all zeros)
                 if vmin == vmax:
+                    # Add a small epsilon to prevent error
                     vmin -= 0.1
                     vmax += 0.1
                 
@@ -310,6 +339,7 @@ def create_animation(
         except Exception as e:
             print(f"Error updating frame {frame_index}: {e}")
             return scats
+    # --- END MODIFIED UPDATE FUNCTION ---
 
     # 4. Create and Save Animation
     interval_ms = 100  # 100ms per frame = 10 FPS
@@ -342,6 +372,7 @@ def create_animation(
 if __name__ == "__main__":
     # --- CONFIGURE YOUR PATHS HERE ---
     # python -m mswegnn.utils.adforce_animate
+
     
     # This should be the directory containing your NetCDF file
     # and the 'scaling_stats.yaml' file.
