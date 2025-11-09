@@ -197,20 +197,21 @@ def plot_single_frame(
 
     # 2. Create a new figure and axes for this frame
     fig, axs = plt.subplots(
-        2, 3, figsize=(18, 10), sharex=True, sharey=True
+        2, 3, figsize=(9, 5), 
+        sharex=True, sharey=True
     )
 
     titles = [
-        ["Pressure (P) [m]", "X-Wind (WX) [m/s]", "Y-Wind (WY) [m/s]"],
-        ["Sea Surface (SSH) [m]", "X-Velocity (VX) [m/s]", "Y-Velocity (VY) [m/Container's's]"],
+        ["Pressure (P) [m]", "X-Wind (WX) [m s$^{-1}$]", "Y-Wind (WY) [m s$^{-1}$]"],
+        ["Storm Surge Height (SSH) [m]", "X-Velocity (VX) [m s$^{-1}$]", "Y-Velocity (VY) [m s$^{-1}$]"],
     ]
     keys = [
         ["P", "WX", "WY"],
         ["SSH", "VX", "VY"]
     ]
     cmaps = [
-        [cmocean.cm.thermal, cmocean.cm.diff, cmocean.cm.diff],
-        [cmocean.cm.diff, cmocean.cm.diff, cmocean.cm.diff],
+        [cmocean.cm.thermal, cmocean.cm.balance, cmocean.cm.balance],
+        [cmocean.cm.balance, cmocean.cm.balance, cmocean.cm.balance],
     ]
     
     # 3. Plot all 6 subplots
@@ -239,9 +240,9 @@ def plot_single_frame(
             ax.set_aspect("equal")
             
             if i == 1:
-                ax.set_xlabel("X Coordinate")
+                ax.set_xlabel("Longitude [$^{\circ}$E]")
             if j == 0:
-                ax.set_ylabel("Y Coordinate")
+                ax.set_ylabel("Latitude [$^{\circ}$N]")
             
             # Fix axes limits to prevent plot jitter
             if x_coords.size > 0 and y_coords.size > 0:
@@ -355,11 +356,11 @@ def create_animation_from_frames(
     compile_gif_from_frames(frame_dir, output_gif_path, fps)
 
     # 7. Clean up
-    try:
-        shutil.rmtree(frame_dir)
-        print(f"Cleaned up temporary directory: {frame_dir}")
-    except Exception as e:
-        print(f"Warning: Failed to clean up {frame_dir}. Error: {e}")
+    #try:
+    #    shutil.rmtree(frame_dir)
+    #    print(f"Cleaned up temporary directory: {frame_dir}")
+    #except Exception as e:
+    #    print(f"Warning: Failed to clean up {frame_dir}. Error: {e}")
 
 
 if __name__ == "__main__":
