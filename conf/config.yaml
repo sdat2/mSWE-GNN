@@ -39,6 +39,10 @@ model_params:
   mlp_activation: 'prelu'
   type_gnn: 'GCN'
   gnn_activation: 'tanh'
+  K: 3
+  normalize: true
+  with_gradient: true
+  edge_mlp: true
 
 trainer_options:
   batch_size: 2

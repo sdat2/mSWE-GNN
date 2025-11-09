@@ -36,8 +36,17 @@ echo "Starting python script..."
 
 # python -m adforce_main machine=jasmin model_params.model_type=MonolithicMLP
 
-# python -m adforce_main machine=jasmin  model_params.model_type=GNN model_params.type_gnn=GAT
-python -m adforce_main machine=jasmin  model_params.model_type=SWEGNN
+python -m adforce_main \
+    machine=jasmin \
+    model_params.model_type=GNN \
+    model_params.type_gnn=SWEGNN \
+    model_params.hid_features=64 \
+    model_params.K=3 \
+    model_params.normalize=True \
+    model_params.with_gradient=True \
+    model_params.edge_mlp=True \
+    trainer_options.batch_size=2
+# python -m adforce_main machine=jasmin  model_params.model_type=SWEGNN
 
 # python -m adforce_main # .py #--data-path $DATA_LOCAL_PATH --output-dir $RESULTS_LOCAL_PATH
 echo "Script finished."
