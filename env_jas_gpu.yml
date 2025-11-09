@@ -1,0 +1,48 @@
+# To create this environment:
+# micromamba env create -f env_jas_gpu.yml -y -n mswegnn-gpu &> env_solve.log
+name: mswegnn-gpu
+channels:
+  - nvidia  # <-- ADDED: This channel provides libcublas and other CUDA libs
+  - pytorch
+  - pyg
+  - conda-forge
+  - nodefaults
+dependencies:
+  # --- Core ---
+  - conda-forge::python=3.10
+  - conda-forge::pip
+
+  # --- ML Stack (GPU-Enabled for CUDA 12.1+) ---
+  - pytorch::pytorch
+  - pytorch::pytorch-cuda=12.1  # <-- This will now find its dependencies in the 'nvidia' channel
+  
+  # --- PyG (GPU-Enabled) ---
+  - pyg::pyg
+  - pyg::pytorch-scatter
+  - pyg::pytorch-sparse
+
+  # --- Lightning & Science Stack ---
+  - conda-forge::lightning
+  - conda-forge::numpy
+  - conda-forge::scipy
+  - conda-forge::pandas
+  - conda-forge::scikit-learn
+  - conda-forge::numba
+  - conda-forge::netcdf4
+  - conda-forge::xarray
+  - conda-forge::fiona
+  - conda-forge::shapely
+
+  # --- Pip ---
+  - pip:
+    - UGrid==0.13.0
+    - -e .
+    - matplotlib
+    - ipykernel
+    - tqdm
+    - seaborn
+    - pytest
+    - triangle
+    - hydra-core
+    - wandb
+    - sithom

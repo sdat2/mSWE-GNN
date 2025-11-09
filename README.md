@@ -7,6 +7,8 @@ We created additional training data through forcing the ADCIRC model with storm 
 Look at the `generate_training_data.py` script for how we generated the training data:
 <https://github.com/sdat2/PotentialHeight/blob/main/adforce/generate_training_data.py>
 
+We have adapted the pytorch geometric based mSWE-GNN code to work with the ADFORCE data structure and to create models that can emulate storm surge events over the North West Atlantic/ Carribean Mesh.
+
 ## Environment setup
 
 Using `micromamba` and flexible yaml settings for a robust pure-cpu environment:
@@ -21,11 +23,11 @@ micromamba create -n mswegnn -f env.yml
 - `conf/`: Configuration files for hyperparameters and settings.
 - `archer2.slurm`: SLURM job script for running on the Archer2 supercomputer.
 - `mswegnn/`: All the main code turned into a python package for easier management.
-    - `database/`: Data handling and preprocessing modules.
-       - `graph_creation.py`: Funcs to process original D-Hydro output.
+    - `database/`: Data handling and preprocessing modules. (not used).
     - `models/`: Model definitions and architectures.
         - `adforce_gnn.py`: graph neural network layers.
         - `adforce_models.py`: full model architectures.
+        - `adforce_helpers.py`: helper functions for models.
     - `training/`: Training routines and loss functions.
         - `adforce_train.py`: training loop and evaluation.
         - `adforce_loss.py`: loss functions.
@@ -34,6 +36,10 @@ micromamba create -n mswegnn -f env.yml
         - `adforce_scaling.py`: data normalization and scaling.
         - `adforce_animate.py`: animate adforce inputs and outputs using dataloader.
 - `jasmin.slurm`: SLURM job script for running on the JASMIN supercomputer.
+- `env_jas_gpu.yml`: Micromamba environment file for JASMIN GPU nodes.
+- `env.yml`: Micromamba environment file for local CPU usage.
+- `requirements.txt`: Old original Python package dependencies (doesn't correctly install on most machines).
+- `setup.py`: Setup file for locally installing the `mswegnn` package.
 
 ## Run instructions
 To run the training pipeline, use the following command:
