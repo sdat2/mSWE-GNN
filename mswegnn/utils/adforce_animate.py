@@ -2,17 +2,24 @@
 Improved animation function for the AdforceLazyDataset.
 
 This script creates a 6-panel animation of a full simulation event
-by rendering each frame as a PNG and then compiling them into a GIF
-using `imageio`.
+by rendering each frame as a PNG. It then compiles these frames
+into *both* a high-quality MP4 (for video) and a quantized GIF
+(for markdown/previews).
 
 ---
-V5 (Final Fix):
-- Corrected the `compile_gif_from_frames` function.
-- The `imageio.v3.imwrite` function (for GIFs) expects a
-  *list of image arrays (numpy)*, not a *list of filenames*.
-- This version now correctly reads all the saved PNGs back
-  into a list (`images = [iio.imread(f) for f in ...]`)
-  and passes that list of arrays to `iio.imwrite`.
+V8 (Merged):
+- Merged all user plot preferences (from V5) into the
+  dual-output (GIF + MP4) script.
+- User preferences include:
+  - figsize=(9, 5)
+  - cmocean.cm.balance
+  - "Storm Surge Height"
+  - LaTeX-style units ("m s$^{-1}$")
+  - "Longitude" and "Latitude" labels
+- **FIXED:** Removed the crashing `iio.immeta` check at the top.
+  The try/except block in `compile_video...` is the
+  correct and only necessary check.
+- Cleanup is commented out per user's V5.
 ---
 """
 
@@ -29,7 +36,7 @@ from tqdm import tqdm
 import imageio.v3 as iio
 
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
-from sithom.plot import plot_defaults
+from sithom.plot import plot_defaults, label_subplots
 
 # Try to import cmocean
 try:
@@ -76,8 +83,6 @@ def get_frame_data(
 ) -> Dict[str, np.ndarray]:
     """
     Retrieves and processes all 6 variables for a single animation frame.
-
-    This function un-scales inputs and calculates SSH from outputs.
     """
     data = dataset.get(idx)
     p_t = dataset.previous_t
@@ -129,9 +134,6 @@ def calculate_global_climits(
 ) -> Dict[str, Tuple[float, float]]:
     """
     Calculates global vmin/vmax by iterating through the entire dataset.
-
-    This is a slow but necessary step to ensure fixed color scales.
-    It uses robust percentiles (2nd, 98th) to handle outliers.
     """
     print(f"Calculating global color limits for {len(dataset)} frames...")
     
@@ -159,7 +161,7 @@ def calculate_global_climits(
         global_p98 = np.nanmax(p98_vals[key])
 
         if key in diverging_vars:
-            # Center on zero using the largest absolute percentile
+            # Center on zero
             v_abs = np.nanmax([np.abs(global_p2), np.abs(global_p98)])
             if v_abs == 0: v_abs = 0.1 # Avoid vmin=vmax
             climits[key] = (-v_abs, v_abs)
@@ -187,28 +189,34 @@ def plot_single_frame(
 ):
     """
     Creates, plots, and saves a *single* frame from scratch.
-
-    This function is called in a loop and is designed to be stateless.
-    It creates a new figure and closes it to prevent memory leaks.
+    (Incorporates user's plotting preferences)
     """
     
     # 1. Get data for this specific frame
     data_dict = get_frame_data(dataset, idx, dem)
 
     # 2. Create a new figure and axes for this frame
+    # (Using user's preferred figsize)
     fig, axs = plt.subplots(
-        2, 3, figsize=(9, 5), 
+        2, 3, figsize=(6, 4), 
         sharex=True, sharey=True
     )
 
+    # (Using user's preferred titles)
+    #titles = [
+    #    ["Pressure (P) [m]", "X-Wind (WX) [m s$^{-1}$]", "Y-Wind (WY) [m s$^{-1}$]"],
+    #    ["Storm Surge Height (SSH) [m]", "X-Velocity (VX) [m s$^{-1}$]", "Y-Velocity (VY) [m s$^{-1}$]"],
+    # ]
+    # just the symbol and units
     titles = [
-        ["Pressure (P) [m]", "X-Wind (WX) [m s$^{-1}$]", "Y-Wind (WY) [m s$^{-1}$]"],
-        ["Storm Surge Height (SSH) [m]", "X-Velocity (VX) [m s$^{-1}$]", "Y-Velocity (VY) [m s$^{-1}$]"],
+        ["P [m]", "WX [m s$^{-1}$]", "WY [m s$^{-1}$]"],
+        ["SSH [m]", "VX [m s$^{-1}$]", "VY [m s$^{-1}$]"],
     ]
     keys = [
         ["P", "WX", "WY"],
         ["SSH", "VX", "VY"]
     ]
+    # (Using user's preferred colormaps)
     cmaps = [
         [cmocean.cm.thermal, cmocean.cm.balance, cmocean.cm.balance],
         [cmocean.cm.balance, cmocean.cm.balance, cmocean.cm.balance],
@@ -228,7 +236,8 @@ def plot_single_frame(
                 y_coords,
                 c=data,
                 cmap=cmaps[i][j],
-                s=1,
+                s=0.2,
+                marker=".",
                 vmin=vmin,
                 vmax=vmax
             )
@@ -239,6 +248,7 @@ def plot_single_frame(
             ax.set_title(titles[i][j])
             ax.set_aspect("equal")
             
+            # (Using user's preferred axis labels)
             if i == 1:
                 ax.set_xlabel("Longitude [$^{\circ}$E]")
             if j == 0:
@@ -250,44 +260,71 @@ def plot_single_frame(
                 ax.set_ylim(np.nanmin(y_coords), np.nanmax(y_coords))
 
     # 4. Add title and save
-    fig.suptitle(f"Dataset Index: {idx} / {total_frames - 1}")
+
+    # fig.suptitle(f"Dataset Index: {idx} / {total_frames - 1}") # this was too high
+    fig.suptitle(f"Dataset Index: {idx} / {total_frames - 1}", y=0.9)
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    label_subplots(axs)
     fig.savefig(frame_path, dpi=150, bbox_inches='tight')
     
     # 5. --- VITAL --- Close the figure to free memory
     plt.close(fig)
 
 
-# --- *** CORRECTED FUNCTION *** ---
 def compile_gif_from_frames(
     frame_dir: str, 
     output_gif_path: str, 
-    fps: int
+    fps: int,
+    images: List[np.ndarray] # Accepts pre-loaded images
 ):
     """
     Uses imageio.v3.imwrite to compile all PNGs into a single GIF.
     """
-    # Find all frame files and sort them
-    frame_files = sorted(glob.glob(os.path.join(frame_dir, "frame_*.png")))
-    if not frame_files:
-        print(f"Error: No frames found in {frame_dir}")
+    if not images:
+        print("No images found for GIF compilation.")
         return
 
-    print(f"Compiling {len(frame_files)} frames into {output_gif_path}...")
+    print(f"Compiling {len(images)} frames into {output_gif_path}...")
     
-    # --- *** FIX *** ---
-    # We must read the images into a list of numpy arrays first.
-    # `iio.imwrite` (with the pillow backend) expects image data,
-    # not filenames.
-    images = []
-    for frame_file in tqdm(frame_files, desc="Reading frames for GIF"):
-        images.append(iio.imread(frame_file))
-
-    # Now, pass the list of *images (arrays)* to imwrite
+    # Pass the list of *images (arrays)* to imwrite
     iio.imwrite(output_gif_path, images, fps=fps, loop=0)
-    # --- *** END FIX *** ---
     
     print("GIF compilation complete.")
+
+
+def compile_video_from_frames(
+    frame_dir: str, 
+    output_video_path: str, 
+    fps: int,
+    images: List[np.ndarray] # Accepts pre-loaded images
+):
+    """
+    Uses imageio.v3.imwrite to compile all PNGs into a high-quality MP4.
+    """
+    if not images:
+        print("No images found for Video compilation.")
+        return
+
+    print(f"Compiling {len(images)} frames into {output_video_path}...")
+    
+    # Use 'libx264' codec for high-quality MP4
+    try:
+        iio.imwrite(
+            output_video_path, 
+            images, 
+            fps=fps, 
+            codec="libx264", 
+            quality=9, 
+            pixelformat="yuv420p"
+        )
+        print("Video compilation complete.")
+    except Exception as e:
+        print(f"\n--- ERROR ---")
+        print(f"Video compilation failed: {e}")
+        print("This *likely* means the 'imageio-ffmpeg' plugin is not installed.")
+        print("Please install it and try again:")
+        print("  pip install imageio[ffmpeg]")
+        print("-------------")
 
 
 def create_animation_from_frames(
@@ -295,7 +332,8 @@ def create_animation_from_frames(
     nc_file_path: str,
     p_t: int,
     scaling_stats_path: str = None,
-    output_gif_path: str = "adforce_6panel_animation.gif",
+    output_gif_path: str = None, # Can be None
+    output_video_path: str = None, # Can be None
     fps: int = 10,
 ):
     """
@@ -336,9 +374,10 @@ def create_animation_from_frames(
 
     # 5. Render all frames
     print("Rendering frames (recreating plot for each frame)...")
-    
+    frame_files = [] # Store file paths
     for idx in tqdm(range(total_frames), desc="Rendering frames"):
         frame_path = os.path.join(frame_dir, f"frame_{idx:05d}.png")
+        frame_files.append(frame_path)
         
         # Call the stateless plotting function
         plot_single_frame(
@@ -352,10 +391,21 @@ def create_animation_from_frames(
             frame_path
         )
     
-    # 6. Compile GIF
-    compile_gif_from_frames(frame_dir, output_gif_path, fps)
+    # 6. Read images back into memory *once*
+    images = []
+    if output_gif_path or output_video_path:
+        for frame_file in tqdm(frame_files, desc="Reading frames into memory"):
+            images.append(iio.imread(frame_file))
 
-    # 7. Clean up
+    # 7. Compile GIF
+    if output_gif_path:
+        compile_gif_from_frames(frame_dir, output_gif_path, fps, images)
+
+    # 8. Compile Video
+    if output_video_path:
+        compile_video_from_frames(frame_dir, output_video_path, fps, images)
+
+    # 9. Clean up (Matching user's V5, this is commented out)
     #try:
     #    shutil.rmtree(frame_dir)
     #    print(f"Cleaned up temporary directory: {frame_dir}")
@@ -381,11 +431,13 @@ if __name__ == "__main__":
     # directory for the AdforceLazyDataset.
     previous_time_steps = 2
     
-    # Define the output GIF path
-    output_gif = "adforce_6panel_animation_robust.gif"
+    # Define the output paths
+    # Set to None to skip creation
+    output_gif = "adforce_6panel_animation.gif"
+    output_video = "adforce_6panel_animation.mp4"
     
-    # Frames per second for the final GIF
-    gif_fps = 10
+    # Frames per second for the final animations
+    anim_fps = 10
     # --- END CONFIGURATION ---
 
     if not os.path.exists(netcdf_file):
@@ -397,6 +449,11 @@ if __name__ == "__main__":
             previous_time_steps,
             scaling_stats_path=scaling_stats_file,
             output_gif_path=output_gif,
-            fps=gif_fps,
+            output_video_path=output_video,
+            fps=anim_fps,
         )
-        print(f"\nAnimation test complete. GIF saved to {os.path.abspath(output_gif)}")
+        print(f"\nAnimation test complete.")
+        if output_gif:
+            print(f"GIF saved to {os.path.abspath(output_gif)}")
+        if output_video:
+            print(f"Video saved to {os.path.abspath(output_video)}")
