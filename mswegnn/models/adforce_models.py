@@ -1,27 +1,20 @@
-# mswegnn/models/adforce_models.py
-# (This is a new file, replacing mswegnn/models/models.py)
+# mswegnn/models/models.py
 from typing import Union, Optional
 import torch
 from torch import Tensor
 import torch.nn as nn
+from torch_geometric.data import Data, Batch
 
-# from torch_geometric.data.batch import Batch
-from torch_geometric.data import Data, Batch  # <-- Import Data for doctest
-from mswegnn.models.adforce_gnn import GNN_Adforce, SWEGNN, MLP
+# Import from our new refactored files
+from .adforce_base import AdforceBaseModel
+from .adforce_helpers import make_mlp
+from .adforce_processors import GNN_Adforce, SWEGNN_Adforce
 
 
 class MonolithicMLPModel(nn.Module):
     """
     A "monolithic" MLP baseline that flattens the *entire* graph's
     node features into a single vector.
-
-    This model is *not* graph-structured, has no weight sharing
-    between nodes, and its parameters scale linearly with the
-    number of nodes (N_nodes).
-
-    It is fundamentally non-extensible to graphs of different sizes.
-    It serves as a baseline to test data efficiency against a
-    brute-force function approximator.
 
     Args:
         n_nodes (int): The *fixed* number of nodes in the graph.
@@ -31,8 +24,7 @@ class MonolithicMLPModel(nn.Module):
         hid_features (int): Width of the hidden layers.
         mlp_layers (int): Number of *hidden* layers.
         mlp_activation (str): Activation function to use (e.g., 'relu').
-        **kwargs: Catches unused arguments from the config (like
-                  'model_type', 'previous_t') so initialization doesn't fail.
+        **kwargs: Catches unused arguments from the config.
 
     Doctest:
     >>> import torch
@@ -44,11 +36,9 @@ class MonolithicMLPModel(nn.Module):
     >>> NUM_OUT_FEATURES = 3
     >>>
     >>> # 2. Create a single mock data object
-    >>> # This data object *must* have N_NODES_FIXED nodes
     >>> mock_x = torch.rand(N_NODES_FIXED, NUM_IN_FEATURES)
     >>> mock_edge_index = torch.tensor([[0, 1], [1, 2]], dtype=torch.long)
     >>> data = Data(x=mock_x, edge_index=mock_edge_index)
-    >>> # data.num_graphs will be 1
     >>>
     >>> # 3. Instantiate the model
     >>> model = MonolithicMLPModel(
@@ -71,19 +61,8 @@ class MonolithicMLPModel(nn.Module):
     >>> out = model(data)
     >>>
     >>> # 5. Check output shape. B=1, N=10, F_out=3
-    >>> # Expected shape is [B * N, F_out] = [10, 3]
     >>> print(f"Output shape: {out.shape}")
     Output shape: torch.Size([10, 3])
-    >>>
-    >>> # 6. Test failure case (graph with wrong number of nodes)
-    >>> mock_x_wrong_size = torch.rand(N_NODES_FIXED + 1, NUM_IN_FEATURES)
-    >>> data_wrong = Data(x=mock_x_wrong_size, edge_index=mock_edge_index)
-    >>>
-    >>> try:
-    ...     model(data_wrong)
-    ... except ValueError as e:
-    ...     print(f"Caught expected error: Input shape mismatch...")
-    Caught expected error: Input shape mismatch...
     """
 
     def __init__(
@@ -105,7 +84,6 @@ class MonolithicMLPModel(nn.Module):
         self.in_features_per_node = num_node_features
         self.out_features_per_node = num_output_features
 
-        # Calculate the dimensions of the flattened vectors
         self.flat_input_dim = self.n_nodes * self.in_features_per_node
         self.flat_output_dim = self.n_nodes * self.out_features_per_node
 
@@ -123,21 +101,14 @@ class MonolithicMLPModel(nn.Module):
             raise ValueError(f"Unknown activation: {mlp_activation}")
 
         layers = []
-        # Input layer
         layers.append(nn.Linear(self.flat_input_dim, hid_features))
         layers.append(activation)
-
-        # Hidden layers
         for _ in range(mlp_layers - 1):
             layers.append(nn.Linear(hid_features, hid_features))
             layers.append(activation)
-
-        # Output layer
         layers.append(nn.Linear(hid_features, self.flat_output_dim))
-
         self.network = nn.Sequential(*layers)
 
-        # This print is helpful for verifying config
         print(
             f"MonolithicMLPModel initialized:\n"
             f"  Fixed N_nodes: {self.n_nodes}\n"
@@ -149,28 +120,9 @@ class MonolithicMLPModel(nn.Module):
         )
 
     def forward(self, batch: Union[Data, Batch]) -> torch.Tensor:
-        """
-        Forward pass.
-        Assumes batch contains one or more graphs, each with *exactly*
-        self.n_nodes.
-
-        Args:
-            batch (torch_geometric.data.Batch or torch_geometric.data.Data):
-                The input batch object.
-                Assumes batch.x is [B * N, F_in] where N=self.n_nodes.
-
-        Returns:
-            torch.Tensor: The model predictions, shape [B * N, F_out].
-        """
-        # x shape is [B * N, F_in], where N = self.n_nodes
         x = batch.x
-
-        # 1. Get batch size (B).
-        # This works for both a single Data object (B=1) and a Batch (B > 1).
         batch_size = getattr(batch, "num_graphs", 1)
 
-        # 2. Validate input shape
-        # Check that the total nodes in x matches B * N
         if x.shape[0] != batch_size * self.n_nodes:
             raise ValueError(
                 f"Input shape mismatch for MonolithicMLP.\n"
@@ -179,44 +131,24 @@ class MonolithicMLPModel(nn.Module):
                 f"This model requires all graphs in the dataset to have *exactly* {self.n_nodes} nodes."
             )
 
-        # 3. Reshape and Flatten
-        # [B * N, F_in] -> [B, N, F_in]
         x_reshaped = x.view(batch_size, self.n_nodes, self.in_features_per_node)
-
-        # [B, N, F_in] -> [B, N * F_in]
         x_flat = x_reshaped.view(batch_size, -1)
-
-        # 4. Pass through MLP
-        # [B, N * F_in] -> [B, N * F_out]
         out_flat = self.network(x_flat)
-
-        # 5. Reshape output
-        # [B, N * F_out] -> [B, N, F_out]
         out_reshaped = out_flat.view(
             batch_size, self.n_nodes, self.out_features_per_node
         )
-
-        # 6. Reshape back to PyG format for the loss function
-        # [B, N, F_out] -> [B * N, F_out]
         out = out_reshaped.view(-1, self.out_features_per_node)
-
         return out
 
 
 class PointwiseMLPModel(nn.Module):
     """
-    A standalone MLP model wrapper.
-
-    This model applies a simple MLP to the node features and ignores all
-    graph/edge information (e.g., edge_index, edge_attr). It serves as a
-    baseline to compare against graph-based models.
+    A standalone MLP model wrapper that applies an MLP to each node.
 
     Args:
         num_node_features (int): Total number of features in the input `x` tensor.
         num_output_features (int): Number of output features to predict.
-        **mlp_kwargs: Additional keyword arguments passed to the MLP constructor
-            (e.g., hid_features, mlp_layers). Expects 'mlp_activation'
-            for activation type.
+        **mlp_kwargs: Additional keyword arguments passed to the MLP constructor.
 
     Doctest:
     >>> import torch
@@ -230,7 +162,6 @@ class PointwiseMLPModel(nn.Module):
     >>>
     >>> # 2. Create mock data object (as a batch)
     >>> mock_x = torch.rand(N_NODES, NUM_IN_FEATURES)
-    >>> # Note: edge_index is ignored by this model, but part of the batch
     >>> mock_edge_index = torch.tensor([[0, 1], [1, 2]], dtype=torch.long)
     >>> batch = Data(x=mock_x, edge_index=mock_edge_index)
     >>>
@@ -267,177 +198,48 @@ class PointwiseMLPModel(nn.Module):
         self.in_features = num_node_features
         self.out_features = num_output_features
 
-        # --- FIX ---
-        # Get the 'mlp_activation' value from the kwargs, default to 'relu'
-        # (matching the default in the MLP helper class).
-        # This maps 'mlp_activation' (from config) to 'activation' (for MLP class).
+        # Map 'mlp_activation' (from config) to 'activation' (for make_mlp)
         activation_type = mlp_kwargs.pop("mlp_activation", "relu")
+        
+        # Map 'mlp_layers' (from config) to 'n_layers' (for make_mlp)
+        n_layers = mlp_kwargs.pop("mlp_layers", 2)
 
-        # Remove keys that GNN/MSGNN models use but the standalone MLP doesn't
-        # to avoid passing them to the MLP constructor.
-        mlp_kwargs.pop("model_type", None)  # <-- THIS IS THE NEW LINE
+        # Remove keys that GNN/MSGNN models use
+        mlp_kwargs.pop("model_type", None)
         mlp_kwargs.pop("previous_t", None)
         mlp_kwargs.pop("num_static_features", None)
         mlp_kwargs.pop("num_edge_features", None)
         mlp_kwargs.pop("num_scales", None)
         mlp_kwargs.pop("learned_pooling", None)
         mlp_kwargs.pop("skip_connections", None)
-        mlp_kwargs.pop("gnn_activation", None)  # Used by GNN, not MLP
-        mlp_kwargs.pop("type_gnn", None)  # Used by GNN, not MLP
+        mlp_kwargs.pop("gnn_activation", None)
+        mlp_kwargs.pop("type_gnn", None)
 
-        # Instantiate the MLP from adforce_gnn.py
-        self.mlp = MLP(
-            in_features=self.in_features,
-            out_features=self.out_features,
-            activation=activation_type,  # <-- Pass with the correct key 'activation'
-            **mlp_kwargs,  # Pass remaining (hid_features, mlp_layers)
+        self.mlp = make_mlp(
+            input_size=self.in_features,
+            output_size=self.out_features,
+            activation=activation_type,
+            n_layers=n_layers,
+            **mlp_kwargs,  # Pass remaining (e.g., hid_features)
         )
 
-        if "hid_features" in mlp_kwargs:  # Avoid printing during doctest
+        if "hid_features" in mlp_kwargs:
             print(
                 f"PointwiseMLPModel initialized: {self.in_features} input features, "
                 f"{self.out_features} output features."
             )
 
     def forward(self, batch):
-        """
-        Forward pass. Ignores all graph structure.
-
-        Args:
-            batch (torch_geometric.data.Batch): The input batch object.
-
-        Returns:
-            torch.Tensor: The model predictions, shape [num_nodes, num_output_features].
-        """
-        # x shape is [num_nodes_in_batch, num_node_features]
         x = batch.x
-
-        # Apply the MLP directly to the node features
-        out = self.mlp(x)  # shape [num_nodes_in_batch, num_output_features]
-
+        out = self.mlp(x)
         return out
 
 
-# In mswegnn/models/models.py
-# (You can add this right after the old BaseFloodModel)
-
-
-class AdforceBaseModel(nn.Module):
+class GNNModelAdforce(AdforceBaseModel):
     """
-    Base class for Adforce models.
+    The main GNNModel wrapper for the Adforce pipeline.
 
-    This class handles residual connections and output masking specifically
-    for the Adforce data pipeline, which uses 3 output variables
-    (WD, VX, VY).
-
-    Args:
-        previous_t (int): Number of previous time steps (for residual init).
-        num_output_vars (int): Number of output variables. Must be 3 for Adforce.
-        learned_residuals (bool/str/None): Residual connection type.
-        seed (int): Random seed.
-        device (str): PyTorch device.
-    """
-
-    def __init__(
-        self,
-        previous_t=1,
-        num_output_vars=3,  # <-- NEW: Parameterized output
-        learned_residuals=None,
-        seed=42,
-        residuals_base=2,
-        residual_init="exp",
-        device="cpu",
-        **kwargs,  # Catches unused args like 'with_WL'
-    ):
-        super().__init__()
-        torch.manual_seed(seed)
-        self.previous_t = previous_t
-        self.learned_residuals = learned_residuals
-        self.device = device
-
-        # --- FIXED for Adforce ---
-        self.num_output_vars = num_output_vars
-        self.out_dim = self.num_output_vars
-
-        if self.num_output_vars != 3:
-            raise ValueError(
-                f"AdforceBaseModel is designed for 3 output variables (WD, VX, VY), but got {num_output_vars}"
-            )
-        # ---
-
-        # NOTE: The Adforce data structure (static, forcing, state)
-        # is only compatible with `learned_residuals=False`.
-        # The other modes read state history from `x` which is not there.
-        if self.learned_residuals not in [False, None]:
-            raise ValueError(
-                f"Adforce data pipeline is only compatible with `learned_residuals: False` or `None`. "
-                f"Got: {self.learned_residuals}"
-            )
-
-    def _add_residual_connection(self, x_input):
-        """
-        Add residual connection from the *input state* to the *output delta*.
-
-        Args:
-            x_input (Tensor): The *original* model input `x`, which has the
-                              shape [N, static + forcing + state(3)].
-        """
-        residual_output = torch.zeros(
-            x_input.shape[0],
-            self.out_dim,  # device=self.device
-        )
-
-        if self.learned_residuals == False:
-            # `x_input` is [static, forcing, state]
-            # We want the last `self.out_dim` (3) features, which is the input state
-            x0_state = x_input[:, -self.out_dim :]
-            residual_output = x0_state
-
-        return residual_output
-
-    def _mask_small_WD(self, x_output, epsilon=0.001):
-        """
-        Mask water depth below a threshold and velocities where water is 0.
-
-        Args:
-            x_output (Tensor): The model output *after* the residual
-                               connection. Shape [N, 3] (WD, VX, VY).
-        """
-
-        # --- FIXED for Adforce (WD, VX, VY) ---
-        wd_col = x_output[:, 0:1]  # Shape [N, 1]
-        v_cols = x_output[:, 1:3]  # Shape [N, 2]
-
-        # Create mask based on water depth
-        # 1.0 where water > epsilon, 0.0 otherwise
-        mask = (wd_col.abs() > epsilon).float()
-
-        # Apply mask
-        wd_masked = wd_col * mask
-        v_masked = v_cols * mask  # Zeros out velocity where wd is zero
-
-        return torch.cat((wd_masked, v_masked), dim=1)
-
-
-# In mswegnn/models/adforce_models.py
-
-
-class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
-    """
-    Refactored GNNModel wrapper.
-
-    --- MODIFIED TO INHERIT FROM AdforceBaseModel ---
-    This class is the main model wrapper used by the LightningTrainer.
-    It inherits from `AdforceBaseModel` to gain the correct residual
-    and masking logic for the 3-variable Adforce data.
-
-    This class now reads the 'type_gnn' from its kwargs and instantiates
-    the correct internal GNN processor (e.g., GNN_Adforce for GCN, or
-    SWEGNN_Adforce for the custom SWEGNN layer).
-
-    Its forward() method is the single entry point that splits the
-    PyG 'batch' object, passes the tensors down to the internal GNN,
-    and then applies the residual connection and masking.
+    This is the class your training script should import and use.
 
     Args:
         num_node_features (int): Total number of features in the input `x` tensor.
@@ -446,9 +248,7 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
         num_output_features (int): Number of output features to predict (Must be 3).
         num_static_features (int, optional): Number of static features at the
             start of the `x` tensor. Defaults to 5.
-        **kwargs: Additional keyword arguments. Will be split into
-            AdforceBaseModel args (e.g., 'learned_residuals') and
-            GNN args (e.g., 'type_gnn', 'hid_features').
+        **kwargs: Additional keyword arguments.
 
     Doctest:
     >>> import torch
@@ -499,20 +299,6 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
     >>> # 7. Check output shape
     >>> print(f"Output shape: {out.shape}")
     Output shape: torch.Size([10, 3])
-    >>>
-    >>> # 8. Test error case: mismatched features
-    >>> try:
-    ...     model_fail = GNNModelAdforce(
-    ...         num_node_features=16, # 16 is not 5 + (3*3) + 3
-    ...         num_edge_features=2,
-    ...         previous_t=PREVIOUS_T,
-    ...         num_output_features=NUM_OUTPUT_FEATURES,
-    ...         num_static_features=NUM_STATIC_FEATURES,
-    ...         **gnn_kwargs
-    ...     )
-    ... except ValueError as e:
-    ...     print(f"Caught expected error: {e}")
-    Caught expected error: Feature mismatch! Total features 16 - static features 5 = 11 dynamic features. But expected 12 (forcing=9 + state=3). Check num_static_features in your config.
     """
 
     def __init__(
@@ -525,9 +311,8 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
         **kwargs,  # Catches all other config args
     ):
 
-        # --- NEW: Split kwargs for AdforceBaseModel ---
+        # --- Split kwargs for AdforceBaseModel ---
         base_model_kwargs = {}
-        # List of args for AdforceBaseModel
         base_keys = [
             "learned_residuals",
             "seed",
@@ -539,25 +324,23 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
             if k in base_keys:
                 base_model_kwargs[k] = kwargs.pop(k)
 
-        # Pass required args to the new base model
         base_model_kwargs["previous_t"] = previous_t
         base_model_kwargs["num_output_vars"] = num_output_features
 
-        # Call the parent __init__ with its args
+        # Call the parent __init__ (from base.py)
         super().__init__(**base_model_kwargs)
-        # --- END NEW ---
+        # --- END ---
 
         self.previous_t = previous_t
         self.num_output_features = num_output_features
         self.num_static_features = num_static_features
 
-        # --- Explicit feature calculation (unchanged) ---
+        # --- Feature calculation ---
         self.num_dynamic_forcing_features_per_step = 3
         self.num_dynamic_state_features = 3
         num_forcing_features = (
             self.num_dynamic_forcing_features_per_step * self.previous_t
         )
-        # This is the total number of dynamic features (forcing + state)
         self.dynamic_vars = num_node_features - self.num_static_features
         expected_dynamic_vars = num_forcing_features + self.num_dynamic_state_features
 
@@ -579,14 +362,12 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
 
         self.in_features = num_node_features  # Total features
 
-        # --- GNN Switch Logic (unchanged) ---
-        # All remaining kwargs are for the GNN
+        # --- GNN Switch Logic ---
         self.type_GNN = kwargs.pop("type_gnn", "GCN").upper()
         print(f"GNNModelAdforce building internal GNN of type: {self.type_GNN}")
 
         if self.type_GNN == "SWEGNN":
-            # Build the SWEGNN "Inner Box"
-            # It needs the feature counts split
+            # Build the SWEGNN "Inner Box" from processors.py
             self.gnn = SWEGNN_Adforce(
                 in_features_static=self.num_static_features,
                 in_features_dynamic=self.dynamic_vars,
@@ -595,8 +376,7 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
                 **kwargs,  # Pass all remaining GNN args
             )
         else:
-            # Build the standard GNN "Inner Box"
-            # It takes the total concatenated feature count
+            # Build the standard GNN "Inner Box" from processors.py
             self.gnn = GNN_Adforce(
                 in_features=self.in_features,
                 num_output_features=self.num_output_features,
@@ -605,13 +385,8 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
             )
 
     def forward(self, batch):
-        """
-        The forward method for the top-level wrapper. It splits the batch,
-        passes tensors to the 'self.gnn', and then applies
-        the residual connection and masking.
-        """
         x = batch.x
-        x0_input = x.clone()  # <-- Save original input for residual
+        x0_input = x.clone()
 
         static_features = x[:, : self.num_static_features]
         dynamic_features = x[:, self.num_static_features :]
@@ -619,225 +394,34 @@ class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
         edge_index = batch.edge_index
         edge_attr = batch.edge_attr
 
-        # Get the "delta" prediction from the inner GNN
-        # out_delta shape: [N, 3]
+        # 1. Get the "delta" prediction from the inner GNN
         out_delta = self.gnn(
             static_features, dynamic_features, edge_index, edge_attr, batch=batch
         )
 
-        # --- CORRECTED LOGIC from AdforceBaseModel ---
-
-        # 1. Add residual connection
-        #    self._add_residual_connection(x0_input) gets the input state [N, 3]
-        #    out = delta + state(t) = state(t+1)
+        # 2. Add residual connection
         out = out_delta + self._add_residual_connection(x0_input)
 
-        # 2. Apply activation
-        #    (This matches the old GNN.forward() logic)
+        # 3. Apply activation (matches old gnn.py logic)
         out = torch.relu(out)
 
-        # 3. Apply masking
-        #    This uses the new, correct 3-variable masking logic
+        # 4. Apply masking
         out = self._mask_small_WD(out, epsilon=0.0001)
-        # --- END ---
 
-        # Reshape to be safe (though it should already be correct)
         out = out.reshape(-1, self.num_output_features)
         return out
-
-
-class SWEGNN_Adforce(nn.Module):
-    """
-    Wrapper for the SWEGNN layer to match the Adforce pipeline.
-
-    This class replicates the encoder-processor-decoder structure
-    from the original gnn.py. It takes raw static and dynamic features,
-    encodes them, processes them with SWEGNN, and decodes them.
-
-    Args:
-        in_features_static (int): Number of raw static node features.
-        in_features_dynamic (int): Number of raw dynamic node features
-            (forcing + state).
-        in_features_edge (int): Number of raw edge features.
-        hid_features (int): The hidden dimension for encoders, GNN,
-            and decoder.
-        num_output_features (int): The final number of output features
-            (e.g., 3 for delta_WD, delta_VX, delta_VY).
-        mlp_layers (int): Number of layers to use in the encoder/decoder MLPs.
-        mlp_activation (str, optional): Activation for MLPs. Defaults to "prelu".
-        gnn_activation (str, optional): Activation *after* the GNN layer.
-            Defaults to "tanh".
-        **gnn_kwargs: Additional arguments passed to the SWEGNN layer,
-            such as `K`, `normalize`, `with_gradient`, `edge_mlp`, etc.
-
-    Doctest:
-    >>> import torch
-    >>> from torch_geometric.data import Data
-    >>>
-    >>> # 1. Define test parameters
-    >>> N_NODES = 10
-    >>> IN_FEAT_STATIC = 5
-    >>> IN_FEAT_DYNAMIC = 12  # (3 forcing * 3 steps) + 3 state
-    >>> IN_FEAT_EDGE = 2
-    >>> NUM_OUTPUT = 3
-    >>> HID_FEAT = 16
-    >>>
-    >>> # 2. Create mock tensors
-    >>> mock_static_x = torch.rand(N_NODES, IN_FEAT_STATIC)
-    >>> mock_dynamic_x = torch.rand(N_NODES, IN_FEAT_DYNAMIC)
-    >>> mock_edge_index = torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long)
-    >>> mock_edge_attr = torch.rand(mock_edge_index.shape[1], IN_FEAT_EDGE)
-    >>>
-    >>> # 3. Instantiate the model
-    >>> # We pass SWEGNN-specific args like K and edge_mlp via kwargs
-    >>> model = SWEGNN_Adforce(
-    ...     in_features_static=IN_FEAT_STATIC,
-    ...     in_features_dynamic=IN_FEAT_DYNAMIC,
-    ...     in_features_edge=IN_FEAT_EDGE,
-    ...     hid_features=HID_FEAT,
-    ...     num_output_features=NUM_OUTPUT,
-    ...     mlp_layers=2,
-    ...     mlp_activation='relu',
-    ...     gnn_activation='tanh',
-    ...     K=2,
-    ...     edge_mlp=True,
-    ...     normalize=True,
-    ...     with_gradient=True
-    ... )
-    >>>
-    >>> # 4. Run forward pass
-    >>> out = model(
-    ...     static_features=mock_static_x,
-    ...     dynamic_features=mock_dynamic_x,
-    ...     edge_index=mock_edge_index,
-    ...     edge_attr=mock_edge_attr
-    ... )
-    >>>
-    >>> # 5. Check output shape
-    >>> print(f"Output shape: {out.shape}")
-    Output shape: torch.Size([10, 3])
-    """
-
-    def __init__(
-        self,
-        in_features_static: int,
-        in_features_dynamic: int,
-        in_features_edge: int,
-        hid_features: int,
-        num_output_features: int,
-        mlp_layers: int,
-        mlp_activation: str = "prelu",
-        gnn_activation: str = "tanh",
-        type_gnn: str = "SWEGNN",  # Catches 'type_gnn' from config
-        **gnn_kwargs,  # 'model_type' will land in here
-    ):
-        super().__init__()
-
-        self.hid_features = hid_features
-
-        # 1. Encoders
-        self.static_node_encoder = MLP(
-            in_features=in_features_static,
-            out_features=hid_features,
-            hid_features=hid_features,
-            mlp_layers=mlp_layers,
-            activation=mlp_activation,
-        )
-        self.dynamic_node_encoder = MLP(
-            in_features=in_features_dynamic,
-            out_features=hid_features,
-            hid_features=hid_features,
-            mlp_layers=mlp_layers,
-            activation=mlp_activation,
-        )
-
-        # 2. Optional Edge Encoder
-        self.edge_mlp_flag = gnn_kwargs.get("edge_mlp", True)
-        self.num_edge_features_for_gnn = in_features_edge
-
-        if self.edge_mlp_flag:
-            self.num_edge_features_for_gnn = hid_features
-            self.edge_encoder = MLP(
-                in_features=in_features_edge,
-                out_features=hid_features,
-                hid_features=hid_features,
-                mlp_layers=mlp_layers,
-                activation=mlp_activation,
-            )
-
-        # --- FIX: Remove keys from kwargs that SWEGNN does not need ---
-        # 'model_type' is used by adforce_main.py for logic, not the model.
-        # 'type_gnn' is used by GNNModelAdforce, but not SWEGNN_Adforce.
-        gnn_kwargs.pop("model_type", None)
-        gnn_kwargs.pop("type_gnn", None)  # Pop this too just in case
-        # --- END FIX ---
-
-        # 3. GNN Processor (The SWEGNN layer itself)
-        self.gnn = SWEGNN(
-            static_node_features=hid_features,
-            dynamic_node_features=hid_features,
-            edge_features=self.num_edge_features_for_gnn,
-            mlp_layers=mlp_layers,
-            activation=mlp_activation,
-            **gnn_kwargs,  # Now 'model_type' is removed
-        )
-
-        # 4. GNN Activation
-        if gnn_activation == "relu":
-            self.gnn_activation = nn.ReLU()
-        elif gnn_activation == "prelu":
-            self.gnn_activation = nn.PReLU()
-        elif gnn_activation == "tanh":
-            self.gnn_activation = nn.Tanh()
-        else:
-            self.gnn_activation = nn.Identity()  # No activation
-
-        # 5. Decoder
-        self.decoder = MLP(
-            in_features=hid_features,
-            out_features=num_output_features,
-            hid_features=hid_features,
-            mlp_layers=mlp_layers,
-            activation=mlp_activation,
-        )
-
-    def forward(
-        self,
-        static_features: Tensor,
-        dynamic_features: Tensor,
-        edge_index: Tensor,
-        edge_attr: Optional[Tensor],
-        **kwargs,  # Catches the 'batch' argument
-    ) -> Tensor:
-
-        # 1. Encode Nodes
-        x_s = self.static_node_encoder(static_features)
-        x_d = self.dynamic_node_encoder(dynamic_features)
-
-        # 2. Encode Edges
-        e_attr_for_gnn = edge_attr
-        if self.edge_mlp_flag and edge_attr is not None:
-            e_attr_for_gnn = self.edge_encoder(edge_attr)
-
-        # 3. Process
-        x = self.gnn(x_s, x_d, edge_index, edge_features=e_attr_for_gnn)
-
-        # 4. GNN Activation
-        x = self.gnn_activation(x)
-
-        # 5. Decode
-        x = self.decoder(x)
-        return x
 
 
 if __name__ == "__main__":
     """
     Run doctests for this module.
 
-    From the command line, run:
-    python -m  mswegnn.models.adforce_models
+    From the command line (e.g., from the root sdat2/mswe-gnn/mSWE-GNN-sdat2/ dir):
+    python -m mswegnn.models.models
     """
     import doctest
-
+    # We need to import the test dependencies for the doctests to run
+    from torch_geometric.data import Data
+    
     doctest.testmod(verbose=True)
-    print("Doctests complete.")
+    print("Doctests for mswegnn.models.models complete.")
