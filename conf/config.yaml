@@ -58,5 +58,5 @@ lr_info:
 
 lightning_trainer:
   max_epochs: 100
-  # accelerator: "gpu"
+  #accelerator: "gpu"
   # devices: 1

@@ -47,8 +47,8 @@ python -m adforce_main \
     machine=jasmin \
     machine.data_dir=$DATA_LOCAL_PATH \
     machine.output_dir=$RESULTS_LOCAL_PATH \
-    lightning_trainer.accelerator=gpu \
-    lightning_trainer.devices=1 \
+    +lightning_trainer.accelerator=gpu \
+    +lightning_trainer.devices=1 \
     model_params.model_type=GNN \
     model_params.type_gnn=SWEGNN \
     model_params.hid_features=64 \
