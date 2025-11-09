@@ -318,23 +318,132 @@ class PointwiseMLPModel(nn.Module):
         return out
 
 
-class GNNModelAdforce(nn.Module):
+# In mswegnn/models/models.py
+# (You can add this right after the old BaseFloodModel)
+
+class AdforceBaseModel(nn.Module):
+    """
+    Base class for Adforce models.
+
+    This class handles residual connections and output masking specifically
+    for the Adforce data pipeline, which uses 3 output variables
+    (WD, VX, VY).
+    
+    Args:
+        previous_t (int): Number of previous time steps (for residual init).
+        num_output_vars (int): Number of output variables. Must be 3 for Adforce.
+        learned_residuals (bool/str/None): Residual connection type.
+        seed (int): Random seed.
+        device (str): PyTorch device.
+    """
+
+    def __init__(
+        self,
+        previous_t=1,
+        num_output_vars=3, # <-- NEW: Parameterized output
+        learned_residuals=None,
+        seed=42,
+        residuals_base=2,
+        residual_init="exp",
+        device="cpu",
+        **kwargs, # Catches unused args like 'with_WL'
+    ):
+        super().__init__()
+        torch.manual_seed(seed)
+        self.previous_t = previous_t
+        self.learned_residuals = learned_residuals
+        self.device = device
+        
+        # --- FIXED for Adforce ---
+        self.num_output_vars = num_output_vars
+        self.out_dim = self.num_output_vars
+        
+        if self.num_output_vars != 3:
+            raise ValueError(f"AdforceBaseModel is designed for 3 output variables (WD, VX, VY), but got {num_output_vars}")
+        # ---
+        
+        # NOTE: The Adforce data structure (static, forcing, state)
+        # is only compatible with `learned_residuals=False`.
+        # The other modes read state history from `x` which is not there.
+        if self.learned_residuals not in [False, None]:
+            raise ValueError(
+                f"Adforce data pipeline is only compatible with `learned_residuals: False` or `None`. "
+                f"Got: {self.learned_residuals}"
+            )
+
+    def _add_residual_connection(self, x_input):
+        """
+        Add residual connection from the *input state* to the *output delta*.
+        
+        Args:
+            x_input (Tensor): The *original* model input `x`, which has the
+                              shape [N, static + forcing + state(3)].
+        """
+        residual_output = torch.zeros(x_input.shape[0], self.out_dim, device=self.device)
+
+        if self.learned_residuals == False:
+            # `x_input` is [static, forcing, state]
+            # We want the last `self.out_dim` (3) features, which is the input state
+            x0_state = x_input[:, -self.out_dim :]
+            residual_output = x0_state
+        
+        return residual_output
+
+    def _mask_small_WD(self, x_output, epsilon=0.001):
+        """
+        Mask water depth below a threshold and velocities where water is 0.
+        
+        Args:
+            x_output (Tensor): The model output *after* the residual
+                               connection. Shape [N, 3] (WD, VX, VY).
+        """
+        
+        # --- FIXED for Adforce (WD, VX, VY) ---
+        wd_col = x_output[:, 0:1] # Shape [N, 1]
+        v_cols = x_output[:, 1:3] # Shape [N, 2]
+
+        # Create mask based on water depth
+        # 1.0 where water > epsilon, 0.0 otherwise
+        mask = (wd_col.abs() > epsilon).float()
+
+        # Apply mask
+        wd_masked = wd_col * mask
+        v_masked = v_cols * mask # Zeros out velocity where wd is zero
+
+        return torch.cat((wd_masked, v_masked), dim=1)
+
+
+
+# In mswegnn/models/adforce_models.py
+
+
+class GNNModelAdforce(AdforceBaseModel):  # <-- CHANGE INHERITANCE
     """
     Refactored GNNModel wrapper.
 
-    --- MODIFIED FOR DELTA LEARNING ---
-    This model's __init__ method is updated to validate the new input structure:
-    x = (static features, forcing features, current_state features)
-    e.g., 5 static + (3 forcing * p_t steps) + 3 state
+    --- MODIFIED TO INHERIT FROM AdforceBaseModel ---
+    This class is the main model wrapper used by the LightningTrainer.
+    It inherits from `AdforceBaseModel` to gain the correct residual
+    and masking logic for the 3-variable Adforce data.
 
+    This class now reads the 'type_gnn' from its kwargs and instantiates
+    the correct internal GNN processor (e.g., GNN_Adforce for GCN, or
+    SWEGNN_Adforce for the custom SWEGNN layer).
+
+    Its forward() method is the single entry point that splits the
+    PyG 'batch' object, passes the tensors down to the internal GNN,
+    and then applies the residual connection and masking.
+    
     Args:
         num_node_features (int): Total number of features in the input `x` tensor.
         num_edge_features (int): Total number of features in the `edge_attr` tensor.
         previous_t (int): Number of history steps included in the input.
-        num_output_features (int): Number of output features to predict.
+        num_output_features (int): Number of output features to predict (Must be 3).
         num_static_features (int, optional): Number of static features at the
             start of the `x` tensor. Defaults to 5.
-        **gnn_kwargs: Additional keyword arguments passed to the GNN_Adforce constructor.
+        **kwargs: Additional keyword arguments. Will be split into
+            AdforceBaseModel args (e.g., 'learned_residuals') and
+            GNN args (e.g., 'type_gnn', 'hid_features').
 
     Doctest:
     >>> import torch
@@ -363,7 +472,8 @@ class GNNModelAdforce(nn.Module):
     >>> gnn_kwargs = {
     ...     'hid_features': 16,
     ...     'mlp_layers': 2,
-    ...     'type_gnn': 'GCN'
+    ...     'type_gnn': 'GCN',
+    ...     'learned_residuals': False # Arg for BaseFloodModel
     ... }
     >>>
     >>> # 5. Instantiate the model
@@ -376,6 +486,7 @@ class GNNModelAdforce(nn.Module):
     ...     **gnn_kwargs
     ... )
     GNNModelAdforce initialized: 5 static, 9 forcing (x3), 3 state features. Total input: 17. Output: 3.
+    GNNModelAdforce building internal GNN of type: GCN
     >>>
     >>> # 6. Run forward pass
     >>> out = model(batch)
@@ -396,7 +507,7 @@ class GNNModelAdforce(nn.Module):
     ...     )
     ... except ValueError as e:
     ...     print(f"Caught expected error: {e}")
-    Caught expected error: Feature mismatch! Total features 16 - static features 5 = 11 dynamic features. But expected 12 (forcing=9 + state=3). Check num_static_features in your config and the num_node_features calculation in adforce_main.py.
+    Caught expected error: Feature mismatch! Total features 16 - static features 5 = 11 dynamic features. But expected 12 (forcing=9 + state=3). Check num_static_features in your config.
     """
 
     def __init__(
@@ -404,32 +515,39 @@ class GNNModelAdforce(nn.Module):
         num_node_features,
         num_edge_features,
         previous_t,
-        num_output_features,
-        num_static_features=5,  # From adforce_dataset (DEM, sx, sy, area, type)
-        **gnn_kwargs,
+        num_output_features, # This is 3
+        num_static_features=5,
+        **kwargs,  # Catches all other config args
     ):
-        super().__init__()
+        
+        # --- NEW: Split kwargs for AdforceBaseModel ---
+        base_model_kwargs = {}
+        # List of args for AdforceBaseModel
+        base_keys = ['learned_residuals', 'seed', 'residuals_base', 'residual_init', 'device']
+        for k in list(kwargs.keys()):
+            if k in base_keys:
+                base_model_kwargs[k] = kwargs.pop(k)
+        
+        # Pass required args to the new base model
+        base_model_kwargs['previous_t'] = previous_t
+        base_model_kwargs['num_output_vars'] = num_output_features
+        
+        # Call the parent __init__ with its args
+        super().__init__(**base_model_kwargs)
+        # --- END NEW ---
 
         self.previous_t = previous_t
         self.num_output_features = num_output_features
         self.num_static_features = num_static_features
 
-        # --- NEW: Explicit feature calculation for validation ---
-        # 3 dynamic *forcing* vars (WX, WY, P)
+        # --- Explicit feature calculation (unchanged) ---
         self.num_dynamic_forcing_features_per_step = 3
-        # 3 dynamic *state* vars (WD, VX, VY) - this is the new part
         self.num_dynamic_state_features = 3
-
-        # Calculate expected feature counts
         num_forcing_features = (
             self.num_dynamic_forcing_features_per_step * self.previous_t
         )
-
-        # This is the total number of "dynamic" features, i.e.,
-        # everything *except* the static features.
+        # This is the total number of dynamic features (forcing + state)
         self.dynamic_vars = num_node_features - self.num_static_features
-
-        # Calculate what the expected dynamic vars should be
         expected_dynamic_vars = num_forcing_features + self.num_dynamic_state_features
 
         if self.dynamic_vars != expected_dynamic_vars:
@@ -437,50 +555,84 @@ class GNNModelAdforce(nn.Module):
                 f"Feature mismatch! Total features {num_node_features} - "
                 f"static features {self.num_static_features} = {self.dynamic_vars} dynamic features. "
                 f"But expected {expected_dynamic_vars} (forcing={num_forcing_features} + state={self.num_dynamic_state_features}). "
-                f"Check num_static_features in your config and the num_node_features calculation in adforce_main.py."
+                f"Check num_static_features in your config."
             )
 
-        # This print is useful for debugging and for the doctest
-        if "hid_features" in gnn_kwargs:
-            # Avoid printing during doctest's error check
+        if "hid_features" in kwargs:
             print(
                 f"GNNModelAdforce initialized: {self.num_static_features} static, "
                 f"{num_forcing_features} forcing (x{self.previous_t}), "
                 f"{self.num_dynamic_state_features} state features. "
                 f"Total input: {num_node_features}. Output: {self.num_output_features}."
             )
-        # --- END NEW ---
+        
+        self.in_features = num_node_features # Total features
 
-        self.in_features = num_node_features
+        # --- GNN Switch Logic (unchanged) ---
+        # All remaining kwargs are for the GNN
+        self.type_GNN = kwargs.pop("type_gnn", "GCN").upper()
+        print(f"GNNModelAdforce building internal GNN of type: {self.type_GNN}")
 
-        self.gnn = GNN_Adforce(
-            in_features=self.in_features,
-            num_output_features=self.num_output_features,  # <-- Pass new arg
-            **gnn_kwargs,
-        )
+        if self.type_GNN == "SWEGNN":
+            # Build the SWEGNN "Inner Box"
+            # It needs the feature counts split
+            self.gnn = SWEGNN_Adforce(
+                in_features_static=self.num_static_features,
+                in_features_dynamic=self.dynamic_vars,
+                in_features_edge=num_edge_features,
+                num_output_features=self.num_output_features,
+                **kwargs  # Pass all remaining GNN args
+            )
+        else:
+            # Build the standard GNN "Inner Box"
+            # It takes the total concatenated feature count
+            self.gnn = GNN_Adforce(
+                in_features=self.in_features,
+                num_output_features=self.num_output_features,
+                type_gnn=self.type_GNN,
+                **kwargs, # Pass all remaining GNN args
+            )
 
     def forward(self, batch):
         """
-        The GNN_Adforce class's forward just concatenates static and dynamic,
-        so we feed all features (forcing + state) as 'dynamic_features'.
+        The forward method for the top-level wrapper. It splits the batch,
+        passes tensors to the 'self.gnn', and then applies
+        the residual connection and masking.
         """
         x = batch.x
-
+        x0_input = x.clone()  # <-- Save original input for residual
+        
         static_features = x[:, : self.num_static_features]
         dynamic_features = x[:, self.num_static_features :]
 
         edge_index = batch.edge_index
         edge_attr = batch.edge_attr
 
-        out = self.gnn(
+        # Get the "delta" prediction from the inner GNN
+        # out_delta shape: [N, 3]
+        out_delta = self.gnn(
             static_features, dynamic_features, edge_index, edge_attr, batch=batch
         )
 
+        # --- CORRECTED LOGIC from AdforceBaseModel ---
+        
+        # 1. Add residual connection
+        #    self._add_residual_connection(x0_input) gets the input state [N, 3]
+        #    out = delta + state(t) = state(t+1)
+        out = out_delta + self._add_residual_connection(x0_input)
+        
+        # 2. Apply activation 
+        #    (This matches the old GNN.forward() logic)
+        out = torch.relu(out)
+        
+        # 3. Apply masking 
+        #    This uses the new, correct 3-variable masking logic
+        out = self._mask_small_WD(out, epsilon=0.0001)
+        # --- END ---
+
+        # Reshape to be safe (though it should already be correct)
         out = out.reshape(-1, self.num_output_features)
-
         return out
-
-# In mswegnn/models/adforce_models.py
 
 class SWEGNN_Adforce(nn.Module):
     """
