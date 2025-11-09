@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- SLURM Directives (CPU Job) ---
-#SBATCH --job-name=SWEGNN-K2
+#SBATCH --job-name=SWEGNN_cpu
 #SBATCH --account=no-project             
 #SBATCH --partition=standard              
 #SBATCH --qos=high                    
@@ -22,10 +22,10 @@ micromamba activate mswegnn2 # Using your CPU environment
 DATA_SOURCE_PATH="/home/users/sithom/swegnn_5sec"
 RESULTS_DEST_PATH="/home/users/sithom/my_results"
 
-# --- THIS IS THE KEY CHANGE ---
+# --- THIS IS THE CORRECTED PATH ---
 # Create a unique job-specific directory on the SHARED SCRATCH filesystem
-# The $USER and $SLURM_JOB_ID variables make it unique.
-JOB_SCRATCH_DIR="/work/scratch-pw/$USER/$SLURM_JOB_ID"
+# Using /work/scratch-pw3 as per JASMIN docs.
+JOB_SCRATCH_DIR="/work/scratch-pw3/$USER/$SLURM_JOB_ID"
 mkdir -p $JOB_SCRATCH_DIR
 
 # Define paths within this new shared scratch directory
@@ -46,7 +46,7 @@ python -m adforce_main \
     model_params.model_type=GNN \
     model_params.type_gnn=SWEGNN \
     model_params.hid_features=64 \
-    model_params.K=2 \
+    model_params.K=3 \
     model_params.normalize=True \
     model_params.with_gradient=True \
     model_params.edge_mlp=True \
@@ -61,7 +61,6 @@ rsync -aq $RESULTS_LOCAL_PATH/ $RESULTS_DEST_PATH/
 echo "Results copy complete."
 
 # --- 5. CRITICAL: Clean Up Shared Scratch ---
-# This is NOT automatic like $TMPDIR. You MUST do this.
 echo "Cleaning up shared scratch directory: $JOB_SCRATCH_DIR"
 rm -rf $JOB_SCRATCH_DIR
 echo "Job complete."
