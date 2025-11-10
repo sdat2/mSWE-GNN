@@ -7,7 +7,10 @@ We created additional training data through forcing the ADCIRC model with storm 
 Look at the `adforce/generate_training_data.py` script for how we generated the training data:
 <https://github.com/sdat2/PotentialHeight/blob/main/adforce/generate_training_data.py>
 
-We have adapted the pytorch geometric based mSWE-GNN code to work with the ADFORCE data structure and to create models that can emulate storm surge events over the North West Atlantic/ Carribean Mesh.
+We have adapted the pytorch geometric based mSWE-GNN code to work with the ADFORCE data structure and to create models that can emulate storm surge events over the North West Atlantic/ Carribean Mesh. Here is an example of the ADCIRC input/output training data animation for Hurricane Katrina:
+
+![Katrina Training Data](katrina_train.gif)
+
 
 ## Environment setup
 
@@ -36,6 +39,9 @@ pip install -e .
 - `archer2.slurm`: SLURM job script for running on the Archer2 supercomputer.
 - `mswegnn/`: All the main code turned into a python package for easier management.
     - `database/`: Data handling and preprocessing modules. (not used).
+    - `hug/`: Scripts for downloading and uploading datasets to Hugging Face.
+        - `download.py`: download the training data from Hugging Face.
+        - `upload.py`: upload the training data to Hugging Face. (ignore)
     - `models/`: Model definitions and architectures.
         - `adforce_gnn.py`: graph neural network layers.
         - `adforce_models.py`: full model architectures.
@@ -48,9 +54,10 @@ pip install -e .
         - `adforce_scaling.py`: data normalization and scaling.
         - `adforce_animate.py`: animate adforce inputs and outputs using dataloader.
 - `jasmin.slurm`: SLURM job script for running on the JASMIN supercomputer.
+- `jasmin_gpu.slurm`: SLURM job script for running on JASMIN GPU (orchid A100) nodes.
 - `env_jas_gpu.yml`: Micromamba environment file for JASMIN GPU nodes.
 - `env.yml`: Micromamba environment file for local CPU usage.
-- `requirements.txt`: Old original Python package dependencies (doesn't correctly install on most machines).
+- `requirements.txt`: Old original Python package dependencies (does not correctly install on most machines).
 - `setup.py`: Setup file for locally installing the `mswegnn` package.
 
 ## Training data
