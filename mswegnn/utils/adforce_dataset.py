@@ -447,8 +447,7 @@ class AdforceLazyDataset(Dataset):
         root,
         nc_files,
         previous_t,
-        scaling_stats_path: str = None,  # <-- MODIFIED ARG
-        device: torch.device = torch.device("cpu"),
+        scaling_stats_path: str = None,
         transform=None,
         pre_transform=None,
     ):
@@ -458,8 +457,6 @@ class AdforceLazyDataset(Dataset):
             nc_files (list[str]): The list of PRE-PROCESSED .nc files.
             previous_t (int): Number of input time steps.
             scaling_stats_path (str, optional): Path to 'scaling_stats.yaml'.
-            device (torch.device, optional): The device (e.g., 'cuda' or 'cpu')
-                to pre-load the static data onto. Defaults to 'cpu'.
         """
         self.nc_files = sorted(nc_files)
         if not self.nc_files:
@@ -467,7 +464,7 @@ class AdforceLazyDataset(Dataset):
 
         self.previous_t = previous_t
         self.rollout_steps = 1  # Hard-coded for 1-step-ahead training
-        self.device = device
+        # --- MODIFICATION: self.device REMOVED ---
 
         self.total_nodes = None
         self.index_map = []
@@ -483,56 +480,38 @@ class AdforceLazyDataset(Dataset):
             try:
                 with open(scaling_stats_path, "r") as f:
                     scaling_stats = yaml.safe_load(f)
-
-                # --- Static Features (4 elements) ---
-                # (DEM, slopex, slopey, area)
+                
+                # --- MODIFICATION: All tensors are created and left on CPU ---
                 self.x_static_mean = torch.tensor(
                     scaling_stats["x_static_mean"], dtype=torch.float32
-                ).to(device)
+                )
                 self.x_static_std = (
                     torch.tensor(scaling_stats["x_static_std"], dtype=torch.float32)
-                    .to(device)
                     .clamp(min=1e-6)
                 )
-
-                # --- Dynamic Input Features (3 elements) ---
-                # (WX, WY, P)
                 x_dyn_mean = torch.tensor(
                     scaling_stats["x_dynamic_mean"], dtype=torch.float32
                 )
                 x_dyn_std = torch.tensor(
                     scaling_stats["x_dynamic_std"], dtype=torch.float32
                 ).clamp(min=1e-6)
-
-                # --- State Features (y_t) (3 elements) ---
-                # (WD, VX, VY) - Used for *input*
                 self.y_mean = torch.tensor(
                     scaling_stats["y_mean"], dtype=torch.float32
-                ).to(device)
+                )
                 self.y_std = (
                     torch.tensor(scaling_stats["y_std"], dtype=torch.float32)
-                    .to(device)
                     .clamp(min=1e-6)
                 )
-
-                # --- NEW: Delta/Increment Features (3 elements) ---
-                # (delta_WD, delta_VX, delta_VY) - Used for *target*
                 self.y_delta_mean = torch.tensor(
                     scaling_stats["y_delta_mean"], dtype=torch.float32
-                ).to(device)
+                )
                 self.y_delta_std = (
                     torch.tensor(scaling_stats["y_delta_std"], dtype=torch.float32)
-                    .to(device)
                     .clamp(min=1e-6)
                 )
-                # --- END NEW BLOCK ---
-
-                # --- Create broadcast-ready tensors for dynamic *forcing* inputs ---
-                self.x_dyn_mean_broadcast = x_dyn_mean.repeat(self.previous_t).to(
-                    device
-                )
-                self.x_dyn_std_broadcast = x_dyn_std.repeat(self.previous_t).to(device)
-
+                self.x_dyn_mean_broadcast = x_dyn_mean.repeat(self.previous_t)
+                self.x_dyn_std_broadcast = x_dyn_std.repeat(self.previous_t)
+                
                 # Sanity checks
                 assert (
                     self.x_static_mean.shape[0] == 4
@@ -548,7 +527,7 @@ class AdforceLazyDataset(Dataset):
                 ), f"y_delta_mean must have 3 elements, got {self.y_delta_mean.shape[0]}"
 
                 self.apply_scaling = True
-                print("Scaling stats loaded and tensors created.")
+                print("Scaling stats loaded and tensors created (on CPU).")
 
             except (KeyError, TypeError, ValueError, FileNotFoundError) as e:
                 print(
@@ -596,17 +575,13 @@ class AdforceLazyDataset(Dataset):
                     raise IOError(
                         f"File {self.nc_files[0]} is missing 'num_nodes' dimension."
                     )
-                # Load static data to CPU using the helper
-                static_data_cpu = _load_static_data_from_ds(ds)
-
-                # Move the single copy to the specified device
-                self.static_data = {
-                    k: v.to(self.device) for k, v in static_data_cpu.items()
-                }
-            print(f"Static data loaded and cached on device: {self.device}")
+                # --- MODIFICATION: Load and store on CPU ---
+                self.static_data = _load_static_data_from_ds(ds)
+                
+            print(f"Static data loaded and cached on device: cpu") # Hardcoded "cpu"
         except Exception as e:
             raise IOError(f"Failed to load static data from {self.nc_files[0]}: {e}")
-
+        
         # --- Sanity check ---
         num_static_nodes = self.static_data["static_node_features"].shape[0]
         if self.total_nodes != num_static_nodes:
@@ -625,8 +600,6 @@ class AdforceLazyDataset(Dataset):
         """
         Runs ONCE. Scans all files, builds the index map,
         and verifies mesh consistency and variable presence.
-
-        (This function remains unchanged.)
         """
         print(
             f"Building index map for {len(self.nc_files)} files (p_t={self.previous_t}, r_s={self.rollout_steps})..."
@@ -756,90 +729,60 @@ class AdforceLazyDataset(Dataset):
         nc_path, t_start = self.index_map[idx]
 
         try:
-            # 1. Get static data (from the pre-loaded class attribute)
+            # 1. Get static data (from CPU cache)
             static_data = self.static_data
 
-            # 2. Open *only this file* and close it immediately after reading
+            # 2. Open file, read tensors (to CPU), close file
             with xr.open_dataset(nc_path, cache=False) as ds:
-                # --- Get forcing features (WX, WY, P) for t-p+1...t ---
+                # --- MODIFICATION: All .to(self.device) calls are REMOVED ---
                 dyn_forcing_features_t = _get_forcing_slice(
                     ds, t_start, self.previous_t
-                ).to(self.device)
-
-                # --- NEW: Get input state (WD, VX, VY) at time t ---
-                # This is the last step of the input window.
-                # Target 'y_tplus1' starts at t_start + self.previous_t
-                # So the *last input state* is at index (t_start + self.previous_t - 1)
-                t_last_input_step = t_start + self.previous_t - 1
-                y_t = _get_target_slice(ds, t_last_input_step, 1).to(  # num_steps = 1
-                    self.device
                 )
-
-                # --- Get target state (WD, VX, VY) at time t+1 ---
-                # This is the state we want to predict.
+                t_last_input_step = t_start + self.previous_t - 1
+                y_t = _get_target_slice(ds, t_last_input_step, 1)
                 y_tplus1 = _get_target_slice(
                     ds, t_start + self.previous_t, self.rollout_steps
-                ).to(self.device)
+                )
 
-            # --- Convert all NaNs to 0.0 ---
+            # --- All tensors are on CPU ---
             dyn_forcing_features_t = torch.nan_to_num(dyn_forcing_features_t, nan=0.0)
             y_t = torch.nan_to_num(y_t, nan=0.0)
             y_tplus1 = torch.nan_to_num(y_tplus1, nan=0.0)
-
             static_features = static_data["static_node_features"].clone()
             static_features = torch.nan_to_num(static_features, nan=0.0)
-
-            # --- Store unscaled y(t+1) for loss mask ---
-            # We need the *unscaled* water depth at t+1 for the
-            # 'only_where_water' mask in the loss function.
             y_unscaled_tplus1 = y_tplus1.clone()
-
-            # --- NEW: Compute raw increment (the target) ---
             delta_raw = y_tplus1 - y_t
 
-            # 3. --- APPLY SCALING (if enabled) ---
+            # 3. --- APPLY SCALING (all on CPU) ---
             y_t_scaled = y_t
-            y_delta_scaled = delta_raw  # Default to raw if scaling is off
-
+            y_delta_scaled = delta_raw
             if self.apply_scaling:
-                # Scale static features (first 4 columns)
                 static_features[:, :4] = (
                     static_features[:, :4] - self.x_static_mean
                 ) / self.x_static_std
-
-                # Scale dynamic *forcing* features
                 dyn_forcing_features_t = (
                     dyn_forcing_features_t - self.x_dyn_mean_broadcast
                 ) / self.x_dyn_std_broadcast
-
-                # --- NEW: Scale dynamic *state* input (y_t) ---
-                # Use the 'y' (state) stats
                 y_t_scaled = (y_t - self.y_mean) / self.y_std
-
-                # --- NEW: Scale target *increment* (delta) ---
-                # Use the 'y_delta' (increment) stats
                 y_delta_scaled = (delta_raw - self.y_delta_mean) / self.y_delta_std
 
-            # 4. Combine ALL INPUTS
-            # x = (static) + (forcing) + (state at t)
+            # 4. Combine ALL INPUTS (on CPU)
             x_t = torch.cat(
                 [static_features, dyn_forcing_features_t, y_t_scaled], dim=1
             )
 
-            # 5. Construct and return the Data object
+            # 5. Construct Data object (all tensors on CPU)
             return Data(
-                x=x_t,  # <-- Input is (static, forcing, state_t)
+                x=x_t,
                 edge_index=static_data["edge_index"],
                 edge_attr=static_data["static_edge_attr"],
-                y=y_delta_scaled,  # <-- Target is the scaled_delta
-                # <-- Unscaled y(t+1) for loss mask
+                y=y_delta_scaled,
                 y_unscaled=y_unscaled_tplus1,
                 node_BC=static_data["node_BC"],
                 edge_BC_length=static_data["edge_BC_length"],
             )
 
         except Exception as e:
-            # Add context to the error message
             raise IOError(
                 f"Error loading sample {idx} (file: {nc_path}, time_idx: {t_start}): {e}"
                 f"\nCheck data consistency for this file."
@@ -897,22 +840,22 @@ def run_forcing_rollout(
     """
 
     predictions = []
-    device = next(model.parameters()).device  # Get model's device
+    # --- MODIFICATION: Infer device from model ---
+    device = next(model.parameters()).device
+    model.eval() # Set model to evaluation mode
 
     # --- NEW: Load scaling tensors from dictionary ---
     if scaling_stats is None:
         raise ValueError("run_forcing_rollout now requires 'scaling_stats' dictionary.")
 
     try:
-        # --- State (y) stats (for y_t input) ---
+        # --- MODIFICATION: All stats tensors are moved to the model's device ---
         y_mean = torch.tensor(scaling_stats["y_mean"], dtype=torch.float32).to(device)
         y_std = (
             torch.tensor(scaling_stats["y_std"], dtype=torch.float32)
             .to(device)
             .clamp(min=1e-6)
         )
-
-        # --- Delta (y_delta) stats (for de-scaling output) ---
         y_delta_mean = torch.tensor(
             scaling_stats["y_delta_mean"], dtype=torch.float32
         ).to(device)
@@ -921,8 +864,6 @@ def run_forcing_rollout(
             .to(device)
             .clamp(min=1e-6)
         )
-
-        # --- Static (x_static) stats ---
         x_static_mean = torch.tensor(
             scaling_stats["x_static_mean"], dtype=torch.float32
         ).to(device)
@@ -931,31 +872,29 @@ def run_forcing_rollout(
             .to(device)
             .clamp(min=1e-6)
         )
-
-        # --- Forcing (x_dynamic) stats ---
-        x_dyn_mean = torch.tensor(scaling_stats["x_dynamic_mean"], dtype=torch.float32)
-        x_dyn_std = torch.tensor(
+        
+        # --- Need to handle CPU-based tensors for broadcasting ---
+        x_dyn_mean_cpu = torch.tensor(scaling_stats["x_dynamic_mean"], dtype=torch.float32)
+        x_dyn_std_cpu = torch.tensor(
             scaling_stats["x_dynamic_std"], dtype=torch.float32
         ).clamp(min=1e-6)
-
-        # Broadcast-ready forcing stats
-        x_dyn_mean_broadcast = x_dyn_mean.repeat(previous_t).to(device)
-        x_dyn_std_broadcast = x_dyn_std.repeat(previous_t).to(device)
-
-        # Single-step forcing stats (for updating the history)
-        x_dyn_mean_single = x_dyn_mean.to(device)
-        x_dyn_std_single = x_dyn_std.to(device)
+        
+        x_dyn_mean_broadcast = x_dyn_mean_cpu.repeat(previous_t).to(device)
+        x_dyn_std_broadcast = x_dyn_std_cpu.repeat(previous_t).to(device)
+        x_dyn_mean_single = x_dyn_mean_cpu.to(device)
+        x_dyn_std_single = x_dyn_std_cpu.to(device)
 
     except (KeyError, TypeError) as e:
         raise ValueError(f"Scaling stats dict is missing keys or invalid: {e}")
     # --- END NEW ---
 
     with xr.open_dataset(nc_path) as ds:
-        # 1. Load all static data (once)
+        # 1. Load all static data (once to CPU)
         static_data = _load_static_data_from_ds(ds)
+        #    Move (once) to the model's device
         static_data_gpu = {k: v.to(device) for k, v in static_data.items()}
 
-        # --- NEW: Scale static features ---
+        # --- NEW: Scale static features (on device) ---
         static_features_scaled = static_data_gpu["static_node_features"].clone()
         static_features_scaled = torch.nan_to_num(static_features_scaled, nan=0.0)
         static_features_scaled[:, :4] = (
@@ -970,20 +909,18 @@ def run_forcing_rollout(
             )
             return torch.tensor([])
 
-        # 2. Get initial *forcing* history (t=0 to t=previous_t-1)
+        # 2. Get initial *forcing* history (load to CPU, move to device)
         current_forcing_history_raw = _get_forcing_slice(ds, 0, previous_t).to(device)
         current_forcing_history_raw = torch.nan_to_num(
             current_forcing_history_raw, nan=0.0
         )
 
-        # --- NEW: Get initial *state* (y_t) ---
-        # We start predicting *from* t = previous_t,
-        # so we need the *input state* at t = previous_t - 1
+        # --- NEW: Get initial *state* (y_t) (load to CPU, move to device) ---
         t_last_input_step = previous_t - 1
         current_y_t_raw = _get_target_slice(ds, t_last_input_step, 1).to(device)
         current_y_t_raw = torch.nan_to_num(current_y_t_raw, nan=0.0)
 
-        # --- NEW: Scale initial forcing and state ---
+        # --- NEW: Scale initial forcing and state (on device) ---
         current_forcing_history_scaled = (
             current_forcing_history_raw - x_dyn_mean_broadcast
         ) / x_dyn_std_broadcast
@@ -994,8 +931,7 @@ def run_forcing_rollout(
         #    We predict t_p, t_p+1, ..., t_N-1
         for t in range(previous_t, num_timesteps):
 
-            # --- NEW: Combine scaled inputs ---
-            # x = (static_scaled) + (forcing_scaled) + (y_t_scaled)
+            # --- NEW: Combine scaled inputs (all on device) ---
             x_t_scaled = torch.cat(
                 [
                     static_features_scaled,
@@ -1006,24 +942,24 @@ def run_forcing_rollout(
             )
             x_t_scaled = torch.nan_to_num(x_t_scaled, nan=0.0)  # Final safety check
 
-            # Create a Data object for the model
+            # Create a Data object for the model (all tensors on device)
             batch = Data(
                 x=x_t_scaled,
                 edge_index=static_data_gpu["edge_index"],
                 edge_attr=static_data_gpu["static_edge_attr"],
                 node_BC=static_data_gpu["node_BC"],
                 edge_BC_length=static_data_gpu["edge_BC_length"],
-            ).to(device)
+            ) # .to(device) is not needed
 
             # --- Run model prediction (no gradients) ---
             with torch.no_grad():
                 # Model predicts the *scaled delta*
                 pred_scaled_delta = model(batch)  # shape [N, 3]
 
-            # --- NEW: De-scale the prediction ---
+            # --- NEW: De-scale the prediction (on device) ---
             pred_raw_delta = (pred_scaled_delta * y_delta_std) + y_delta_mean
 
-            # --- NEW: Compute next state (unscaled) ---
+            # --- NEW: Compute next state (unscaled, on device) ---
             # y(t+1) = y(t) + delta
             next_y_t_raw = current_y_t_raw + pred_raw_delta
 
@@ -1040,18 +976,18 @@ def run_forcing_rollout(
             # 2. Update forcing history
             # Check if we are not at the very last step
             if t + 1 < num_timesteps:
-                # Get the *next* forcing slice (at time `t`)
+                # Get the *next* forcing slice (load to CPU, move to device)
                 next_forcing_slice_raw = _get_forcing_slice(ds, t, 1).to(device)
                 next_forcing_slice_raw = torch.nan_to_num(
                     next_forcing_slice_raw, nan=0.0
                 )
 
-                # Scale it
+                # Scale it (on device)
                 next_forcing_slice_scaled = (
                     next_forcing_slice_raw - x_dyn_mean_single
                 ) / x_dyn_std_single
 
-                # Update history: drop oldest step, append newest step
+                # Update history: drop oldest step, append newest step (on device)
                 num_forcing_vars = 3  # WX, WY, P
                 current_forcing_history_scaled = torch.cat(
                     [

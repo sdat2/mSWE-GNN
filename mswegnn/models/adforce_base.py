@@ -28,14 +28,14 @@ class AdforceBaseModel(nn.Module):
         seed=42,
         residuals_base=2,
         residual_init="exp",
-        device="cpu",
+        # device="cpu",
         **kwargs,  # Catches unused args like 'with_WL'
     ):
         super().__init__()
         torch.manual_seed(seed)
         self.previous_t = previous_t
         self.learned_residuals = learned_residuals
-        self.device = device
+        # self.device = device
 
         # --- FIXED for Adforce ---
         self.num_output_vars = num_output_vars
@@ -67,6 +67,7 @@ class AdforceBaseModel(nn.Module):
         residual_output = torch.zeros(
             x_input.shape[0],
             self.out_dim,  # device=self.device
+            device=x_input.device  # <-- This line fixes the error
         )
 
         if self.learned_residuals == False:

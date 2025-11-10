@@ -309,7 +309,7 @@ class SWEGNN(nn.Module):
         with_filter_matrix: bool = True,
         with_gradient: bool = True,
         upwind_mode: bool = False,
-        device: str = "cpu",
+        # device: str = "cpu",
         **mlp_kwargs,
     ):
         super().__init__()
@@ -323,7 +323,7 @@ class SWEGNN(nn.Module):
         self.normalize = normalize
         self.K = K
         self.with_filter_matrix = with_filter_matrix
-        self.device = device
+        # self.device = device
         self.with_gradient = with_gradient
         self.upwind_mode = upwind_mode
 

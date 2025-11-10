@@ -136,9 +136,9 @@ def loss_function(
             diff = diff[where_water]
         loss = get_mean_error(diff, type_loss, nodes_dim=0)
 
-    loss_scaler = get_loss_variable_scaler(velocity_scaler=velocity_scaler).to(
-        diff.device
-    )
+    loss_scaler = get_loss_variable_scaler(velocity_scaler=velocity_scaler)#.to(
+    #    diff.device
+    #)
     loss = torch.dot(loss, loss_scaler) / loss_scaler.sum()
 
     if conservation != 0:
