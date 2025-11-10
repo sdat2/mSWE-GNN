@@ -7,10 +7,11 @@ We created additional training data through forcing the ADCIRC model with storm 
 Look at the `adforce/generate_training_data.py` script for how we generated the training data:
 <https://github.com/sdat2/PotentialHeight/blob/main/adforce/generate_training_data.py>
 
-We have adapted the pytorch geometric based mSWE-GNN code to work with the ADFORCE data structure and to create models that can emulate storm surge events over the North West Atlantic/ Carribean Mesh. Here is an example of the ADCIRC input/output training data animation for Hurricane Katrina:
+We have adapted the pytorch geometric based mSWE-GNN code to work with the ADFORCE data structure and to create models that can emulate storm surge events over the North West Atlantic/ Carribean Mesh. Here is an example of the ADCIRC input/output data animation for Hurricane Katrina (on the dual graph):
 
 ![Katrina Training Data](katrina_train.gif)
 
+The training data has a 2 hourly output, but the numerical timestep for ADCIRC is 5 seconds. Tides, waves, and riverine inputs are excluded.
 
 ## Environment setup
 
@@ -80,6 +81,11 @@ You can download the training data using the `huggingface_hub` package, which is
 ```bash
 python -m mswegnn.hug.download
 ```
+
+## Extreme test data
+
+We created extreme test data from the simulations of the Potential Height of Tropical Cyclone Storm Surges from 2015 and 2100, for New Orleans, Miami and Galverston. The numerical settings in ADCIRC are all the same as the training data, as is the mesh. 
+
 
 ## Run instructions
 
