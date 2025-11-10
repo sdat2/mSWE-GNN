@@ -53,6 +53,21 @@ pip install -e .
 - `requirements.txt`: Old original Python package dependencies (doesn't correctly install on most machines).
 - `setup.py`: Setup file for locally installing the `mswegnn` package.
 
+## Training data
+
+The training data is published on Hugging Face as:
+
+```bibtex
+@misc{Thomas2025SurgeNetTrain,
+  author    = {Thomas, Simon D. A.},
+  title     = {SurgeNet Training Dataset},
+  year      = {2025},
+  publisher = {Hugging Face},
+  doi       = {10.57967/hf/6971},
+  url       = {https://huggingface.co/datasets/sdat2/surgenet-train}
+}
+```
+
 ## Run instructions
 To run the training pipeline, use the following command:
 

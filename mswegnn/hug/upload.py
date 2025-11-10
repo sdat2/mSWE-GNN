@@ -2,6 +2,7 @@ import os
 from huggingface_hub import HfApi
 
 if __name__ == "__main__":
+    # ends up at https://huggingface.co/datasets/sdat2/surgenet-train
     # python -m upload
     api = HfApi(token=os.getenv("HF_TOKEN"))
     api.upload_large_folder(
