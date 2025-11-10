@@ -4,7 +4,7 @@
 
 We created additional training data through forcing the ADCIRC model with storm surge scenarios from the ADFORCE python package using data from IBTraCS.
 
-Look at the `generate_training_data.py` script for how we generated the training data:
+Look at the `adforce/generate_training_data.py` script for how we generated the training data:
 <https://github.com/sdat2/PotentialHeight/blob/main/adforce/generate_training_data.py>
 
 We have adapted the pytorch geometric based mSWE-GNN code to work with the ADFORCE data structure and to create models that can emulate storm surge events over the North West Atlantic/ Carribean Mesh.
@@ -68,8 +68,15 @@ The training data is published on Hugging Face as:
 }
 ```
 
+You can download the training data using the `huggingface_hub` package, which is included in the `env.yml` file. A script to download the data is provided in `mswegnn/hug/download.py`, although the local path to save the data may need to be adjusted. Once this is done, run the following command:
+
+```bash
+python -m mswegnn.hug.download
+```
+
 ## Run instructions
-To run the training pipeline, use the following command:
+
+To run the training pipeline, you must first specify the directories for the different datasets in the configuration file located at `conf/config.yaml`, or add them at run time using `hydra`. You can then run the following command:
 
 ```bash
 python -m adforce_main
