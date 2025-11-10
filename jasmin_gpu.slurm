@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- SLURM Directives (GPU Job for ORCHID) ---
-#SBATCH --job-name=GNN_GCN
+#SBATCH --job-name=GNN_GAT_GPU
 #SBATCH --account=orchid             # Use ORCHID account
 #SBATCH --partition=orchid           # Use ORCHID partition
 #SBATCH --qos=orchid                 # Use ORCHID QoS
@@ -50,13 +50,13 @@ python -m adforce_main \
     +lightning_trainer.accelerator=gpu \
     +lightning_trainer.devices=1 \
     model_params.model_type=GNN \
-    model_params.type_gnn=GCN \
+    model_params.type_gnn=GAT \
     model_params.hid_features=64 \
     model_params.K=3 \
     model_params.normalize=True \
     model_params.with_gradient=True \
     model_params.edge_mlp=True \
-    trainer_options.batch_size=2
+    trainer_options.batch_size=4
 
 echo "Script finished."
 
