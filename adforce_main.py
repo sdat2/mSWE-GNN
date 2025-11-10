@@ -73,6 +73,9 @@ def print_tensor_size_mb(tensor_dict):
     print(f"  --- TOTAL STATIC DATA SIZE: {total_size / (1024**2):.2f} MB ---")
 
 
+torch.set_float32_matmul_precision("medium") # try get higher performance with Tensor Cores
+
+
 @hydra.main(
     config_path="conf", config_name="config", version_base=None
 )  # <-- HYDRA: Added decorator

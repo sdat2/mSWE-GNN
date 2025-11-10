@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- SLURM Directives (CPU Job) ---
-#SBATCH --job-name=GNN_GCN
+#SBATCH --job-name=GNN_GAT
 #SBATCH --account=no-project             
 #SBATCH --partition=standard              
 #SBATCH --qos=high                    
@@ -44,8 +44,8 @@ python -m adforce_main \
     machine.data_dir=$DATA_LOCAL_PATH \
     machine.output_dir=$RESULTS_LOCAL_PATH \
     model_params.model_type=GNN \
-    model_params.type_gnn=GCN \
-    model_params.hid_features=32 \
+    model_params.type_gnn=GAT \
+    model_params.hid_features=64 \
     model_params.K=3 \
     model_params.normalize=True \
     model_params.with_gradient=True \
