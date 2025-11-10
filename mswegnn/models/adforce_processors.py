@@ -1,4 +1,4 @@
-# mswegnn/models/processors.py
+# mswegnn/models/adforce_processors.py
 from typing import Optional
 import torch
 import torch.nn as nn

@@ -1,4 +1,4 @@
-# mswegnn/models/models.py
+# mswegnn/models/adforce_models.py
 from typing import Union, Optional
 import torch
 from torch import Tensor

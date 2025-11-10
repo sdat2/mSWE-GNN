@@ -45,12 +45,12 @@ python -m adforce_main \
     machine.output_dir=$RESULTS_LOCAL_PATH \
     model_params.model_type=GNN \
     model_params.type_gnn=GCN \
-    model_params.hid_features=64 \
+    model_params.hid_features=32 \
     model_params.K=3 \
     model_params.normalize=True \
     model_params.with_gradient=True \
     model_params.edge_mlp=True \
-    trainer_options.batch_size=2
+    trainer_options.batch_size=4
 
 echo "Script finished."
 

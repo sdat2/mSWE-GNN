@@ -117,14 +117,102 @@ def main(cfg: DictConfig):  # <-- HYDRA: Config injected
     print(f"Found {len(all_nc_files)} total simulation files.")
     # all_nc_files = all_nc_files[:10]  # just for quick testing
 
-    train_files, val_files = train_test_split(
-        all_nc_files,
-        test_size=cfg.data_params.test_size,  # data_cfg.get("test_size", 0.2),
-        random_state=cfg.data_params.random_state,  # data_cfg.get("random_state", 42),
+    # --- MODIFICATION START: 3-way split with manual file reservation ---
+
+    # 1. Manually reserve the required test file
+    manual_test_file_name = "152_KATRINA_2005.nc"
+    katrina_path = None
+    for f_path in all_nc_files:
+        if f_path.endswith(manual_test_file_name):
+            katrina_path = f_path
+            break
+
+    if katrina_path is None:
+        raise FileNotFoundError(
+            f"Could not find required test file {manual_test_file_name} in {data_dir}. "
+            f"Please ensure this file exists."
+        )
+    else:
+        print(f"Manually reserving file for test set: {manual_test_file_name}")
+
+    # 2. Get all other files available for splitting
+    remaining_files = [f for f in all_nc_files if f != katrina_path]
+
+    # 3. Define split ratios from config
+    # NOTE: You MUST add 'held_out_test_size' to 'data_params' in your config YAML
+    # e.g.,
+    # data_params:
+    #   held_out_test_size: 0.1
+    #   test_size: 0.2  (this is now the validation size)
+    #   random_state: 42
+    #   ...
+
+    try:
+        held_out_test_size = cfg.data_params.held_out_test_size
+    except Exception:
+        print("\n" + "=" * 50)
+        print("ERROR: 'data_params.held_out_test_size' not found in config file.")
+        print("Please add 'held_out_test_size: <ratio>' (e.g., 0.1) to")
+        print("the 'data_params' section in your YAML config.")
+        print("=" * 50 + "\n")
+        raise
+
+    # This is the original 'test_size' from your config, now used for validation
+    validation_size = cfg.data_params.test_size
+    random_state = cfg.data_params.random_state
+
+    if held_out_test_size + validation_size >= 1.0:
+        raise ValueError(
+            f"Sum of held_out_test_size ({held_out_test_size}) and "
+            f"validation_size ({validation_size}) must be less than 1.0"
+        )
+
+    # 4. Split 'remaining_files' into (train+val) and (additional_test)
+    train_val_files, additional_test_files = train_test_split(
+        remaining_files,
+        test_size=held_out_test_size,
+        random_state=random_state,
     )
+
+    # 5. Create the final, held-out test set
+    test_files = [katrina_path] + additional_test_files
+
+    # 6. Split 'train_val_files' into train and val
+    # We adjust the ratio to be proportional to the remaining (train+val) set
+    # e.g., if held_out_test_size=0.1 and validation_size=0.2,
+    # the new ratio is 0.2 / (1.0 - 0.1) = 0.2 / 0.9 = 0.222...
+    val_split_ratio = validation_size / (1.0 - held_out_test_size)
+
+    train_files, val_files = train_test_split(
+        train_val_files,
+        test_size=val_split_ratio,
+        random_state=random_state,
+    )
+
     print(
         f"Training on {len(train_files)} files, validating on {len(val_files)} files."
     )
+    print(
+        f"Held-out test set: {len(test_files)} files (including {manual_test_file_name})."
+    )
+
+    # 7. (Optional but recommended) Save the test file list to the Hydra run directory
+    # This file is saved in the 'outputs/YYYY-MM-DD/HH-MM-SS' folder
+    test_file_list_path = os.path.join(os.getcwd(), "held_out_test_files.txt")
+    try:
+        with open(test_file_list_path, "w") as f:
+            f.write(
+                "# This is the held-out test set, it was NOT used for training or validation.\n"
+            )
+            # Just save the file name for clarity, not the full path
+            for item in test_files:
+                f.write(f"{os.path.basename(item)}\n")
+        print(f"Saved list of held-out test file names to: {test_file_list_path}")
+    except Exception as e:
+        print(f"Warning: Could not save test file list: {e}")
+
+    # --- MODIFICATION END ---
+
 
     print(f"Loading shared static data from: {train_files[0]}...")
     # We load from the first *training* file. Assumes mesh is identical.
@@ -290,7 +378,8 @@ def main(cfg: DictConfig):  # <-- HYDRA: Config injected
         # --- W&B: Configure Logger ---
         print("Initializing Weights & Biases Logger...")
         wandb_logger = WandbLogger(
-            project=cfg.wandb.project,
+            project=cfg.wandb.project,    # Reads 'mswegnn' from config
+            entity=cfg.wandb.entity,      # <-- ADDED: Reads 'sdat2' from config
             log_model=cfg.wandb.log_model,
             # Save the flattened config to W&B
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),

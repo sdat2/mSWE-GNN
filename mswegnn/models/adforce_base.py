@@ -1,4 +1,4 @@
-# mswegnn/models/base.py
+# mswegnn/models/adforce_base.py
 import torch
 from torch import Tensor
 import torch.nn as nn

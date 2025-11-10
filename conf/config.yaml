@@ -22,11 +22,13 @@ machine:
 
 # W&B settings
 wandb:
-  project: "mswe-gnn-adforce"
-  log_model: "all" # 'all', 'best', or false
+  project: mswegnn
+  entity: sdat2
+  log_model: true # (or whatever your previous setting was)
 
 # Your original parameters, now grouped
 data_params:
+  held_out_test_size: 0.2
   test_size: 0.2
   random_state: 42
   previous_t: 1
@@ -60,3 +62,5 @@ lightning_trainer:
   max_epochs: 100
   #accelerator: "gpu"
   # devices: 1
+
+
