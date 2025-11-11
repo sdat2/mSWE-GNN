@@ -405,8 +405,8 @@ if __name__ == "__main__":
     # --- 1. CONFIGURE YOUR PATHS HERE (UPDATED) ---
     
     # Path to your *saved model checkpoint*
-    checkpoint_path = "/Volumes/s/tcpips/mSWE-GNN/checkpoints/GNN/GNN-best-epoch=53-val_loss=0.4979.ckpt"
-    
+    checkpoint_path = "/Volumes/s/tcpips/mSWE-GNN/checkpoints/GNN-best-epoch=37-val_loss=0.5033.ckpt"
+     
     # This should be the directory containing your NetCDF file
     root_directory = "/Volumes/s/tcpips/swegnn_5sec/"
     
@@ -422,6 +422,7 @@ if __name__ == "__main__":
     # Define the output paths
     output_gif = "adforce_6panel_PREDICTION.gif"
     output_video = "adforce_6panel_PREDICTION.mp4"
+    
     
     # Frames per second for the final animations
     anim_fps = 10
@@ -483,13 +484,21 @@ if __name__ == "__main__":
     model_type = "GNN"
     model_params = {
         'model_type': 'GNN',
-        'hidden_dim': 128,        # <--- !! CHECK THIS
-        'num_layers': 5,          # <--- !! CHECK THIS
-        'mp_passes': 15,          # <--- !! CHECK THIS
-        'use_model_residual': True, # <--- !! CHECK THIS
-        'use_edge_attr': True,    # <--- !! CHECK THIS
-        'hid_features': 64,        # <--- !! CHECK THIS
-        'mlp_layers': 2,          # <--- !! CHECK THIS
+        'type_gnn': 'SWEGNN',
+        'hid_features': 64,
+        'mlp_layers': 2,
+        'K': 3,
+        'normalize': True,
+        'gnn_activation': "tanh",
+        'edge_mlp': True,
+        'with_gradient': True,
+        # 'hidden_dim': 128,        # <--- !! CHECK THIS
+        # 'num_layers': 5,          # <--- !! CHECK THIS
+        # 'mp_passes': 15,          # <--- !! CHECK THIS
+        # 'use_model_residual': True, # <--- !! CHECK THIS
+        # 'use_edge_attr': True,    # <--- !! CHECK THIS
+        # 'hid_features': 64,        # <--- !! CHECK THIS
+        # 'mlp_layers': 2,          # <--- !! CHECK THIS
     }
     # --- (Example for PointwiseMLPModel) ---
     # model_type = "MLP"
@@ -505,15 +514,15 @@ if __name__ == "__main__":
     # These are required to initialize the LightningTrainer class,
     # but their values are not used during inference/rollout.
     mock_lr_info = {
-        'learning_rate': 1e-4,
-        'weight_decay': 1e-5,
-        'step_size': 10,
+        'learning_rate': 1e-3,
+        'weight_decay': 1e-4,
+        'step_size': 20,
         'gamma': 0.5
     }
     mock_trainer_options = {
-        'batch_size': 32, # Value doesn't matter here
-        'only_where_water': False,
-        'velocity_scaler': 1.0,
+        'batch_size': 4, # Value doesn't matter here
+        'only_where_water': True,
+        'velocity_scaler': 5.0,
         'type_loss': 'RMSE'
     }
     
