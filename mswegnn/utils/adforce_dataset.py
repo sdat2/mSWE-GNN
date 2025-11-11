@@ -435,11 +435,13 @@ class AdforceLazyDataset(Dataset):
         2.  The static mesh is IDENTICAL across all files.
         3.  This loader provides 1-step-ahead data (rollout_steps=1).
 
-    --- MODIFIED FOR DELTA LEARNING ---
-    This implementation trains the model to predict the *scaled increment*.
-    It requires two sets of target-side stats from 'scaling_stats.yaml':
-    1. (y_mean, y_std): To normalize the state y(t) as an *input*.
-    2. (y_delta_mean, y_delta_std): To normalize the target y(t+1) - y(t).
+    --- MODIFIED FOR NEXT-STATE PREDICTION ---
+    This implementation trains the model to predict the *scaled next state*.
+    It requires scaling stats for inputs and outputs:
+    1. (x_static_mean, x_static_std): To normalize static inputs (DEM, slope, etc.)
+    2. (x_dynamic_mean, x_dynamic_std): To normalize dynamic inputs (WX, WY, P)
+    3. (y_mean, y_std): To normalize the state y(t) as an *input* AND
+       to normalize the target state y(t+1) as the *output*.
     """
 
     def __init__(
@@ -502,13 +504,14 @@ class AdforceLazyDataset(Dataset):
                     torch.tensor(scaling_stats["y_std"], dtype=torch.float32)
                     .clamp(min=1e-6)
                 )
-                self.y_delta_mean = torch.tensor(
-                    scaling_stats["y_delta_mean"], dtype=torch.float32
-                )
-                self.y_delta_std = (
-                    torch.tensor(scaling_stats["y_delta_std"], dtype=torch.float32)
-                    .clamp(min=1e-6)
-                )
+                # --- DELTA STATS ARE NO LONGER NEEDED ---
+                # self.y_delta_mean = torch.tensor(
+                #     scaling_stats["y_delta_mean"], dtype=torch.float32
+                # )
+                # self.y_delta_std = (
+                #     torch.tensor(scaling_stats["y_delta_std"], dtype=torch.float32)
+                #     .clamp(min=1e-6)
+                # )
                 self.x_dyn_mean_broadcast = x_dyn_mean.repeat(self.previous_t)
                 self.x_dyn_std_broadcast = x_dyn_std.repeat(self.previous_t)
                 
@@ -522,9 +525,9 @@ class AdforceLazyDataset(Dataset):
                 assert (
                     self.y_mean.shape[0] == 3
                 ), f"y_mean must have 3 elements, got {self.y_mean.shape[0]}"
-                assert (
-                    self.y_delta_mean.shape[0] == 3
-                ), f"y_delta_mean must have 3 elements, got {self.y_delta_mean.shape[0]}"
+                # assert (
+                #     self.y_delta_mean.shape[0] == 3
+                # ), f"y_delta_mean must have 3 elements, got {self.y_delta_mean.shape[0]}"
 
                 self.apply_scaling = True
                 print("Scaling stats loaded and tensors created (on CPU).")
@@ -722,9 +725,9 @@ class AdforceLazyDataset(Dataset):
         THE "LAZY" PART.
         Loads a single sample and applies scaling.
 
-        --- MODIFIED FOR DELTA LEARNING ---
+        --- MODIFIED FOR NEXT-STATE PREDICTION ---
         Model Input 'x': (static_scaled, forcing_scaled, y_t_scaled)
-        Model Target 'y': (delta_scaled)
+        Model Target 'y': (y_tplus1_scaled)
         """
         nc_path, t_start = self.index_map[idx]
 
@@ -751,11 +754,13 @@ class AdforceLazyDataset(Dataset):
             static_features = static_data["static_node_features"].clone()
             static_features = torch.nan_to_num(static_features, nan=0.0)
             y_unscaled_tplus1 = y_tplus1.clone()
-            delta_raw = y_tplus1 - y_t
+            # delta_raw = y_tplus1 - y_t # No longer needed for target
 
             # 3. --- APPLY SCALING (all on CPU) ---
             y_t_scaled = y_t
-            y_delta_scaled = delta_raw
+            # --- NEW: Set default target ---
+            y_tplus1_scaled = y_tplus1
+            
             if self.apply_scaling:
                 static_features[:, :4] = (
                     static_features[:, :4] - self.x_static_mean
@@ -764,7 +769,10 @@ class AdforceLazyDataset(Dataset):
                     dyn_forcing_features_t - self.x_dyn_mean_broadcast
                 ) / self.x_dyn_std_broadcast
                 y_t_scaled = (y_t - self.y_mean) / self.y_std
-                y_delta_scaled = (delta_raw - self.y_delta_mean) / self.y_delta_std
+                
+                # --- NEW: Calculate the new target ---
+                y_tplus1_scaled = (y_tplus1 - self.y_mean) / self.y_std
+                # y_delta_scaled = (delta_raw - self.y_delta_mean) / self.y_delta_std # <-- OLD
 
             # 4. Combine ALL INPUTS (on CPU)
             x_t = torch.cat(
@@ -776,7 +784,9 @@ class AdforceLazyDataset(Dataset):
                 x=x_t,
                 edge_index=static_data["edge_index"],
                 edge_attr=static_data["static_edge_attr"],
-                y=y_delta_scaled,
+                # --- NEW: Use the scaled next state as the target ---
+                y=y_tplus1_scaled,
+                # ---
                 y_unscaled=y_unscaled_tplus1,
                 node_BC=static_data["node_BC"],
                 edge_BC_length=static_data["edge_BC_length"],
@@ -815,19 +825,18 @@ def run_forcing_rollout(
     It re-uses the *same* helper functions as the `AdforceLazyDataset`
     to avoid code duplication.
 
-    --- MODIFIED FOR DELTA LEARNING ---
+    --- MODIFIED FOR NEXT-STATE PREDICTION ---
     This function now requires the `scaling_stats` dictionary to:
     1. Scale all inputs (`static`, `forcing`, `y_t`) before feeding them to the model.
-    2. De-scale the model's output (which is `scaled_delta`) to get the `raw_delta`.
-    3. Add the `raw_delta` to the unscaled `y_t` to get `y_tplus1`.
-    4. Propagate the new `y_tplus1` (as `y_t`) for the next step.
+    2. De-scale the model's output (which is `scaled_y_tplus1`) to get `raw_y_tplus1`.
+    3. Propagate the new `raw_y_tplus1` (as `y_t`) for the next step.
 
     Args:
         model (torch.nn.Module): The trained GNN model (already on device).
         nc_path (str): Path to the single NetCDF simulation file.
         previous_t (int): The number of history steps the model requires.
         scaling_stats (dict): A dictionary containing the scaling stats
-            (e.g., 'y_mean', 'y_std', 'y_delta_mean', 'y_delta_std', etc.)
+            (e.g., 'y_mean', 'y_std', 'x_static_mean', etc.)
 
     Returns:
         torch.Tensor: A tensor containing the full rollout prediction, with
@@ -856,14 +865,18 @@ def run_forcing_rollout(
             .to(device)
             .clamp(min=1e-6)
         )
-        y_delta_mean = torch.tensor(
-            scaling_stats["y_delta_mean"], dtype=torch.float32
-        ).to(device)
-        y_delta_std = (
-            torch.tensor(scaling_stats["y_delta_std"], dtype=torch.float32)
-            .to(device)
-            .clamp(min=1e-6)
-        )
+        
+        # --- DELTA STATS NO LONGER NEEDED ---
+        # y_delta_mean = torch.tensor(
+        #     scaling_stats["y_delta_mean"], dtype=torch.float32
+        # ).to(device)
+        # y_delta_std = (
+        #     torch.tensor(scaling_stats["y_delta_std"], dtype=torch.float32
+        #     )
+        #     .to(device)
+        #     .clamp(min=1e-6)
+        # )
+        
         x_static_mean = torch.tensor(
             scaling_stats["x_static_mean"], dtype=torch.float32
         ).to(device)
@@ -953,15 +966,17 @@ def run_forcing_rollout(
 
             # --- Run model prediction (no gradients) ---
             with torch.no_grad():
-                # Model predicts the *scaled delta*
-                pred_scaled_delta = model(batch)  # shape [N, 3]
+                # --- NEW: Model predicts the *scaled next state* ---
+                pred_scaled_y_tplus1 = model(batch)  # shape [N, 3]
 
             # --- NEW: De-scale the prediction (on device) ---
-            pred_raw_delta = (pred_scaled_delta * y_delta_std) + y_delta_mean
+            # pred_raw_delta = (pred_scaled_delta * y_delta_std) + y_delta_mean # <-- OLD
+            pred_raw_y_tplus1 = (pred_scaled_y_tplus1 * y_std) + y_mean
 
             # --- NEW: Compute next state (unscaled, on device) ---
             # y(t+1) = y(t) + delta
-            next_y_t_raw = current_y_t_raw + pred_raw_delta
+            # next_y_t_raw = current_y_t_raw + pred_raw_delta # <-- OLD
+            next_y_t_raw = pred_raw_y_tplus1 # <-- NEW
 
             predictions.append(next_y_t_raw.cpu())  # Store unscaled pred on CPU
 
@@ -969,9 +984,10 @@ def run_forcing_rollout(
 
             # 1. Update state: The state we just predicted becomes the new "current_y_t"
             current_y_t_raw = next_y_t_raw
-            current_y_t_scaled = (
-                current_y_t_raw - y_mean
-            ) / y_std  # Re-scale for next input
+            
+            # --- NEW: Use the model's scaled output as the next scaled input ---
+            # current_y_t_scaled = (current_y_t_raw - y_mean) / y_std # <-- OLD
+            current_y_t_scaled = pred_scaled_y_tplus1 # <-- NEW (More efficient)
 
             # 2. Update forcing history
             # Check if we are not at the very last step

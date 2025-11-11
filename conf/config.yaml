@@ -22,7 +22,7 @@ machine:
 
 # W&B settings
 wandb:
-  project: mswegnn
+  project: surgenet
   entity: sdat2
   log_model: true # (or whatever your previous setting was)
 
@@ -36,7 +36,7 @@ data_params:
 
 model_params:
   model_type: GNN
-  hid_features: 64
+  hid_features: 124
   mlp_layers: 2
   mlp_activation: 'prelu'
   type_gnn: 'GCN'
@@ -49,8 +49,8 @@ model_params:
 trainer_options:
   batch_size: 2
   type_loss: 'RMSE'
-  only_where_water: true
-  velocity_scaler: 5.0
+  only_where_water: false
+  velocity_scaler: 1
 
 lr_info:
   learning_rate: 0.001

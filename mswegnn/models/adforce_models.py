@@ -400,13 +400,16 @@ class GNNModelAdforce(AdforceBaseModel):
         )
 
         # 2. Add residual connection
+        # This is now correct: out = y_tplus1_scaled_pred = learned_delta + y_t_scaled
         out = out_delta + self._add_residual_connection(x0_input)
 
+        # --- MODIFICATION START: REMOVED INVALID POST-PROCESSING ---
         # 3. Apply activation (matches old gnn.py logic)
-        out = torch.relu(out)
+        # out = torch.relu(out) # <-- REMOVED: This is incorrect. Scaled state can be negative.
 
         # 4. Apply masking
-        out = self._mask_small_WD(out, epsilon=0.0001)
+        # out = self._mask_small_WD(out, epsilon=0.0001) # <-- REMOVED: This is incorrect. Masking scaled data is wrong.
+        # --- MODIFICATION END ---
 
         out = out.reshape(-1, self.num_output_features)
         return out
