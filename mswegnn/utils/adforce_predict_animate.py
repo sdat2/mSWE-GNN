@@ -572,8 +572,8 @@ if __name__ == "__main__":
         'step_size': 20, 'gamma': 0.5
     }
     mock_trainer_options = {
-        'batch_size': 4, 'only_where_water': True,
-        'velocity_scaler': 5.0, 'type_loss': 'RMSE'
+        'batch_size': 4, 'only_where_water': False,
+        'velocity_scaler': 1.0, 'type_loss': 'RMSE'
     }
     
     # --- C. Calculate model dimensions ---
