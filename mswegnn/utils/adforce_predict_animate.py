@@ -4,14 +4,14 @@ Prediction animation function for the AdforceLazyDataset.
 This script loads a trained mSWE-GNN model and runs an
 autoregressive rollout (prediction) for a full simulation event.
 
-It then creates a 6-panel animation of the *predicted* simulation
-by rendering each frame as a PNG. It compiles these frames
-into *both* a high-quality MP4 (for video) and a quantized GIF
-(for markdown/previews).
-
-The input forcings (P, WX, WY) are taken from the ground truth
-dataset at each step, while the state (WD, VX, VY) is predicted
-by the model.
+This version supports two rollout modes via ROLLOUT_HORIZON:
+1. (N > 0): "Fixed Horizon" mode. Each frame 'k' in the animation
+   shows the result of an N-step prediction that *started* at
+   frame 'k - N + 1'. This is computationally intensive as it
+   re-runs the rollout for every frame.
+2. (N = -1): "Full Rollout" mode. Runs a single, free-running
+   simulation from t=0. Each frame 'k' shows the result of a
+   'k'-step-long prediction.
 """
 
 import os
@@ -26,7 +26,7 @@ from matplotlib import pyplot as plt
 from tqdm import tqdm
 import imageio.v3 as iio
 
-# --- NEW IMPORTS ---
+# --- IMPORTS ---
 import lightning as L
 from mswegnn.training.adforce_train import LightningTrainer
 from mswegnn.models.adforce_models import (
@@ -34,10 +34,9 @@ from mswegnn.models.adforce_models import (
     PointwiseMLPModel,
     MonolithicMLPModel,
 )
-# --- END NEW IMPORTS ---
-
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 from sithom.plot import plot_defaults, label_subplots
+# --- END IMPORTS ---
 
 # Try to import cmocean
 try:
@@ -83,63 +82,122 @@ def load_static_data(
 def perform_rollout(
     model: L.LightningModule, 
     dataset: AdforceLazyDataset, 
-    device: torch.device
+    device: torch.device,
+    rollout_horizon: int = 1
 ) -> List[np.ndarray]:
     """
-    Performs an autoregressive rollout using the model for all steps in the dataset.
+    Performs an autoregressive rollout based on the specified horizon.
+
+    This function assumes the model predicts the *SCALED DELTA* (change in state).
     
     Args:
-        model: The trained Lightning model (on the correct device).
-        dataset: The AdforceLazyDataset for a *single* simulation (e.g., Katrina).
-        device: The torch device (e.g., 'cuda' or 'cpu').
+        model (L.LightningModule): The trained Lightning model (on device).
+        dataset (AdforceLazyDataset): The dataset for a single simulation.
+        device (torch.device): The torch device (e.g., 'cuda' or 'cpu').
+        rollout_horizon (int, optional): The rollout strategy.
+            - (N = -1): "Full Rollout". Runs one long simulation from t=0.
+              predictions_list[k] is the k-step-ahead prediction.
+            - (N > 0): "Fixed Horizon". Runs a new N-step simulation for
+              each frame. predictions_list[k] is the N-step-ahead
+              prediction starting from ground truth at t=(k-N+1).
+              The first N-1 frames are k-step-ahead predictions.
 
     Returns:
-        A list of numpy arrays, where each array is the unscaled predicted
-        output (WD, VX, VY) for a single time step.
+        List[np.ndarray]: A list of unscaled predicted states [WD, VX, VY]
+                          for each frame in the dataset.
     """
-    print("Starting autoregressive rollout...")
     model.eval()  # Set model to evaluation mode
     
-    # Get unscaling parameters from the dataset
-    mean = dataset.y_mean_broadcast.to(device)
-    std = dataset.y_std_broadcast.to(device)
+    # --- Get all necessary scaling stats from the dataset ---
+    y_mean = dataset.y_mean.to(device)
+    y_std = dataset.y_std.to(device)
+    y_delta_mean = dataset.y_delta_mean.to(device)
+    y_delta_std = dataset.y_delta_std.to(device)
 
     predictions_list = []
     
-    # Get the very first data sample
-    # This contains the initial state (t) and forcings
-    current_batch = dataset.get(0).to(device)
-
-    for idx in tqdm(range(len(dataset)), desc="Rollout prediction"):
-        # 1. Run the model on the current state (from the previous loop)
-        # model.model contains the actual GNN
-        pred_y_scaled = model.model(current_batch) 
+    # --- BRANCH 1: FULL, FREE-RUNNING ROLLOUT ---
+    if rollout_horizon == -1:
+        print("Starting full, free-running rollout (predicting deltas)...")
         
-        # 2. Un-scale the prediction
-        pred_y_unscaled = (pred_y_scaled * std) + mean
-        
-        # 3. Store the unscaled prediction (for plotting)
-        predictions_list.append(pred_y_unscaled.cpu().numpy())
+        # --- 1. Get the *initial state* from frame 0 ---
+        current_batch = dataset.get(0).to(device)
+        current_y_t_scaled = current_batch.x[:, -3:].clone() # State y(t)
+        current_y_t_raw = (current_y_t_scaled * y_std) + y_mean
 
-        # 4. Prepare the input for the *next* time step
-        if idx < len(dataset) - 1:
-            # Get the ground truth data for the *next* step (idx + 1)
-            # We need this to get the *correct forcing data* for the next step
-            next_batch_truth = dataset.get(idx + 1).to(device)
+        for idx in tqdm(range(len(dataset)), desc="Full Rollout"):
+            # 1. Get the *ground truth batch* for this step's *forcing*
+            gt_batch = dataset.get(idx).to(device)
             
-            # Create the next input batch
-            next_input_batch = next_batch_truth.clone()
+            # 2. Create the *prediction input*
+            pred_input_batch = gt_batch.clone()
             
-            # --- This is the key autoregressive step ---
-            # Replace the "current state" features of the next input
-            # with the prediction we just made.
-            # The last 3 features are the current state [WD, VX, VY]
-            # (See adforce_main.py: NUM_CURRENT_STATE_FEATURES = 3)
-            next_input_batch.x[:, -3:] = pred_y_scaled # Use scaled for next input
+            # 3. ...but replace the state with our *predicted* state
+            pred_input_batch.x[:, -3:] = current_y_t_scaled 
             
-            # Update the current_batch for the next loop iteration
-            current_batch = next_input_batch
+            # 4. Run the model to predict the *scaled delta*
+            pred_scaled_delta = model.model(pred_input_batch) 
             
+            # 5. Un-scale the predicted delta
+            pred_raw_delta = (pred_scaled_delta * y_delta_std) + y_delta_mean
+            
+            # 6. Apply the delta to get the next state
+            next_y_t_raw = current_y_t_raw + pred_raw_delta
+            
+            # 7. Store the *unscaled predicted state*
+            predictions_list.append(next_y_t_raw.cpu().numpy())
+
+            # 8. Prepare for the *next* loop iteration
+            current_y_t_raw = next_y_t_raw
+            current_y_t_scaled = (current_y_t_raw - y_mean) / y_std
+
+    # --- BRANCH 2: FIXED-HORIZON ROLLOUT ---
+    else:
+        print(f"Starting {rollout_horizon}-step fixed-horizon rollout (predicting deltas)...")
+        
+        # Loop for each frame we want to generate
+        for idx in tqdm(range(len(dataset)), desc="Fixed-Horizon Rollout"):
+            
+            # 1. Determine the *start* of this mini-rollout
+            # For frame 0, start_idx=0. For frame 1, start_idx=0. ...
+            # For frame 3 (n=3), start_idx=1.
+            start_idx = max(0, idx - rollout_horizon + 1)
+            
+            # 2. Determine how many steps to run
+            # For frame 0, steps=1. For frame 1, steps=2. ...
+            # For frame 2 (n=3), steps=3. For frame 3 (n=3), steps=3.
+            steps_to_run = idx - start_idx + 1
+            
+            # 3. Get the *ground truth* state at the *start* of the mini-rollout
+            gt_batch_start = dataset.get(start_idx).to(device)
+            current_y_t_scaled = gt_batch_start.x[:, -3:].clone()
+            current_y_t_raw = (current_y_t_scaled * y_std) + y_mean
+
+            # 4. Run the inner mini-rollout loop
+            for k in range(steps_to_run):
+                # Get the *forcing data* for step 'k' of this rollout
+                forcing_batch_idx = start_idx + k
+                
+                # This should not happen if steps_to_run is correct, but as a safeguard:
+                if forcing_batch_idx >= len(dataset):
+                    break
+                
+                gt_forcing_batch = dataset.get(forcing_batch_idx).to(device)
+                
+                pred_input_batch = gt_forcing_batch.clone()
+                pred_input_batch.x[:, -3:] = current_y_t_scaled
+                
+                pred_scaled_delta = model.model(pred_input_batch)
+                pred_raw_delta = (pred_scaled_delta * y_delta_std) + y_delta_mean
+                
+                # Update the state for the next inner-loop step
+                current_y_t_raw = current_y_t_raw + pred_raw_delta
+                current_y_t_scaled = (current_y_t_raw - y_mean) / y_std
+            
+            # 5. After the inner loop, 'current_y_t_raw' holds the
+            # final N-step-ahead prediction. Store it.
+            predictions_list.append(current_y_t_raw.cpu().numpy())
+
     print("Rollout complete.")
     return predictions_list
 
@@ -148,13 +206,12 @@ def get_frame_data(
     dataset: AdforceLazyDataset, 
     idx: int, 
     dem: np.ndarray,
-    prediction_state: np.ndarray  # <-- MODIFIED: Added prediction arg
+    prediction_state: np.ndarray  # <-- This is the UNCALED state y(t+1)
 ) -> Dict[str, np.ndarray]:
     """
     Retrieves and processes all 6 variables for a single animation frame.
     Uses ground-truth inputs (P, WX, WY) but predicted outputs.
     """
-    # We still get the data to extract the *input forcings*
     data = dataset.get(idx)
     p_t = dataset.previous_t
     x_data = data.x.cpu()
@@ -162,23 +219,25 @@ def get_frame_data(
     # --- 1. Extract and Un-scale Inputs (P, WX, WY) ---
     forcing_start_idx = 5
     forcing_end_idx = 5 + (3 * p_t)
-    last_forcing_step_scaled = x_data[:, forcing_end_idx - 3 : forcing_end_idx]
+    # Get the *last* forcing step available in this batch
+    # (which corresponds to the state we are plotting)
+    last_forcing_step_scaled = x_data[:, forcing_end_idx - 3 : forcing_end_idx] 
 
     if dataset.apply_scaling:
-        if not hasattr(dataset, "x_dyn_mean_broadcast"):
-            inputs_unscaled = last_forcing_step_scaled
-        else:
-            mean = dataset.x_dyn_mean_broadcast[-3:].cpu()
-            std = dataset.x_dyn_std_broadcast[-3:].cpu()
-            inputs_unscaled = (last_forcing_step_scaled * std) + mean
+        # We need the mean/std for a *single* step, not broadcasted
+        mean = dataset.x_dyn_mean_broadcast.cpu()[:3] 
+        std = dataset.x_dyn_std_broadcast.cpu()[:3]
+        inputs_unscaled = (last_forcing_step_scaled * std) + mean
     else:
         inputs_unscaled = last_forcing_step_scaled
+        
+    # Forcing order from _get_forcing_slice is ["WX", "WY", "P"]
     wx_data = inputs_unscaled[:, 0].numpy()
     wy_data = inputs_unscaled[:, 1].numpy()
     p_data = inputs_unscaled[:, 2].numpy()
 
     # --- 2. Extract Outputs (WD, VX, VY) from the prediction ---
-    outputs = prediction_state # Use the passed-in prediction
+    outputs = prediction_state # Use the passed-in unscaled state
     wd_data = outputs[:, 0]
     vx_data = outputs[:, 1]
     vy_data = outputs[:, 2]
@@ -200,10 +259,7 @@ def calculate_global_climits(
     dataset: AdforceLazyDataset, dem: np.ndarray
 ) -> Dict[str, Tuple[float, float]]:
     """
-    Calculates global vmin/vmax by iterating through the entire dataset.
-    
-    NOTE: This still reads the *GROUND TRUTH* data from the dataset
-    to ensure the color limits are consistent and comparable.
+    Calculates global vmin/vmax by iterating through the *GROUND TRUTH* dataset.
     """
     print(f"Calculating global color limits from GROUND TRUTH data ({len(dataset)} frames)...")
     
@@ -214,29 +270,30 @@ def calculate_global_climits(
     p98_vals = {key: [] for key in plot_order}
 
     for idx in tqdm(range(len(dataset)), desc="Scanning data"):
-        # Get ground truth data for climits
         data_gt = dataset.get(idx)
+        
+        # data.y_unscaled is y_tplus1_raw (the full state)
         outputs_gt = data_gt.y_unscaled.cpu().numpy()
+        
         wd_gt = outputs_gt[:, 0]
         vx_gt = outputs_gt[:, 1]
         vy_gt = outputs_gt[:, 2]
         ssh_gt = wd_gt + dem
         
-        # Get input data (same as get_frame_data)
+        # Get input data
         p_t = dataset.previous_t
         x_data = data_gt.x.cpu()
         forcing_start_idx = 5
         forcing_end_idx = 5 + (3 * p_t)
-        last_forcing_step_scaled = x_data[:, forcing_end_idx - 3 : forcing_end_idx]
+        last_forcing_step_scaled = x_data[:, forcing_end_idx - 3 : forcing_end_idx] # Fixed index
+        
         if dataset.apply_scaling:
-            if not hasattr(dataset, "x_dyn_mean_broadcast"):
-                inputs_unscaled = last_forcing_step_scaled
-            else:
-                mean = dataset.x_dyn_mean_broadcast[-3:].cpu()
-                std = dataset.x_dyn_std_broadcast[-3:].cpu()
-                inputs_unscaled = (last_forcing_step_scaled * std) + mean
+            mean = dataset.x_dyn_mean_broadcast.cpu()[:3]
+            std = dataset.x_dyn_std_broadcast.cpu()[:3]
+            inputs_unscaled = (last_forcing_step_scaled * std) + mean
         else:
             inputs_unscaled = last_forcing_step_scaled
+            
         wx_gt = inputs_unscaled[:, 0].numpy()
         wy_gt = inputs_unscaled[:, 1].numpy()
         p_gt = inputs_unscaled[:, 2].numpy()
@@ -284,7 +341,7 @@ def plot_single_frame(
     dem: np.ndarray,
     climits: Dict[str, Tuple[float, float]],
     frame_path: str,
-    prediction_state: np.ndarray # <-- MODIFIED: Added prediction arg
+    prediction_state: np.ndarray
 ):
     """
     Creates, plots, and saves a *single* frame from scratch.
@@ -402,7 +459,7 @@ def compile_video_from_frames(
 
 
 if __name__ == "__main__":
-    # --- 1. CONFIGURE YOUR PATHS HERE (UPDATED) ---
+    # --- 1. CONFIGURE YOUR PATHS HERE ---
     
     # Path to your *saved model checkpoint*
     checkpoint_path = "/Volumes/s/tcpips/mSWE-GNN/checkpoints/GNN-best-epoch=37-val_loss=0.5033.ckpt"
@@ -416,27 +473,35 @@ if __name__ == "__main__":
     # This must be the *training* stats file your model was trained with
     scaling_stats_file = "/Volumes/s/tcpips/mSWE-GNN/data_processed/train/scaling_stats.yaml"
     
+    # --- 2. CONFIGURE ROLLOUT ---
+    
     # This must match the `previous_t` used to train your model
-    previous_time_steps = 2
+    # (Based on your logs, this should be 1)
+    previous_time_steps = 1
     
-    # Define the output paths
-    output_gif = "adforce_6panel_PREDICTION.gif"
-    output_video = "adforce_6panel_PREDICTION.mp4"
+    # --- THIS IS THE NEW PARAMETER ---
+    # What kind of rollout to perform?
+    # -1 = "Full Rollout": Free-running simulation from t=0.
+    #  1 = "Fixed 1-step": Every frame is a 1-step-ahead prediction.
+    #  3 = "Fixed 3-step": Every frame (after first 2) is a 3-step-ahead prediction.
+    ROLLOUT_HORIZON = 3 
     
-    
-    # Frames per second for the final animations
+    # --- 3. CONFIGURE OUTPUTS ---
+    rollout_type_str = "full" if ROLLOUT_HORIZON == -1 else f"{ROLLOUT_HORIZON}step"
+    output_gif = f"adforce_6panel_PREDICTION_{rollout_type_str}.gif"
+    output_video = f"adforce_6panel_PREDICTION_{rollout_type_str}.mp4"
     anim_fps = 10
+    
     # --- END CONFIGURATION ---
 
 
-    # --- 2. SETUP DEVICE ---
+    # --- 4. SETUP DEVICE ---
     plot_defaults()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
     if not os.path.exists(checkpoint_path):
         print(f"Error: Checkpoint file not found at {checkpoint_path}")
-        print("Please update the 'checkpoint_path' variable in this script.")
         exit()
     if not os.path.exists(netcdf_file):
         print(f"Error: NetCDF file not found at {netcdf_file}")
@@ -445,21 +510,19 @@ if __name__ == "__main__":
         print(f"Error: Scaling stats file not found at {scaling_stats_file}")
         exit()
 
-    # --- 3. INITIALIZE DATASET (UPDATED) ---
+    # --- 5. INITIALIZE DATASET ---
     print(f"Initializing dataset for {netcdf_file}...")
-    frame_dir = "./animation_frames_temp_PREDICT"
+    frame_dir = f"./animation_frames_temp_PREDICT_{rollout_type_str}"
     shutil.rmtree(frame_dir, ignore_errors=True)
     os.makedirs(frame_dir, exist_ok=True)
 
     try:
-        # This is a temporary directory for the .pt files for *this specific file*
-        # Using a path consistent with your scaling_stats_file path
         predict_root = "/Volumes/s/tcpips/mSWE-GNN/data_processed/predict_katrina"
         
         dataset = AdforceLazyDataset(
             root=predict_root, 
             nc_files=[netcdf_file],
-            previous_t=previous_time_steps,
+            previous_t=previous_time_steps, # Should be 1
             scaling_stats_path=scaling_stats_file,
         )
     except Exception as e:
@@ -473,14 +536,10 @@ if __name__ == "__main__":
     total_frames = len(dataset)
     print(f"Dataset loaded. Total samples to predict: {total_frames}")
 
-
-    # --- 4. CONFIGURE AND LOAD MODEL ---
+    # --- 6. CONFIGURE AND LOAD MODEL ---
     print(f"Loading model from {checkpoint_path}...")
 
-    # --- A. !!! CONFIGURE YOUR MODEL PARAMS HERE !!! ---
-    # These MUST match the 'model_params' section of the
-    # config.yaml file used for the training run.
-    # --- (Example for GNNModelAdforce) ---
+    # --- A. Model parameters from your (working) log ---
     model_type = "GNN"
     model_params = {
         'model_type': 'GNN',
@@ -492,48 +551,27 @@ if __name__ == "__main__":
         'gnn_activation': "tanh",
         'edge_mlp': True,
         'with_gradient': True,
-        # 'hidden_dim': 128,        # <--- !! CHECK THIS
-        # 'num_layers': 5,          # <--- !! CHECK THIS
-        # 'mp_passes': 15,          # <--- !! CHECK THIS
-        # 'use_model_residual': True, # <--- !! CHECK THIS
-        # 'use_edge_attr': True,    # <--- !! CHECK THIS
-        # 'hid_features': 64,        # <--- !! CHECK THIS
-        # 'mlp_layers': 2,          # <--- !! CHECK THIS
     }
-    # --- (Example for PointwiseMLPModel) ---
-    # model_type = "MLP"
-    # model_params = {
-    #     'model_type': 'MLP',
-    #     'hidden_dim': 128,
-    #     'num_layers': 3,
-    #     'use_model_residual': True,
-    # }
-    # -------------------------------------
 
-    # --- B. Define MOCK configs for lr_info and trainer_options ---
-    # These are required to initialize the LightningTrainer class,
-    # but their values are not used during inference/rollout.
+    # --- B. Mock configs from your (working) log ---
     mock_lr_info = {
-        'learning_rate': 1e-3,
-        'weight_decay': 1e-4,
-        'step_size': 20,
-        'gamma': 0.5
+        'learning_rate': 1e-3, 'weight_decay': 1e-4,
+        'step_size': 20, 'gamma': 0.5
     }
     mock_trainer_options = {
-        'batch_size': 4, # Value doesn't matter here
-        'only_where_water': True,
-        'velocity_scaler': 5.0,
-        'type_loss': 'RMSE'
+        'batch_size': 4, 'only_where_water': True,
+        'velocity_scaler': 5.0, 'type_loss': 'RMSE'
     }
     
-    # --- C. Calculate model dimensions (copied from adforce_main.py) ---
-    p_t = previous_time_steps
+    # --- C. Calculate model dimensions ---
+    p_t = previous_time_steps # Should be 1
     NUM_STATIC_NODE_FEATURES = 5
     NUM_DYNAMIC_NODE_FEATURES = 3
     NUM_CURRENT_STATE_FEATURES = 3
     NUM_STATIC_EDGE_FEATURES = 2
     NUM_OUTPUT_FEATURES = 3
     
+    # This should be (5 + (3*1) + 3) = 11
     num_node_features = (
         NUM_STATIC_NODE_FEATURES
         + (NUM_DYNAMIC_NODE_FEATURES * p_t)
@@ -553,40 +591,20 @@ if __name__ == "__main__":
                 num_static_features=NUM_STATIC_NODE_FEATURES,
                 **model_params,
             )
-        elif model_type == "MLP":
-            model_to_load = PointwiseMLPModel(
-                num_node_features=num_node_features,
-                num_output_features=num_output_features,
-                **model_params,
-            )
-        elif model_type == "MonolithicMLP":
-            n_nodes_fixed = int(dataset.total_nodes)
-            if n_nodes_fixed is None:
-                raise ValueError("Could not determine n_nodes from dataset")
-            print(f"Found fixed n_nodes from dataset: {n_nodes_fixed}")
-            model_to_load = MonolithicMLPModel(
-                n_nodes=n_nodes_fixed,
-                num_node_features=num_node_features,
-                num_output_features=num_output_features,
-                **model_params,
-            )
         else:
-            raise ValueError(f"Unknown model_type: {model_type}")
+             raise ValueError(f"Model type {model_type} not configured in this script")
             
         print(f"Instantiated {model_type} model structure.")
         
     except Exception as e:
         print(f"Error: Failed to instantiate model structure: {e}")
-        print("Please check your 'model_params' in this script.")
         exit()
 
     # --- E. Load the LightningTrainer from checkpoint ---
     try:
-        # Pass the instantiated model and mock configs
         lightning_model = LightningTrainer.load_from_checkpoint(
             checkpoint_path,
             map_location=device,
-            # --- Pass missing __init__ args ---
             model=model_to_load,
             lr_info=mock_lr_info,
             trainer_options=mock_trainer_options
@@ -596,22 +614,26 @@ if __name__ == "__main__":
         print("Model loaded successfully.")
     except Exception as e:
         print(f"Failed to load model checkpoint: {e}")
-        print("This may be due to a mismatch between your model_params and the saved weights.")
         exit()
 
 
-    # --- 5. LOAD STATIC DATA & CLIMITS ---
+    # --- 7. LOAD STATIC DATA & CLIMITS ---
     x_coords, y_coords, dem = load_static_data(netcdf_file, dataset)
     climits = calculate_global_climits(dataset, dem)
 
-    # --- 6. PERFORM ROLLOUT ---
-    all_predictions = perform_rollout(lightning_model, dataset, device)
+    # --- 8. PERFORM ROLLOUT ---
+    all_predictions = perform_rollout(
+        lightning_model, 
+        dataset, 
+        device,
+        rollout_horizon=ROLLOUT_HORIZON
+    )
     
     if len(all_predictions) != total_frames:
         print(f"Error: Rollout returned {len(all_predictions)} frames, expected {total_frames}")
         exit()
 
-    # --- 7. RENDER FRAMES ---
+    # --- 9. RENDER FRAMES ---
     print("Rendering predicted frames...")
     frame_files = []
     for idx in tqdm(range(total_frames), desc="Rendering frames"):
@@ -632,7 +654,7 @@ if __name__ == "__main__":
             prediction_state=prediction_for_this_frame 
         )
     
-    # --- 8. COMPILE & CLEANUP ---
+    # --- 10. COMPILE & CLEANUP ---
     images = []
     if output_gif or output_video:
         for frame_file in tqdm(frame_files, desc="Reading frames into memory"):
@@ -643,13 +665,6 @@ if __name__ == "__main__":
 
     if output_video:
         compile_video_from_frames(frame_dir, output_video, anim_fps, images)
-    
-    # Clean up temp frames
-    #try:
-    #    shutil.rmtree(frame_dir)
-    #    print(f"Cleaned up temporary directory: {frame_dir}")
-    #except Exception as e:
-    #    print(f"Warning: Failed to clean up {frame_dir}. Error: {e}")
 
     print(f"\nPrediction animation complete.")
     if output_gif:
