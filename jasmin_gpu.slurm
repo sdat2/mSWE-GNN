@@ -1,16 +1,16 @@
 #!/bin/bash
 
 # --- SLURM Directives (GPU Job for ORCHID) ---
-#SBATCH --job-name=MonolithicMLP
+#SBATCH --job-name=SWE-GNN_GPU
 #SBATCH --account=orchid             # Use ORCHID account
 #SBATCH --partition=orchid           # Use ORCHID partition
 #SBATCH --qos=orchid                 # Use ORCHID QoS
 #SBATCH --gres=gpu:1                 # Request 1 GPU (A100)
 #SBATCH -o log/%j.out                # Standard output log
 #SBATCH -e log/%j.err                # Standard error log
-#SBATCH --time=23:00:00              # Set to 23 hours (under the likely 24-hour limit)
-#SBATCH --ntasks-per-node=5
-#SBATCH --mem=20000                  # Memory request in MB (for data loaders)
+#SBATCH --time=23:30:00              # Set to 23 hours (under the likely 24-hour limit)
+#SBATCH --ntasks-per-node=8          # Number of CPU tasks per node
+#SBATCH --mem=40000                  # Memory request in MB (for data loaders)
 
 # --- 1. Environment Setup ---
 echo "Loading conda environment..."
@@ -49,13 +49,16 @@ python -m adforce_main \
     machine.output_dir=$RESULTS_LOCAL_PATH \
     +lightning_trainer.accelerator=gpu \
     +lightning_trainer.devices=1 \
-    model_params.model_type=MonolithicMLP \
+    model_params.model_type=GNN \
     model_params.type_gnn=SWEGNN \
     model_params.hid_features=64 \
-    model_params.K=6 \
+    model_params.K=3 \
+    data_params.num_workers=8 \
+    data_params.test_size=0.1 \
     model_params.normalize=True \
     model_params.with_gradient=True \
     model_params.edge_mlp=True \
+    wandb.project=surgedelta \
     trainer_options.batch_size=4
 
 echo "Script finished."

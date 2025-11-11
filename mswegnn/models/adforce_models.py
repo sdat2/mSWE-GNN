@@ -235,7 +235,7 @@ class PointwiseMLPModel(nn.Module):
         return out
 
 
-class GNNModelAdforce(AdforceBaseModel):
+class GNNModelAdforce(nn.Module):
     """
     The main GNNModel wrapper for the Adforce pipeline.
 
