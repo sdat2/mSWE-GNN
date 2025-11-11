@@ -21,11 +21,13 @@ Using `micromamba` and flexible yaml settings for a robust pure-cpu environment:
 micromamba create -n mswegnn -f env.yml
 ```
 
-If you want to run on JASMIN GPU nodes, use:
+If you want to run on JASMIN GPU nodes (orchid), use:
 
 ```bash
 micromamba create -n mswegnn-gpu -f env_jas_gpu.yml
 ```
+
+If you need to use a different GPU to the Jasmin A100s, you might need to adjust the cuda version in the `env_jas_gpu.yml` file.
 
 If you are installing the python environment through a different method instead, to locally install the `mswegnn` package, run:
 
