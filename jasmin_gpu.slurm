@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- SLURM Directives (GPU Job for ORCHID) ---
-#SBATCH --job-name=MonolithicMLP
+#SBATCH --job-name=GNN-GCN
 #SBATCH --account=orchid             # Use ORCHID account
 #SBATCH --partition=orchid           # Use ORCHID partition
 #SBATCH --qos=orchid                 # Use ORCHID QoS
@@ -9,8 +9,8 @@
 #SBATCH -o log/%j.out                # Standard output log
 #SBATCH -e log/%j.err                # Standard error log
 #SBATCH --time=23:00:00              # Set to 23 hours (under the likely 24-hour limit)
-#SBATCH --ntasks-per-node=5
-#SBATCH --mem=20000                  # Memory request in MB (for data loaders)
+#SBATCH --ntasks-per-node=8
+#SBATCH --mem=40000                  # Memory request in MB (for data loaders)
 
 # --- 1. Environment Setup ---
 echo "Loading conda environment..."
@@ -50,13 +50,14 @@ python -m adforce_main \
     +lightning_trainer.accelerator=gpu \
     +lightning_trainer.devices=1 \
     model_params.model_type=GNN \
-    model_params.type_gnn=SWEGNN \
-    model_params.hid_features=64 \
+    model_params.type_gnn=GCN \
+    model_params.hid_features=124 \
     model_params.K=3 \
     model_params.normalize=True \
     model_params.with_gradient=True \
+    data_params.num_workers=8 \
     model_params.edge_mlp=True \
-    trainer_options.batch_size=4
+    trainer_options.batch_size=8
 
 echo "Script finished."
 

@@ -80,123 +80,113 @@ def load_static_data(
 
 @torch.no_grad()  # We don't need gradients for inference
 def perform_rollout(
-    model: L.LightningModule, 
-    dataset: AdforceLazyDataset, 
+    model: L.LightningModule,
+    dataset: AdforceLazyDataset,
     device: torch.device,
-    rollout_horizon: int = 1
+    rollout_horizon: int = 1,
 ) -> List[np.ndarray]:
     """
     Performs an autoregressive rollout based on the specified horizon.
 
-    This function assumes the model predicts the *SCALED DELTA* (change in state).
-    
+    --- UPDATED ---
+    This function assumes the model predicts the *SCALED NEXT STATE*.
+    It now correctly prepends the initial t=0 ground truth state to
+    the list, so the returned list is [y_0_GT, y_1_pred, y_2_pred, ...].
+    This ensures the animation starts at the correct initial condition.
+
     Args:
         model (L.LightningModule): The trained Lightning model (on device).
         dataset (AdforceLazyDataset): The dataset for a single simulation.
         device (torch.device): The torch device (e.g., 'cuda' or 'cpu').
         rollout_horizon (int, optional): The rollout strategy.
-            - (N = -1): "Full Rollout". Runs one long simulation from t=0.
-              predictions_list[k] is the k-step-ahead prediction.
-            - (N > 0): "Fixed Horizon". Runs a new N-step simulation for
-              each frame. predictions_list[k] is the N-step-ahead
-              prediction starting from ground truth at t=(k-N+1).
-              The first N-1 frames are k-step-ahead predictions.
 
     Returns:
-        List[np.ndarray]: A list of unscaled predicted states [WD, VX, VY]
-                          for each frame in the dataset.
+        List[np.ndarray]: A list of unscaled predicted states
+                          [y_0_GT, y_1_pred, y_2_pred, ...].
     """
     model.eval()  # Set model to evaluation mode
-    
+
     # --- Get all necessary scaling stats from the dataset ---
+    if not dataset.apply_scaling:
+        raise ValueError("This script assumes scaling is applied to the dataset.")
+        
     y_mean = dataset.y_mean.to(device)
     y_std = dataset.y_std.to(device)
-    y_delta_mean = dataset.y_delta_mean.to(device)
-    y_delta_std = dataset.y_delta_std.to(device)
+    # y_delta_mean and y_delta_std are no longer needed
 
     predictions_list = []
+
+    # --- 1. Get the *initial state* from frame 0 ---
+    current_batch = dataset.get(0).to(device)
+    current_y_t_scaled = current_batch.x[:, -3:].clone()  # State y(t=0)
+    current_y_t_raw = (current_y_t_scaled * y_std) + y_mean
     
+    # --- MODIFICATION: Add initial state as Frame 0 ---
+    predictions_list.append(current_y_t_raw.cpu().numpy())
+
     # --- BRANCH 1: FULL, FREE-RUNNING ROLLOUT ---
     if rollout_horizon == -1:
-        print("Starting full, free-running rollout (predicting deltas)...")
+        print("Starting full, free-running rollout (predicting next state)...")
         
-        # --- 1. Get the *initial state* from frame 0 ---
-        current_batch = dataset.get(0).to(device)
-        current_y_t_scaled = current_batch.x[:, -3:].clone() # State y(t)
-        current_y_t_raw = (current_y_t_scaled * y_std) + y_mean
-
-        for idx in tqdm(range(len(dataset)), desc="Full Rollout"):
+        # --- MODIFICATION: Loop for N-1 predictions (since we have t=0) ---
+        # dataset.get(idx) gets forcing for t=idx, to predict t=idx+1
+        for idx in tqdm(range(len(dataset) - 1), desc="Full Rollout"):
             # 1. Get the *ground truth batch* for this step's *forcing*
-            gt_batch = dataset.get(idx).to(device)
-            
+            gt_batch = dataset.get(idx).to(device) # Gets forcing_idx
+
             # 2. Create the *prediction input*
             pred_input_batch = gt_batch.clone()
-            
-            # 3. ...but replace the state with our *predicted* state
-            pred_input_batch.x[:, -3:] = current_y_t_scaled 
-            
-            # 4. Run the model to predict the *scaled delta*
-            pred_scaled_delta = model.model(pred_input_batch) 
-            
-            # 5. Un-scale the predicted delta
-            pred_raw_delta = (pred_scaled_delta * y_delta_std) + y_delta_mean
-            
-            # 6. Apply the delta to get the next state
-            next_y_t_raw = current_y_t_raw + pred_raw_delta
-            
-            # 7. Store the *unscaled predicted state*
-            predictions_list.append(next_y_t_raw.cpu().numpy())
 
-            # 8. Prepare for the *next* loop iteration
-            current_y_t_raw = next_y_t_raw
-            current_y_t_scaled = (current_y_t_raw - y_mean) / y_std
+            # 3. ...but replace the state with our *predicted* state
+            # On idx=0, this uses current_y_t_scaled (y_0_GT)
+            pred_input_batch.x[:, -3:] = current_y_t_scaled
+
+            # 4. Run the model to predict the *scaled next state*
+            pred_scaled_y_tplus1 = model.model(pred_input_batch) # Predicts y_1_pred
+
+            # 5. Un-scale the predicted state
+            pred_raw_y_tplus1 = (pred_scaled_y_tplus1 * y_std) + y_mean
+
+            # 6. Store the *unscaled predicted state*
+            predictions_list.append(pred_raw_y_tplus1.cpu().numpy()) # Appends y_1_pred
+
+            # 7. Prepare for the *next* loop iteration (efficient update)
+            current_y_t_scaled = pred_scaled_y_tplus1 # Becomes y_1_pred for next loop
 
     # --- BRANCH 2: FIXED-HORIZON ROLLOUT ---
     else:
-        print(f"Starting {rollout_horizon}-step fixed-horizon rollout (predicting deltas)...")
-        
-        # Loop for each frame we want to generate
-        for idx in tqdm(range(len(dataset)), desc="Fixed-Horizon Rollout"):
+        print(f"Starting {rollout_horizon}-step fixed-horizon rollout (predicting next state)...")
+
+        # Loop for each frame we want to generate (frame 1 to N-1)
+        # We already have frame 0
+        for idx in tqdm(range(1, len(dataset)), desc="Fixed-Horizon Rollout"):
             
-            # 1. Determine the *start* of this mini-rollout
-            # For frame 0, start_idx=0. For frame 1, start_idx=0. ...
-            # For frame 3 (n=3), start_idx=1.
+            # 1. Determine the start of the GT state
             start_idx = max(0, idx - rollout_horizon + 1)
+            # 2. Determine how many prediction steps to take
+            steps_to_take = idx - start_idx
             
-            # 2. Determine how many steps to run
-            # For frame 0, steps=1. For frame 1, steps=2. ...
-            # For frame 2 (n=3), steps=3. For frame 3 (n=3), steps=3.
-            steps_to_run = idx - start_idx + 1
-            
-            # 3. Get the *ground truth* state at the *start* of the mini-rollout
+            # 3. Get the GT state at the start
             gt_batch_start = dataset.get(start_idx).to(device)
-            current_y_t_scaled = gt_batch_start.x[:, -3:].clone()
-            current_y_t_raw = (current_y_t_scaled * y_std) + y_mean
+            current_y_t_scaled = gt_batch_start.x[:, -3:].clone() # State y(t_start)
 
             # 4. Run the inner mini-rollout loop
-            for k in range(steps_to_run):
-                # Get the *forcing data* for step 'k' of this rollout
+            for k in range(steps_to_take):
+                # We need forcing from t_start, t_start+1, ..., idx-1
                 forcing_batch_idx = start_idx + k
-                
-                # This should not happen if steps_to_run is correct, but as a safeguard:
                 if forcing_batch_idx >= len(dataset):
                     break
                 
                 gt_forcing_batch = dataset.get(forcing_batch_idx).to(device)
-                
                 pred_input_batch = gt_forcing_batch.clone()
                 pred_input_batch.x[:, -3:] = current_y_t_scaled
-                
-                pred_scaled_delta = model.model(pred_input_batch)
-                pred_raw_delta = (pred_scaled_delta * y_delta_std) + y_delta_mean
-                
-                # Update the state for the next inner-loop step
-                current_y_t_raw = current_y_t_raw + pred_raw_delta
-                current_y_t_scaled = (current_y_t_raw - y_mean) / y_std
+
+                pred_scaled_y_tplus1 = model.model(pred_input_batch)
+                current_y_t_scaled = pred_scaled_y_tplus1 # Update for next step
             
-            # 5. After the inner loop, 'current_y_t_raw' holds the
-            # final N-step-ahead prediction. Store it.
-            predictions_list.append(current_y_t_raw.cpu().numpy())
+            # 5. After the loop, current_y_t_scaled is the final prediction
+            final_pred_raw = (current_y_t_scaled * y_std) + y_mean
+            predictions_list.append(final_pred_raw.cpu().numpy())
 
     print("Rollout complete.")
     return predictions_list
@@ -345,16 +335,34 @@ def plot_single_frame(
 ):
     """
     Creates, plots, and saves a *single* frame from scratch.
+    
+    --- UPDATED ---
+    This function now correctly fetches the timestamp for the
+    corresponding input state, fixing the off-by-one error.
     """
     
     data_dict = get_frame_data(dataset, idx, dem, prediction_state) 
 
     try:
         nc_path, t_start = dataset.index_map[idx]
-        t_plot_idx = t_start + dataset.previous_t 
+        
+        # --- MODIFICATION: Get timestamp for the *input state* ---
+        # t_start is the *start* of the input window.
+        # The *state* we are plotting corresponds to the *end* of that window,
+        # which is the state at (t_start + previous_t - 1).
+        t_plot_idx = t_start + dataset.previous_t - 1
+        # For idx=0: t_start=0, p_t=1 -> t_plot_idx=0. Correct.
+        # For idx=1: t_start=1, p_t=1 -> t_plot_idx=1. Correct.
+        # --- END MODIFICATION ---
+
         with xr.open_dataset(nc_path, cache=True) as ds:
             timestamp = ds.time[t_plot_idx].values
-            title = np.datetime_as_string(timestamp, unit='s').replace('T', ' ')[:-6] + ":00"
+            # More robust timestamp formatting
+            title_str = np.datetime_as_string(timestamp, unit='s').replace('T', ' ')
+            if '.' in title_str:
+                 title_str = title_str.split('.')[0] # Remove fractional seconds
+            title = title_str
+            
     except Exception as e:
         if idx == 0: 
             print(f"Warning: Could not read timestamp. Falling back to index. Error: {e}")
@@ -459,19 +467,23 @@ def compile_video_from_frames(
 
 
 if __name__ == "__main__":
+    # python -m mswegnn.utils.adforce_predict_animate
     # --- 1. CONFIGURE YOUR PATHS HERE ---
     
     # Path to your *saved model checkpoint*
-    checkpoint_path = "/Volumes/s/tcpips/mSWE-GNN/checkpoints/GNN-best-epoch=37-val_loss=0.5033.ckpt"
+    # checkpoint_path = "/Volumes/s/tcpips/mSWE-GNN/checkpoints/GNN-best-epoch=37-val_loss=0.5033.ckpt"
+    checkpoint_path = "/home/users/sithom/mSWE-GNN/checkpoints/GNN-best-epoch=08-val_loss=0.1434.ckpt"
      
     # This should be the directory containing your NetCDF file
-    root_directory = "/Volumes/s/tcpips/swegnn_5sec/"
+    # root_directory = "/Volumes/s/tcpips/swegnn_5sec/"
+    root_directory = "/home/users/sithom/swegnn_5sec/"
     
     # This is the single .nc file you want to animate (e.g., Katrina)
     netcdf_file = os.path.join(root_directory, "152_KATRINA_2005.nc")
     
     # This must be the *training* stats file your model was trained with
-    scaling_stats_file = "/Volumes/s/tcpips/mSWE-GNN/data_processed/train/scaling_stats.yaml"
+    # scaling_stats_file = "/Volumes/s/tcpips/mSWE-GNN/data_processed/train/scaling_stats.yaml"
+    scaling_stats_file = "/home/users/sithom/mSWE-GNN/data_processed/train/scaling_stats.yaml"
     
     # --- 2. CONFIGURE ROLLOUT ---
     
@@ -484,7 +496,7 @@ if __name__ == "__main__":
     # -1 = "Full Rollout": Free-running simulation from t=0.
     #  1 = "Fixed 1-step": Every frame is a 1-step-ahead prediction.
     #  3 = "Fixed 3-step": Every frame (after first 2) is a 3-step-ahead prediction.
-    ROLLOUT_HORIZON = 3 
+    ROLLOUT_HORIZON = -1 
     
     # --- 3. CONFIGURE OUTPUTS ---
     rollout_type_str = "full" if ROLLOUT_HORIZON == -1 else f"{ROLLOUT_HORIZON}step"
@@ -517,7 +529,8 @@ if __name__ == "__main__":
     os.makedirs(frame_dir, exist_ok=True)
 
     try:
-        predict_root = "/Volumes/s/tcpips/mSWE-GNN/data_processed/predict_katrina"
+        # predict_root = "/Volumes/s/tcpips/mSWE-GNN/data_processed/predict_katrina"
+        predict_root = "/home/users/sithom/mSWE-GNN/data_processed/predict_katrina"
         
         dataset = AdforceLazyDataset(
             root=predict_root, 
@@ -629,6 +642,10 @@ if __name__ == "__main__":
         rollout_horizon=ROLLOUT_HORIZON
     )
     
+    # --- MODIFICATION: Check total_frames vs all_predictions length ---
+    # all_predictions now has length total_frames (y_0 to y_{N-1})
+    # total_frames has length N (from len(dataset))
+    # This check is now correct.
     if len(all_predictions) != total_frames:
         print(f"Error: Rollout returned {len(all_predictions)} frames, expected {total_frames}")
         exit()
@@ -636,6 +653,8 @@ if __name__ == "__main__":
     # --- 9. RENDER FRAMES ---
     print("Rendering predicted frames...")
     frame_files = []
+    # This loop is now correct: idx=0 will get all_predictions[0] (y_0_GT)
+    # and plot_single_frame(idx=0) will get timestamp for t=0.
     for idx in tqdm(range(total_frames), desc="Rendering frames"):
         frame_path = os.path.join(frame_dir, f"frame_{idx:05d}.png")
         frame_files.append(frame_path)
