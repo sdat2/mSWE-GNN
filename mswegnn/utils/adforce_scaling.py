@@ -14,7 +14,8 @@ It computes and saves stats for:
 4.  y_delta: (deltas of features_cfg.targets)
 
 This version uses a memory-efficient online algorithm (Welford's)
-to calculate stats in a single pass.
+to calculate stats in a single pass and explicitly handles NaNs
+by converting them to 0.0 before aggregation.
 """
 
 import os
@@ -170,9 +171,19 @@ def _load_tensor_from_ds(ds: xr.Dataset, var_list: List[str]) -> torch.Tensor:
         # Check if first dim is time, second is nodes
         if stacked_tensor.dim() == 3 and stacked_tensor.shape[0] == ds.sizes['time'] and stacked_tensor.shape[1] == ds.sizes['num_nodes']:
              stacked_tensor = stacked_tensor.permute(1, 0, 2) # [T, N, F] -> [N, T, F]
-        else:
-             # This assumes (N, T, F) which might be from a doctest or different file format
+        elif stacked_tensor.dim() == 2 and stacked_tensor.shape[0] == ds.sizes['time']:
+             # This handles the case where num_nodes=1
+             stacked_tensor = stacked_tensor.permute(1, 0).unsqueeze(0) # [T, F] -> [F, T] -> [1, T, F]
+        elif stacked_tensor.dim() == 3 and stacked_tensor.shape[0] == ds.sizes['num_nodes']:
+             # Already in [N, T, F] format
              pass
+        else:
+            # Raise an error for unhandled dimension order
+            raise ValueError(
+                f"Unexpected tensor shape {stacked_tensor.shape} "
+                f"for time-series data with dims time={ds.sizes.get('time')}, "
+                f"num_nodes={ds.sizes.get('num_nodes')}"
+            )
     
     return stacked_tensor
     # --- END FIX ---
@@ -282,6 +293,11 @@ def compute_and_save_adforce_stats(
         with xr.open_dataset(nc_files[0]) as ds:
             # static_node_data is [N, F_static]
             static_node_data = _load_tensor_from_ds(ds, static_node_vars)
+            
+            # --- NAN FIX ---
+            static_node_data.nan_to_num_(nan=0.0)
+            # --- END FIX ---
+            
             stats_aggs['x_static'].update(static_node_data)
             
             # Store static features needed for derived calculations
@@ -292,9 +308,13 @@ def compute_and_save_adforce_stats(
             for var in all_derived_args:
                 if var in ds and 'time' not in ds[var].dims:
                     # Load as [N] tensor
-                    static_data_dict_cpu[var] = torch.tensor(
+                    tensor_data = torch.tensor(
                         ds[var].values, dtype=torch.float32
                     )
+                    # --- NAN FIX ---
+                    tensor_data.nan_to_num_(nan=0.0)
+                    # --- END FIX ---
+                    static_data_dict_cpu[var] = tensor_data
 
     except Exception as e:
         raise IOError(f"Failed to load static data from {nc_files[0]}: {e}")
@@ -310,18 +330,29 @@ def compute_and_save_adforce_stats(
                 if forcing_vars:
                     # forcing_data = [N, T, F_forcing]
                     forcing_data = _load_tensor_from_ds(ds, forcing_vars)
+                    # --- NAN FIX ---
+                    forcing_data.nan_to_num_(nan=0.0)
+                    # --- END FIX ---
                     stats_aggs['x_dynamic'].update(forcing_data)
                 
                 # b. State and Delta stats
                 if state_vars:
                     # state_data = [N, T, F_state]
                     state_data = _load_tensor_from_ds(ds, state_vars)
+                    # --- NAN FIX ---
+                    state_data.nan_to_num_(nan=0.0)
+                    # --- END FIX ---
+
                     # target_data = [N, T, F_target]
                     target_data = _load_tensor_from_ds(ds, target_vars)
+                    # --- NAN FIX ---
+                    target_data.nan_to_num_(nan=0.0)
+                    # --- END FIX ---
 
                     # Compute deltas for all steps at once: y(t) - y(t-1)
                     # deltas = [N, T-1, F_target]
                     deltas = target_data[:, 1:, :] - target_data[:, :-1, :]
+                    # No nan_to_num needed, inputs are clean
                     stats_aggs['y_delta'].update(deltas)
                     
                     # Compute derived features for all steps
@@ -340,6 +371,7 @@ def compute_and_save_adforce_stats(
                     
                     # full_state_tensor = [N, T, F_state + F_derived]
                     full_state_tensor = torch.cat([state_data, derived_y_t], dim=-1)
+                    # No nan_to_num needed, inputs are clean
                     stats_aggs['y'].update(full_state_tensor)
 
         except Exception as e:

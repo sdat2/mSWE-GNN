@@ -282,7 +282,20 @@ def main(cfg: DictConfig):
         print_tensor_size_mb(static_data_cpu)
 
     except Exception as e:
-        raise IOError(f"Failed to load static data from {train_files[0]}: {e}")
+        try:
+            print("Could have been unlucky")
+            with xr.open_dataset(train_files[1]) as ds:
+                # --- REFACTOR (BUG FIX): Pass the feature lists from the config ---
+                static_data_cpu = _load_static_data_from_ds(
+                    ds,
+                    cfg.features.static,
+                    cfg.features.edge
+                )
+            print("Shared static data loaded to CPU. Measuring size...")
+
+            print_tensor_size_mb(static_data_cpu)
+        except Exception as ee:
+            raise IOError(f"Failed to load static data from {train_files[0]} and {train_files[1]}: {e}, {ee}")
 
     try:
         # --- NEW 3: Compute scaling stats if they don't exist ---
