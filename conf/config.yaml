@@ -5,7 +5,7 @@
 
 defaults:
   - _self_            # Loads this file first
-  - machine: jasmin      # Loads the default machine config (e.g., conf/machine/mac.yaml)
+  # - machine: mac      # Loads the default machine config (e.g., conf/machine/mac.yaml)
 
 # --- 1. Top-Level Paths (to be defined/overridden by machine configs) ---
 # We provide sensible defaults, but expect machine configs to set these.
@@ -48,7 +48,7 @@ data_params:
   
   # Set to true to force re-computation of stats from the training files.
   # Set to false to load from scaling_stats_path.
-  compute_scaling: true
+  compute_scaling: false
 
 
 # --- 4. Feature Configuration ---

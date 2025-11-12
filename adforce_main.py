@@ -269,8 +269,8 @@ def main(cfg: DictConfig) -> None:
     )
     num_edge_features = len(features_cfg.edge)
 
-    # Model predicts the delta for the state (which includes derived)
-    num_output_features = num_current_state_features
+    # Model predicts the delta for the state (which does not include the derived features)
+    num_output_features = len(features_cfg.targets)
 
     print(f"Model dimensions calculated from config:")
     print(f"  num_node_features: {num_node_features}")
@@ -314,6 +314,8 @@ def main(cfg: DictConfig) -> None:
         raise ValueError(
             f"Unknown model_type in config: {model_type}. Must be 'GNN', 'MLP', or 'MonolithicMLP'."
         )
+    print(f"Model initialized: {model_type}")
+    print(model)
 
     # --- 7. Initialize Lightning Trainer ---
     pl_trainer = AdforceLightningModule(
