@@ -13,7 +13,7 @@ from mswegnn.training.adforce_loss import loss_function
 # Define constants for the new data format
 # Input features: 5 static + N*3 dynamic
 # (DEM, slopex, slopey, area, node_type) + (WX, WY, P) * previous_t
-NUM_OUTPUT_FEATURES = 3  # WD, VX, VY
+# NUM_OUTPUT_FEATURES = 3  # WD, VX, VY
 
 
 class LightningTrainer(L.LightningModule):

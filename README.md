@@ -46,7 +46,8 @@ pip install -e .
         - `download.py`: download the training data from Hugging Face.
         - `upload.py`: upload the training data to Hugging Face. (ignore)
     - `models/`: Model definitions and architectures.
-        - `adforce_gnn.py`: graph neural network layers.
+        - `adforce_processors.py`: graph neural network processor layers.
+        - `adforce_base.py`
         - `adforce_models.py`: full model architectures.
         - `adforce_helpers.py`: helper functions for models.
     - `training/`: Training routines and loss functions.

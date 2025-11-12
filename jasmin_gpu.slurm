@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- SLURM Directives (GPU Job for ORCHID) ---
-#SBATCH --job-name=SWE-GNN_GPU
+#SBATCH --job-name=SWE-GNN_GPU_FLEX
 #SBATCH --account=orchid             # Use ORCHID account
 #SBATCH --partition=orchid           # Use ORCHID partition
 #SBATCH --qos=orchid                 # Use ORCHID QoS
@@ -58,7 +58,7 @@ python -m adforce_main \
     model_params.normalize=True \
     model_params.with_gradient=True \
     model_params.edge_mlp=True \
-    wandb.project=surgedelta \
+    wandb.project=surgeflexdelta \
     trainer_options.batch_size=4
 
 echo "Script finished."

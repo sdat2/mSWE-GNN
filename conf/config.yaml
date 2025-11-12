@@ -24,17 +24,61 @@ machine:
 wandb:
   project: mswegnn
   entity: sdat2
-  log_model: true # (or whatever your previous setting was)
+  log_model: true
 
-# Your original parameters, now grouped
+# --- Centralized Feature Definition ---
+features:
+  # Static node features from NetCDF.
+  # 'node_type' is added automatically by the dataset from 'face_BC'.
+  static:
+    - DEM
+    - slopex
+    - slopey
+    - area
+
+  # --- NEW: Static edge features from NetCDF ---
+  # These are now configurable for ablation.
+  edge:
+    - face_distance
+    - edge_slope
+
+  # Dynamic forcing features from NetCDF.
+  forcing:
+    - WX
+    - WY
+    - P
+
+  # State variables from NetCDF. Used for y(t) input and target calculation.
+  state:
+    - WD
+    - VX
+    - VY
+
+  # Derived state features, calculated on-the-fly by the dataset.
+  # 'name': The new feature name.
+  # 'op': The operation to perform (must be implemented in AdforceLazyDataset.get)
+  # 'args': List of vars to use. Can mix 'static' and 'state' vars.
+  derived_state:
+    - { name: 'SSH', op: 'subtract', args: ['WD', 'DEM'] }
+    # e.g., - { name: 'V_mag', op: 'magnitude', args: ['VX', 'VY'] }
+
+  # Target variables. The model predicts the delta of these.
+  # This MUST match the 'state' list for the current delta-learning setup.
+  targets:
+    - WD
+    - VX
+    - VY
+
+# --- data_params ---
 data_params:
   held_out_test_size: 0.2
   test_size: 0.2
   random_state: 42
-  previous_t: 1
   num_workers: 4
 
+# --- model_params ---
 model_params:
+  previous_t: 1       # Number of history steps for model input
   model_type: GNN
   hid_features: 64
   mlp_layers: 2
@@ -46,6 +90,7 @@ model_params:
   with_gradient: true
   edge_mlp: true
 
+# --- Unchanged ---
 trainer_options:
   batch_size: 2
   type_loss: 'RMSE'
@@ -62,5 +107,3 @@ lightning_trainer:
   max_epochs: 100
   #accelerator: "gpu"
   # devices: 1
-
-
