@@ -26,7 +26,7 @@ import matplotlib.dates as mdates
 
 # --- Imports from your project ---
 import lightning as L
-from mswegnn.training.adforce_train import LightningTrainer
+from mswegnn.training.adforce_train import AdforceLightningModule
 from mswegnn.models.adforce_models import (
     GNNModelAdforce,
     PointwiseMLPModel,
@@ -315,7 +315,7 @@ if __name__ == "__main__":
             num_static_features=NUM_STATIC_NODE_FEATURES,
             **model_params,
         )
-        lightning_model = LightningTrainer.load_from_checkpoint(
+        lightning_model = AdforceLightningModule.load_from_checkpoint(
             checkpoint_path,
             map_location=device,
             model=model_to_load,

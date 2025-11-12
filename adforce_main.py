@@ -25,8 +25,7 @@ This script ties together all the new components:
 
 import glob
 import os
-import lightning as L
-from sklearn.model_selection import train_test_split
+import lightning as L # from sklearn.model_selection import train_test_split
 import torch
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
@@ -36,12 +35,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf, ListConfig
 import wandb
 from typing import List
-import warnings
-
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset, _load_static_data_from_ds
-from mswegnn.utils.load import (
-    read_config,
-)
 from mswegnn.models.adforce_models import (
     GNNModelAdforce,
     PointwiseMLPModel,
@@ -49,7 +43,6 @@ from mswegnn.models.adforce_models import (
 )
 from mswegnn.training.adforce_train import AdforceLightningModule, DataModule
 from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
-from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 
 
 def _load_files_from_split(split_file_path: str, data_dir: str) -> List[str]:

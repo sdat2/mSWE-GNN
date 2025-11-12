@@ -10,10 +10,10 @@ defaults:
 # --- 1. Top-Level Paths (to be defined/overridden by machine configs) ---
 # We provide sensible defaults, but expect machine configs to set these.
 paths:
-  raw_dir: /path/to/your/raw_netcdf_directory/
-  processed_dir: /path/to/your/processed_data/
-  checkpoint_dir: /path/to/your/checkpoints/
-  wandb_dir: /path/to/your/wandb_logs/
+  raw_dir: /Users/simon/swegnn_5sec/
+  processed_dir: /Users/simon/mSWE-GNN/test/processed_data/
+  checkpoint_dir: /Users/simon/mSWE-GNN/test/checkpoints/
+  wandb_dir: /Users/simon/mSWE-GNN/test/wandb_logs/
 
 
 # --- 2. Machine & Environment ---

@@ -38,7 +38,7 @@ import imageio.v3 as iio
 
 # --- IMPORTS ---
 import lightning as L
-from mswegnn.training.adforce_train import LightningTrainer
+from mswegnn.training.adforce_train import AdforceLightningModule
 from mswegnn.models.adforce_models import (
     GNNModelAdforce,
     PointwiseMLPModel,
@@ -745,9 +745,9 @@ if __name__ == "__main__":
         print(f"Params passed: {model_parameters}")
         exit()
 
-    # --- D. Load the LightningTrainer from checkpoint ---
+    # --- D. Load the AdforceLightningModule from checkpoint ---
     try:
-        lightning_model = LightningTrainer.load_from_checkpoint(
+        lightning_model = AdforceLightningModule.load_from_checkpoint(
             args.checkpoint_path,
             map_location=device,
             model=model_to_load,
