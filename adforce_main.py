@@ -299,7 +299,7 @@ def main(cfg: DictConfig):
 
     try:
         # --- NEW 3: Compute scaling stats if they don't exist ---
-        train_root = os.path.join(processed_dir, "train_flex")
+        train_root = os.path.join(processed_dir, "train_flex2")
         train_stats_path = os.path.join(train_root, "scaling_stats.yaml")
         os.makedirs(train_root, exist_ok=True)
 
@@ -332,7 +332,7 @@ def main(cfg: DictConfig):
         print("Initializing validation dataset (this may run .process()...)")
         # --- REFACTOR: Pass features_cfg to dataset ---
         val_dataset = AdforceLazyDataset(
-            root=os.path.join(processed_dir, "val"),
+            root=os.path.join(processed_dir, "val_flex2"),
             nc_files=val_files,
             previous_t=p_t,
             scaling_stats_path=train_stats_path,  # <-- PASS THE *TRAIN* STATS

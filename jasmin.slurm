@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- SLURM Directives (CPU Job) ---
-#SBATCH --job-name=GNN_GAT
+#SBATCH --job-name=MLP_FLEX
 #SBATCH --account=no-project             
 #SBATCH --partition=standard              
 #SBATCH --qos=high                    
@@ -43,14 +43,15 @@ python -m adforce_main \
     machine=jasmin \
     machine.data_dir=$DATA_LOCAL_PATH \
     machine.output_dir=$RESULTS_LOCAL_PATH \
-    model_params.model_type=GNN \
+    model_params.model_type=MLP \
     model_params.type_gnn=GAT \
     model_params.hid_features=64 \
     model_params.K=3 \
     model_params.normalize=True \
     model_params.with_gradient=True \
     model_params.edge_mlp=True \
-    trainer_options.batch_size=4
+    trainer_options.batch_size=4 \
+    wandb.project=test
 
 echo "Script finished."
 
