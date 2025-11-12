@@ -255,16 +255,17 @@ def main(cfg: DictConfig) -> None:
 
     # --- 6. Initialize Model ---
     print("Initializing model...")
-    model_params = dict(cfg.models)  # Make a copy
-    model_type = model_params.pop("model_type")
+    model_cfg_dict = dict(cfg.models)  # Make a copy
+    models = dict(cfg.model_params)
+    model_type = models.pop("model_type")
 
     # --- Dynamically calculate model dimensions from config ---
-    p_t = cfg.model_params.previous_t
+    p_t = models["previous_t"]
     num_static_node_features = len(features_cfg.static)
     num_dynamic_node_features = len(features_cfg.forcing)
 
     # The state can include derived features, so we count them all
-    num_current_state_features = len(features_cfg.targets)
+    num_current_state_features = len(features_cfg.state)
     if features_cfg.get("derived_state"):
         num_current_state_features += len(features_cfg.derived_state)
 
@@ -318,7 +319,7 @@ def main(cfg: DictConfig) -> None:
         )
     else:
         raise ValueError(
-            f"Unknown model_type in config: {model_type}. Must be 'GNN', 'SWEGNN', 'MLP', or 'MonolithicMLP'."
+            f"Unknown model_type in config: {model_type}. Must be 'GNN', 'MLP', or 'MonolithicMLP'."
         )
 
     # --- 7. Initialize Lightning Trainer ---

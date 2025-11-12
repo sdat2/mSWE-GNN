@@ -10,7 +10,7 @@ calculate statistics for.
 It computes and saves stats for:
 1.  x_static: (features_cfg.static)
 2.  x_dynamic: (features_cfg.forcing)
-3.  y: (features_cfg.targets + features_cfg.derived_state)
+3.  y: (features_cfg.state + features_cfg.derived_state)
 4.  y_delta: (deltas of features_cfg.targets)
 
 This version uses a memory-efficient online algorithm (Welford's)
@@ -293,13 +293,13 @@ def compute_and_save_adforce_stats(
     # --- 1. Get feature lists from config ---
     static_node_vars = list(features_cfg.static)
     forcing_vars = list(features_cfg.forcing)
-    state_vars = list(features_cfg.targets)
+    state_vars = list(features_cfg.state)
     target_vars = list(features_cfg.targets)
     derived_state_specs = list(features_cfg.derived_state)
 
     if set(state_vars) != set(target_vars):
         warnings.warn(
-            f"Scaling: 'features.targets' ({state_vars}) and "
+            f"Scaling: 'features.state' ({state_vars}) and "
             f"'features.targets' ({target_vars}) do not match. "
             "Delta stats will be computed for targets, "
             "but this may be an error in your config."

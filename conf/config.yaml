@@ -55,44 +55,48 @@ data_params:
 # The "single source of truth" for all model features.
 features:
   static:
-    - "DEM"
-    - "slopex"
-    - "slopey"
-    - "landmask"
+    - DEM
+    - slopex
+    - slopey
+    - area
   edge:
-    - "edge_dist"
-    - "edge_ang"
+    - face_distance
+    - edge_slope
   forcing:
-    - "P"
-    - "WX"
-    - "WY"
+    - P
+    - WX
+    - WY
   targets:
-    - "WD"
-    - "VX"
-    - "VY"
+    - WD
+    - VX
+    - VY
+  state:
+    - WD
+    - VX
+    - VY
   derived_state:
-    - name: "SSH"
-      op: "add"
+    - name: SSH
+      op: add
       args:
-        - "WD"
-        - "DEM"
+        - WD
+        - DEM
 
 
 # --- 5. Model Parameters ---
 model_params:
   previous_t: 1
-  model_type: "GNN"
+  model_type: GNN
 
 
 # --- 6. Model Architecture ---
 models:
   seed: 42
-  type_gnn: "SWEGNN"
+  type_gnn: SWEGNN
   hid_features: 64
   mlp_layers: 2
   K: 3
   normalize: true
-  gnn_activation: "tanh"
+  gnn_activation: tanh
   edge_mlp: true
   with_gradient: true
 
