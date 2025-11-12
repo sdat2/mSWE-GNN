@@ -5,9 +5,7 @@
 
 defaults:
   - _self_            # Loads this file first
-  - machine: mac      # Loads the default machine config (e.g., conf/machine/mac.yaml)
-  - override hydra/job_logging: colorlog # Optional: for nice colored logs
-  - override hydra/hydra_logging: colorlog
+  - machine: jasmin      # Loads the default machine config (e.g., conf/machine/mac.yaml)
 
 # --- 1. Top-Level Paths (to be defined/overridden by machine configs) ---
 # We provide sensible defaults, but expect machine configs to set these.

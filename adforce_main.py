@@ -6,9 +6,9 @@ This script ties together all the new components:
     Config is injected into the main() function as 'cfg'.
 2.  Finds and splits NetCDF files.
     --- REFACTOR ---
-    a.  Loads explicit train/val/test splits from YAML files
-        (e.g., conf/train.yaml) specified in `cfg.data_params.split_files`.
-    b.  These YAMLs contain lists of file *basenames*.
+    a.  Supports two modes: random split (default) or explicit split
+        by providing .txt files in `cfg.data_params.split_files`.
+    b.  Manual holdout (e.g., Katrina) is now defined in config.
     ---
 3.  Calculates scaling statistics (mean/std) from the training files.
 4.  Uses 'AdforceLazyDataset' to create train/val datasets
@@ -16,27 +16,40 @@ This script ties together all the new components:
 5.  Calculates model dimensions based on the 'cfg.features' config.
 6.  Instantiates the correct model ('GNNModelAdforce', 'MonolithicMLPModel',
     or 'PointwiseMLPModel') using the calculated dimensions.
-7.  Uses the 'LightningTrainer' from adforce_train.py to run
+7.  Uses the 'DataModule' and 'LightningTrainer' from adforce_train.py to run
     the training loop.
 8.  Includes ModelCheckpoint callback for saving best/last models.
-9.  Integrates WandbLogger for experiment tracking.
+9.  Allows resuming from a checkpoint specified in the config.
+10. Integrates WandbLogger for experiment tracking.
 """
+import glob
 import os
+import lightning as L
+from sklearn.model_selection import train_test_split
+from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.loggers import WandbLogger
+import torch
+import xarray as xr
 import hydra
 from omegaconf import DictConfig, OmegaConf
-import torch
-import lightning as L
-from lightning.pytorch.loggers import WandbLogger
-from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 import wandb
-import numpy as np
 from typing import List
+import warnings
 
-# --- (Your existing imports: AdforceLazyDataset, LightningTrainer, etc.) ---
+from mswegnn.utils.adforce_dataset import AdforceLazyDataset, _load_static_data_from_ds
+from mswegnn.utils.load import (
+    read_config,
+)
+from mswegnn.models.adforce_models import (
+    GNNModelAdforce,
+    PointwiseMLPModel,
+    MonolithicMLPModel,
+)
+from mswegnn.training.adforce_train import LightningTrainer, DataModule
+from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
 from mswegnn.training.adforce_train import LightningTrainer
-from mswegnn.models.adforce_models import GNNModelAdforce
 from mswegnn.utils.miscellaneous import get_model
 
 
@@ -113,7 +126,8 @@ def main(cfg: DictConfig) -> None:
         mode=cfg.wandb.mode,
         save_dir=cfg.machine.wandb_dir,
     )
-    wandb_logger.watch(log="all", log_freq=500)
+    # --- BUG FIX: .watch() call moved to after model is created ---
+    
     # Log the *resolved* config to W&B
     wandb_logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
     
@@ -268,6 +282,17 @@ def main(cfg: DictConfig) -> None:
     )
     
     # --- 8. Setup Trainer ---
+    
+    # --- BUG FIX: Moved .watch() call to *after* model is initialized ---
+    # Now we can watch the model, since it exists.
+    # We watch pl_trainer.model to get the raw torch model.
+    print("Setting up W&B model watch...")
+    try:
+        wandb_logger.watch(pl_trainer.model, log="all", log_freq=500)
+    except Exception as e:
+        print(f"Warning: wandb_logger.watch() failed: {e}")
+    # --- END BUG FIX ---
+
     lr_monitor = LearningRateMonitor(logging_interval="step")
     
     trainer = L.Trainer(
