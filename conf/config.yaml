@@ -1,123 +1,126 @@
-# conf/config.yaml
+# config.yaml
+# This is the main configuration file for the mSWE-GNN Adforce pipeline.
+# It is designed to be the "single source of truth" for training,
+# and is loaded by adforce_main.py using Hydra.
+
 defaults:
-  - machine: mac # Default to mac paths
-  - _self_
+  - _self_            # Loads this file first
+  - machine: mac      # Loads the default machine config (e.g., conf/machine/mac.yaml)
+  - override hydra/job_logging: colorlog # Optional: for nice colored logs
+  - override hydra/hydra_logging: colorlog
 
-# Hydra settings
-hydra:
-  run:
-    # {machine.root_dir}/outputs/{now:%Y-%m-%d}/{now:%H-%M-%S}
-    dir: ${machine.output_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
-  sweep:
-    dir: ${machine.output_dir}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    subdir: ${hydra.job.num}
+# --- 1. Top-Level Paths (to be defined/overridden by machine configs) ---
+# We provide sensible defaults, but expect machine configs to set these.
+paths:
+  raw_dir: /path/to/your/raw_netcdf_directory/
+  processed_dir: /path/to/your/processed_data/
+  checkpoint_dir: /path/to/your/checkpoints/
+  wandb_dir: /path/to/your/wandb_logs/
 
-# Group for machine-specific paths
+
+# --- 2. Machine & Environment ---
+# These paths are now *references* to the 'paths' block above
 machine:
-  data_dir: ???
-  processed_dir: "data_processed"
-  output_dir: "outputs"
-  checkpoint_dir: "checkpoints"
-  resume_checkpoint_path: null # (e.g., /path/to/specific.ckpt)
-
-# W&B settings
-wandb:
-  project: mswegnn
-  entity: sdat2
-  log_model: true
-
-# --- Centralized Feature Definition ---
-features:
-  # Static node features from NetCDF.
-  # 'node_type' is added automatically by the dataset from 'face_BC'.
-  static:
-    - DEM
-    - slopex
-    - slopey
-    - area
-
-  # --- NEW: Static edge features from NetCDF ---
-  # These are now configurable for ablation.
-  edge:
-    - face_distance
-    - edge_slope
-
-  # Dynamic forcing features from NetCDF.
-  forcing:
-    - WX
-    - WY
-    - P
-
-  # State variables from NetCDF. Used for y(t) input and target calculation.
-  state:
-    - WD
-    - VX
-    - VY
-
-  # Derived state features, calculated on-the-fly by the dataset.
-  # 'name': The new feature name.
-  # 'op': The operation to perform (must be implemented in AdforceLazyDataset.get)
-  # 'args': List of vars to use. Can mix 'static' and 'state' vars.
-  derived_state:
-    - { name: 'SSH', op: 'add', args: ['WD', 'DEM'] }
-    # e.g., - { name: 'V_mag', op: 'magnitude', args: ['VX', 'VY'] }
-
-  # Target variables. The model predicts the delta of these.
-  # This MUST match the 'state' list for the current delta-learning setup.
-  targets:
-    - WD
-    - VX
-    - VY
-
-# --- data_params ---
-data_params:
-  # --- MODE 1: RANDOM SPLIT ---
-  # These are used if 'split_files' section below is null.
-  held_out_test_size: 0.2
-  test_size: 0.2  # This is the validation size (relative to train+val)
-  random_state: 42
-  # Move hard-coded Katrina file here
-  manual_test_holdout: "152_KATRINA_2005.nc" 
-
-  # --- MODE 2: EXPLICIT SPLIT FILES ---
-  # If paths are provided, these files will be used *instead* # of the random split. Paths can be relative to your run directory.
-  # The files should contain one .nc filename per line (e.g., "262_GILBERT_1988.nc")
-  split_files:
-    train: null   # e.g., "conf/splits/train_files.txt"
-    val: null     # e.g., "conf/splits/val_files.txt"
-    test: null    # e.g., "conf/splits/test_files.txt"
-
-  # --- Other params ---
+  data_dir: ${paths.raw_dir}
+  checkpoint_dir: ${paths.checkpoint_dir}
+  wandb_dir: ${paths.wandb_dir}
+  
+  # Compute settings
+  accelerator: "gpu" # or "cpu"
+  devices: 1
   num_workers: 4
 
-# --- model_params ---
+
+# --- 3. Data Parameters ---
+# Controls data loading, processing, and splitting
+data_params:
+  # --- This is the new, critical block for splitting ---
+  split_files:
+    # Path to the YAML file containing the list of *training* basenames
+    train: conf/train.yaml
+    # Path to the YAML file containing the list of *validation* basenames
+    val: conf/val.yaml
+    # Path to the YAML file containing the list of *test* basenames
+    test: conf/test.yaml
+
+  # --- These paths are now references ---
+  train_root_path: ${paths.processed_dir}/train/
+  val_root_path: ${paths.processed_dir}/val/
+  scaling_stats_path: ${paths.processed_dir}/scaling_stats.yaml
+  
+  # Set to true to force re-computation of stats from the training files.
+  # Set to false to load from scaling_stats_path.
+  compute_scaling: false
+
+
+# --- 4. Feature Configuration ---
+# The "single source of truth" for all model features.
+features:
+  static:
+    - "DEM"
+    - "slopex"
+    - "slopey"
+    - "landmask"
+  edge:
+    - "edge_dist"
+    - "edge_ang"
+  forcing:
+    - "P"
+    - "WX"
+    - "WY"
+  state:
+    - "WD"
+    - "VX"
+    - "VY"
+  derived_state:
+    - name: "SSH"
+      op: "add"
+      args:
+        - "WD"
+        - "DEM"
+
+
+# --- 5. Model Parameters ---
 model_params:
-  previous_t: 1       # Number of history steps for model input
-  model_type: GNN
+  previous_t: 1
+  model_type: "GNN"
+
+
+# --- 6. Model Architecture ---
+models:
+  seed: 42
+  type_gnn: "SWEGNN"
   hid_features: 64
   mlp_layers: 2
-  mlp_activation: 'prelu'
-  type_gnn: 'GCN'
-  gnn_activation: 'tanh'
   K: 3
   normalize: true
-  with_gradient: true
+  gnn_activation: "tanh"
   edge_mlp: true
+  with_gradient: true
 
-# --- Unchanged ---
+
+# --- 7. Training Parameters ---
 trainer_options:
-  batch_size: 2
-  type_loss: 'RMSE'
+  batch_size: 16
+  max_epochs: 100
+  precision: "bf16-mixed"
+  type_loss: "RMSE"
   only_where_water: true
   velocity_scaler: 5.0
 
+
+# --- 8. Learning Rate & Optimizer ---
 lr_info:
   learning_rate: 0.001
   weight_decay: 0.0001
+  use_lr_scheduler: true
   step_size: 20
   gamma: 0.5
 
-lightning_trainer:
-  max_epochs: 100
-  #accelerator: "gpu"
-  # devices: 1
+
+# --- 9. Logging (Weights & Biases) ---
+wandb:
+  project: "mswe-gnn-adforce"
+  name: "GNN-64hid-3K-SSH_derived"
+  entity: "your-wandb-username"
+  mode: "online"

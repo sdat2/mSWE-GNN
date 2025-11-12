@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # --- SLURM Directives (GPU Job for ORCHID) ---
-#SBATCH --job-name=GCN-GNN_GPU_FLEX_64
+#SBATCH --job-name=SWE-GNN_GPU_FLEX_128
 #SBATCH --account=orchid             # Use ORCHID account
 #SBATCH --partition=orchid           # Use ORCHID partition
-#SBATCH --qos=orchid                 # Use ORCHID QoS #SBATCH --exclude=gpuhost007         # bad node
+#SBATCH --qos=orchid                 # Use ORCHID QoS
 #SBATCH --gres=gpu:1                 # Request 1 GPU (A100)
 #SBATCH -o log/%j.out                # Standard output log
 #SBATCH -e log/%j.err                # Standard error log
-#SBATCH --time=23:30:00              # Set to 23 hours (under the likely 24-hour limit)
+#SBATCH --time=23:30:00              # Set to 23 hours
 #SBATCH --ntasks-per-node=8          # Number of CPU tasks per node
 #SBATCH --mem=40000                  # Memory request in MB (for data loaders)
 
@@ -48,23 +48,27 @@ echo "Copy complete."
 
 # --- 3. Run Executable ---
 echo "Starting python script on GPU, using paths in shared scratch..."
+# ---
+# --- THIS COMMAND IS UPDATED FOR THE NEW HYDRA CONFIG ---
+# ---
 python -m adforce_main \
     machine=jasmin \
-    machine.data_dir=$DATA_LOCAL_PATH \
-    machine.output_dir=$RESULTS_LOCAL_PATH \
-    +lightning_trainer.accelerator=gpu \
-    +lightning_trainer.devices=1 \
+    paths.raw_dir=$DATA_LOCAL_PATH \
+    paths.processed_dir=$RESULTS_LOCAL_PATH/processed \
+    paths.checkpoint_dir=$RESULTS_LOCAL_PATH/checkpoints \
+    paths.wandb_dir=$RESULTS_LOCAL_PATH/wandb \
+    machine.accelerator=gpu \
+    machine.devices=1 \
+    machine.num_workers=8 \
     model_params.model_type=GNN \
-    model_params.type_gnn=GCN \
-    model_params.hid_features=64 \
-    model_params.K=3 \
-    data_params.num_workers=8 \
-    data_params.test_size=0.1 \
-    model_params.normalize=True \
-    model_params.with_gradient=True \
-    model_params.edge_mlp=True \
-    wandb.project=surgeflexdelta \
-    trainer_options.batch_size=4
+    models.type_gnn=SWEGNN \
+    models.hid_features=128 \
+    models.K=3 \
+    models.normalize=True \
+    models.with_gradient=True \
+    models.edge_mlp=True \
+    trainer_options.batch_size=4 \
+    wandb.project=surgeflexdelta
 
 echo "Script finished."
 
