@@ -3,6 +3,7 @@ Prediction animation function for the AdforceLazyDataset.
 
 This script loads a trained mSWE-GNN model and runs an
 autoregressive rollout (prediction) for a full simulation event.
+It is driven by a config file and a model checkpoint.
 
 This version supports two rollout modes via ROLLOUT_HORIZON:
 1. (N > 0): "Fixed Horizon" mode. Each frame 'k' in the animation
@@ -12,13 +13,22 @@ This version supports two rollout modes via ROLLOUT_HORIZON:
 2. (N = -1): "Full Rollout" mode. Runs a single, free-running
    simulation from t=0. Each frame 'k' shows the result of a
    'k'-step-long prediction.
+
+Example Usage:
+python -m mswegnn.utils.adforce_predict_animate \
+    -c /path/to/your/config.yaml \
+    -ckpt /path/to/your/model.ckpt \
+    -nc /path/to/your/152_KATRINA_2005.nc \
+    -r 3
 """
 
 import os
 import shutil
 import glob
 import warnings
-from typing import List, Tuple, Dict
+import argparse
+import yaml
+from typing import List, Tuple, Dict, Any
 import numpy as np
 import xarray as xr
 import torch
@@ -35,6 +45,8 @@ from mswegnn.models.adforce_models import (
     MonolithicMLPModel,
 )
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
+from mswegnn.utils.load import read_config
+from mswegnn.utils.miscellaneous import get_model
 from sithom.plot import plot_defaults, label_subplots
 # --- END IMPORTS ---
 
@@ -54,10 +66,19 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
 def load_static_data(
-    nc_file_path: str, dataset: AdforceLazyDataset
+    nc_file_path: str, dataset: AdforceLazyDataset, features_cfg: Dict[str, Any]
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Loads static coordinates and DEM data.
+
+    Args:
+        nc_file_path (str): Path to the NetCDF file.
+        dataset (AdforceLazyDataset): The initialized dataset instance.
+        features_cfg (Dict[str, Any]): The 'features' block from the config,
+                                       used to find 'DEM'.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray, np.ndarray]: x_coords, y_coords, dem
     """
     print("Loading static data (coordinates and DEM)...")
     try:
@@ -69,11 +90,15 @@ def load_static_data(
         raise
 
     try:
-        # DEM is the 0-th column of the static_node_features
-        dem = dataset.static_data["static_node_features"][:, 0].cpu().numpy()
+        # DEM is found dynamically from the config
+        static_vars_list = list(features_cfg.static)
+        dem_idx = static_vars_list.index('DEM')
+        
+        dem = dataset.static_data["static_node_features"][:, dem_idx].cpu().numpy()
     except Exception as e:
-        print(f"Failed to get DEM from dataset.static_data: {e}")
-        raise
+        print(f"Failed to get DEM from dataset.static_data.")
+        print(f"Could not find 'DEM' in features_cfg.static: {static_vars_list}")
+        raise e
 
     return x_coords, y_coords, dem
 
@@ -83,6 +108,7 @@ def perform_rollout(
     model: L.LightningModule, 
     dataset: AdforceLazyDataset, 
     device: torch.device,
+    features_cfg: Dict[str, Any],
     rollout_horizon: int = 1
 ) -> List[np.ndarray]:
     """
@@ -94,6 +120,7 @@ def perform_rollout(
         model (L.LightningModule): The trained Lightning model (on device).
         dataset (AdforceLazyDataset): The dataset for a single simulation.
         device (torch.device): The torch device (e.g., 'cuda' or 'cpu').
+        features_cfg (Dict[str, Any]): The 'features' block from the config.
         rollout_horizon (int, optional): The rollout strategy.
             - (N = -1): "Full Rollout". Runs one long simulation from t=0.
               predictions_list[k] is the k-step-ahead prediction.
@@ -103,8 +130,8 @@ def perform_rollout(
               The first N-1 frames are k-step-ahead predictions.
 
     Returns:
-        List[np.ndarray]: A list of unscaled predicted states [WD, VX, VY]
-                          for each frame in the dataset.
+        List[np.ndarray]: A list of unscaled predicted states (matching the
+                          order of features_cfg.state) for each frame.
     """
     model.eval()  # Set model to evaluation mode
     
@@ -116,13 +143,25 @@ def perform_rollout(
 
     predictions_list = []
     
+    # --- Get feature counts from config ---
+    num_static_features = len(features_cfg.static)
+    num_forcing_features = len(features_cfg.forcing)
+    num_state_features = len(features_cfg.state)
+    p_t = dataset.previous_t
+    
+    # Calculate state indices in the x tensor
+    # x tensor structure: [static, forcing (p_t * N_forcing), state]
+    state_start_idx = num_static_features + (num_forcing_features * p_t)
+    state_end_idx = state_start_idx + num_state_features
+    
     # --- BRANCH 1: FULL, FREE-RUNNING ROLLOUT ---
     if rollout_horizon == -1:
         print("Starting full, free-running rollout (predicting deltas)...")
         
         # --- 1. Get the *initial state* from frame 0 ---
         current_batch = dataset.get(0).to(device)
-        current_y_t_scaled = current_batch.x[:, -3:].clone() # State y(t)
+        # Find state vector dynamically
+        current_y_t_scaled = current_batch.x[:, state_start_idx:state_end_idx].clone() # State y(t)
         current_y_t_raw = (current_y_t_scaled * y_std) + y_mean
 
         for idx in tqdm(range(len(dataset)), desc="Full Rollout"):
@@ -133,7 +172,7 @@ def perform_rollout(
             pred_input_batch = gt_batch.clone()
             
             # 3. ...but replace the state with our *predicted* state
-            pred_input_batch.x[:, -3:] = current_y_t_scaled 
+            pred_input_batch.x[:, state_start_idx:state_end_idx] = current_y_t_scaled 
             
             # 4. Run the model to predict the *scaled delta*
             pred_scaled_delta = model.model(pred_input_batch) 
@@ -170,7 +209,7 @@ def perform_rollout(
             
             # 3. Get the *ground truth* state at the *start* of the mini-rollout
             gt_batch_start = dataset.get(start_idx).to(device)
-            current_y_t_scaled = gt_batch_start.x[:, -3:].clone()
+            current_y_t_scaled = gt_batch_start.x[:, state_start_idx:state_end_idx].clone()
             current_y_t_raw = (current_y_t_scaled * y_std) + y_mean
 
             # 4. Run the inner mini-rollout loop
@@ -185,7 +224,7 @@ def perform_rollout(
                 gt_forcing_batch = dataset.get(forcing_batch_idx).to(device)
                 
                 pred_input_batch = gt_forcing_batch.clone()
-                pred_input_batch.x[:, -3:] = current_y_t_scaled
+                pred_input_batch.x[:, state_start_idx:state_end_idx] = current_y_t_scaled
                 
                 pred_scaled_delta = model.model(pred_input_batch)
                 pred_raw_delta = (pred_scaled_delta * y_delta_std) + y_delta_mean
@@ -206,43 +245,69 @@ def get_frame_data(
     dataset: AdforceLazyDataset, 
     idx: int, 
     dem: np.ndarray,
-    prediction_state: np.ndarray  # <-- This is the UNCALED state y(t+1)
+    prediction_state: np.ndarray,
+    features_cfg: Dict[str, Any],
+    plot_idx_map: Dict[str, Dict[str, int]]
 ) -> Dict[str, np.ndarray]:
     """
     Retrieves and processes all 6 variables for a single animation frame.
     Uses ground-truth inputs (P, WX, WY) but predicted outputs.
+
+    Args:
+        dataset (AdforceLazyDataset): The initialized dataset.
+        idx (int): The frame index to get.
+        dem (np.ndarray): The DEM data.
+        prediction_state (np.ndarray): The UNCALED state y(t+1) from rollout.
+        features_cfg (Dict[str, Any]): The 'features' block from the config.
+        plot_idx_map (Dict[str, Dict[str, int]]): A map to find plot variables
+            (P, WX, WY, WD, VX, VY) in the config-ordered lists.
+
+    Returns:
+        Dict[str, np.ndarray]: A dictionary holding the 6 plotting variables.
     """
     data = dataset.get(idx)
     p_t = dataset.previous_t
     x_data = data.x.cpu()
 
     # --- 1. Extract and Un-scale Inputs (P, WX, WY) ---
-    forcing_start_idx = 5
-    forcing_end_idx = 5 + (3 * p_t)
+    num_static = len(features_cfg.static)
+    num_forcing = len(features_cfg.forcing)
+    
+    forcing_start_idx = num_static
+    forcing_end_idx = num_static + (num_forcing * p_t)
+    
     # Get the *last* forcing step available in this batch
     # (which corresponds to the state we are plotting)
-    last_forcing_step_scaled = x_data[:, forcing_end_idx - 3 : forcing_end_idx] 
+    last_forcing_step_start = forcing_end_idx - num_forcing
+    last_forcing_step_scaled = x_data[:, last_forcing_step_start : forcing_end_idx] 
 
     if dataset.apply_scaling:
         # We need the mean/std for a *single* step, not broadcasted
-        mean = dataset.x_dyn_mean_broadcast.cpu()[:3] 
-        std = dataset.x_dyn_std_broadcast.cpu()[:3]
+        # This assumes the order in x_dyn_mean matches features_cfg.forcing
+        mean = dataset.x_dyn_mean_broadcast.cpu()[:num_forcing] 
+        std = dataset.x_dyn_std_broadcast.cpu()[:num_forcing]
         inputs_unscaled = (last_forcing_step_scaled * std) + mean
     else:
         inputs_unscaled = last_forcing_step_scaled
         
-    # Forcing order from _get_forcing_slice is ["WX", "WY", "P"]
-    wx_data = inputs_unscaled[:, 0].numpy()
-    wy_data = inputs_unscaled[:, 1].numpy()
-    p_data = inputs_unscaled[:, 2].numpy()
+    # Find P, WX, WY dynamically
+    idx_map_forcing = plot_idx_map['forcing']
+    wx_data = inputs_unscaled[:, idx_map_forcing['WX']].numpy()
+    wy_data = inputs_unscaled[:, idx_map_forcing['WY']].numpy()
+    p_data = inputs_unscaled[:, idx_map_forcing['P']].numpy()
 
     # --- 2. Extract Outputs (WD, VX, VY) from the prediction ---
     outputs = prediction_state # Use the passed-in unscaled state
-    wd_data = outputs[:, 0]
-    vx_data = outputs[:, 1]
-    vy_data = outputs[:, 2]
+    
+    # Find WD, VX, VY dynamically
+    idx_map_state = plot_idx_map['state']
+    wd_data = outputs[:, idx_map_state['WD']]
+    vx_data = outputs[:, idx_map_state['VX']]
+    vy_data = outputs[:, idx_map_state['VY']]
 
     # --- 3. Calculate SSH ---
+    # This assumes 'SSH' is a derived feature and not in the state vector
+    # If 'SSH' *is* in the state vector, this logic needs to adapt
     ssh_data = wd_data + dem
 
     return {
@@ -256,10 +321,18 @@ def get_frame_data(
 
 
 def calculate_global_climits(
-    dataset: AdforceLazyDataset, dem: np.ndarray
+    dataset: AdforceLazyDataset, dem: np.ndarray, features_cfg: Dict[str, Any]
 ) -> Dict[str, Tuple[float, float]]:
     """
     Calculates global vmin/vmax by iterating through the *GROUND TRUTH* dataset.
+
+    Args:
+        dataset (AdforceLazyDataset): The initialized dataset.
+        dem (np.ndarray): The DEM data.
+        features_cfg (Dict[str, Any]): The 'features' block from the config.
+
+    Returns:
+        Dict[str, Tuple[float, float]]: Global color limits for plot variables.
     """
     print(f"Calculating global color limits from GROUND TRUTH data ({len(dataset)} frames)...")
     
@@ -269,34 +342,59 @@ def calculate_global_climits(
     p2_vals = {key: [] for key in plot_order}
     p98_vals = {key: [] for key in plot_order}
 
+    # --- Create dynamic index maps ---
+    try:
+        forcing_vars_list = list(features_cfg.forcing)
+        state_vars_list = list(features_cfg.state)
+        
+        idx_map_forcing = {
+            'P': forcing_vars_list.index('P'),
+            'WX': forcing_vars_list.index('WX'),
+            'WY': forcing_vars_list.index('WY'),
+        }
+        idx_map_state = {
+            'WD': state_vars_list.index('WD'),
+            'VX': state_vars_list.index('VX'),
+            'VY': state_vars_list.index('VY'),
+        }
+    except ValueError as e:
+        print(f"Error: A required plotting variable is missing from config.features.")
+        print(f"Needed: P, WX, WY in features.forcing")
+        print(f"Needed: WD, VX, VY in features.state")
+        raise e
+
+    # --- Get feature counts for slicing ---
+    p_t = dataset.previous_t
+    num_static = len(features_cfg.static)
+    num_forcing = len(features_cfg.forcing)
+    forcing_end_idx = num_static + (num_forcing * p_t)
+    last_forcing_step_start = forcing_end_idx - num_forcing
+
     for idx in tqdm(range(len(dataset)), desc="Scanning data"):
         data_gt = dataset.get(idx)
         
         # data.y_unscaled is y_tplus1_raw (the full state)
         outputs_gt = data_gt.y_unscaled.cpu().numpy()
         
-        wd_gt = outputs_gt[:, 0]
-        vx_gt = outputs_gt[:, 1]
-        vy_gt = outputs_gt[:, 2]
+        wd_gt = outputs_gt[:, idx_map_state['WD']]
+        vx_gt = outputs_gt[:, idx_map_state['VX']]
+        vy_gt = outputs_gt[:, idx_map_state['VY']]
         ssh_gt = wd_gt + dem
         
         # Get input data
-        p_t = dataset.previous_t
         x_data = data_gt.x.cpu()
-        forcing_start_idx = 5
-        forcing_end_idx = 5 + (3 * p_t)
-        last_forcing_step_scaled = x_data[:, forcing_end_idx - 3 : forcing_end_idx] # Fixed index
+        last_forcing_step_scaled = x_data[:, last_forcing_step_start : forcing_end_idx]
         
         if dataset.apply_scaling:
-            mean = dataset.x_dyn_mean_broadcast.cpu()[:3]
-            std = dataset.x_dyn_std_broadcast.cpu()[:3]
+            mean = dataset.x_dyn_mean_broadcast.cpu()[:num_forcing]
+            std = dataset.x_dyn_std_broadcast.cpu()[:num_forcing]
             inputs_unscaled = (last_forcing_step_scaled * std) + mean
         else:
             inputs_unscaled = last_forcing_step_scaled
             
-        wx_gt = inputs_unscaled[:, 0].numpy()
-        wy_gt = inputs_unscaled[:, 1].numpy()
-        p_gt = inputs_unscaled[:, 2].numpy()
+        wx_gt = inputs_unscaled[:, idx_map_forcing['WX']].numpy()
+        wy_gt = inputs_unscaled[:, idx_map_forcing['WY']].numpy()
+        p_gt = inputs_unscaled[:, idx_map_forcing['P']].numpy()
 
         data_dict = {
             "P": p_gt, "WX": wx_gt, "WY": wy_gt,
@@ -341,13 +439,30 @@ def plot_single_frame(
     dem: np.ndarray,
     climits: Dict[str, Tuple[float, float]],
     frame_path: str,
-    prediction_state: np.ndarray
+    prediction_state: np.ndarray,
+    features_cfg: Dict[str, Any],
+    plot_idx_map: Dict[str, Dict[str, int]]
 ):
     """
     Creates, plots, and saves a *single* frame from scratch.
+
+    Args:
+        idx (int): Frame index.
+        total_frames (int): Total frames for title.
+        dataset (AdforceLazyDataset): The dataset.
+        x_coords (np.ndarray): Node x-coordinates.
+        y_coords (np.ndarray): Node y-coordinates.
+        dem (np.ndarray): DEM data.
+        climits (Dict[str, Tuple[float, float]]): Color limits.
+        frame_path (str): Path to save the PNG file.
+        prediction_state (np.ndarray): The unscaled predicted state.
+        features_cfg (Dict[str, Any]): The 'features' block from the config.
+        plot_idx_map (Dict[str, Dict[str, int]]): Map to find plot variables.
     """
     
-    data_dict = get_frame_data(dataset, idx, dem, prediction_state) 
+    data_dict = get_frame_data(
+        dataset, idx, dem, prediction_state, features_cfg, plot_idx_map
+    ) 
 
     try:
         nc_path, t_start = dataset.index_map[idx]
@@ -421,6 +536,7 @@ def compile_gif_from_frames(
     fps: int,
     images: List[np.ndarray]
 ):
+    """Compiles a list of image arrays into a GIF."""
     if not images:
         print("No images found for GIF compilation.")
         return
@@ -435,6 +551,7 @@ def compile_video_from_frames(
     fps: int,
     images: List[np.ndarray]
 ):
+    """Compiles a list of image arrays into an MP4 video."""
     if not images:
         print("No images found for Video compilation.")
         return
@@ -459,74 +576,95 @@ def compile_video_from_frames(
 
 
 if __name__ == "__main__":
-    # --- 1. CONFIGURE YOUR PATHS HERE ---
-    
-    # Path to your *saved model checkpoint*
-    checkpoint_path = "/Volumes/s/tcpips/mSWE-GNN/checkpoints/GNN-best-epoch=37-val_loss=0.5033.ckpt"
-     
-    # This should be the directory containing your NetCDF file
-    root_directory = "/Volumes/s/tcpips/swegnn_5sec/"
-    
-    # This is the single .nc file you want to animate (e.g., Katrina)
-    netcdf_file = os.path.join(root_directory, "152_KATRINA_2005.nc")
-    
-    # This must be the *training* stats file your model was trained with
-    scaling_stats_file = "/Volumes/s/tcpips/mSWE-GNN/data_processed/train/scaling_stats.yaml"
-    
-    # --- 2. CONFIGURE ROLLOUT ---
-    
-    # This must match the `previous_t` used to train your model
-    # (Based on your logs, this should be 1)
-    previous_time_steps = 1
-    
-    # --- THIS IS THE NEW PARAMETER ---
-    # What kind of rollout to perform?
-    # -1 = "Full Rollout": Free-running simulation from t=0.
-    #  1 = "Fixed 1-step": Every frame is a 1-step-ahead prediction.
-    #  3 = "Fixed 3-step": Every frame (after first 2) is a 3-step-ahead prediction.
-    ROLLOUT_HORIZON = 3 
+    # --- 1. CONFIGURE ARGPARSE ---
+    parser = argparse.ArgumentParser(
+        description="Run mSWE-GNN prediction rollout and generate animations."
+    )
+    parser.add_argument(
+        "-c", "--config_path", 
+        type=str, 
+        required=True,
+        help="Path to the config.yaml file used for training."
+    )
+    parser.add_argument(
+        "-ckpt", "--checkpoint_path", 
+        type=str, 
+        required=True,
+        help="Path to the .ckpt model checkpoint file to use for inference."
+    )
+    parser.add_argument(
+        "-nc", "--netcdf_file", 
+        type=str, 
+        required=True,
+        help="Path to the single .nc file to animate (e.g., '152_KATRINA_2005.nc')."
+    )
+    parser.add_argument(
+        "-r", "--rollout_horizon", 
+        type=int, 
+        default=-1,
+        help="Rollout strategy. -1 for 'Full Rollout', N > 0 for 'Fixed N-step Horizon'."
+    )
+    args = parser.parse_args()
+
+    # --- 2. LOAD CONFIG AND FEATURES ---
+    print(f"Loading config from {args.config_path}...")
+    if not os.path.exists(args.config_path):
+        print(f"Error: Config file not found at {args.config_path}")
+        exit()
+        
+    cfg = read_config(args.config_path)
+    features_cfg = cfg.features
     
     # --- 3. CONFIGURE OUTPUTS ---
+    ROLLOUT_HORIZON = args.rollout_horizon
     rollout_type_str = "full" if ROLLOUT_HORIZON == -1 else f"{ROLLOUT_HORIZON}step"
     output_gif = f"adforce_6panel_PREDICTION_{rollout_type_str}.gif"
     output_video = f"adforce_6panel_PREDICTION_{rollout_type_str}.mp4"
     anim_fps = 10
-    
-    # --- END CONFIGURATION ---
-
 
     # --- 4. SETUP DEVICE ---
     plot_defaults()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    if not os.path.exists(checkpoint_path):
-        print(f"Error: Checkpoint file not found at {checkpoint_path}")
+    # Check for file existence
+    if not os.path.exists(args.checkpoint_path):
+        print(f"Error: Checkpoint file not found at {args.checkpoint_path}")
         exit()
-    if not os.path.exists(netcdf_file):
-        print(f"Error: NetCDF file not found at {netcdf_file}")
+    if not os.path.exists(args.netcdf_file):
+        print(f"Error: NetCDF file not found at {args.netcdf_file}")
         exit()
-    if not os.path.exists(scaling_stats_file):
-        print(f"Error: Scaling stats file not found at {scaling_stats_file}")
+    if not os.path.exists(cfg.data_params.scaling_stats_path):
+        print(f"Error: Scaling stats file not found at {cfg.data_params.scaling_stats_path}")
+        print("(This path is read from your config.yaml: data_params.scaling_stats_path)")
         exit()
 
-    # --- 5. INITIALIZE DATASET ---
-    print(f"Initializing dataset for {netcdf_file}...")
+    # --- 5. INITIALIZE DATASET (Config-Driven) ---
+    print(f"Initializing dataset for {args.netcdf_file}...")
+    
+    # Get required params from config
+    # TODO: 'predict_root' is still hard-coded from the original script.
+    # Consider moving this to data_params.predict_root in your config.
+    predict_root = "/Volumes/s/tcpips/mSWE-GNN/data_processed/predict_katrina"
+    previous_t = cfg.model_params.previous_t
+    scaling_stats_path = cfg.data_params.scaling_stats_path
+
     frame_dir = f"./animation_frames_temp_PREDICT_{rollout_type_str}"
     shutil.rmtree(frame_dir, ignore_errors=True)
     os.makedirs(frame_dir, exist_ok=True)
 
     try:
-        predict_root = "/Volumes/s/tcpips/mSWE-GNN/data_processed/predict_katrina"
-        
         dataset = AdforceLazyDataset(
             root=predict_root, 
-            nc_files=[netcdf_file],
-            previous_t=previous_time_steps, # Should be 1
-            scaling_stats_path=scaling_stats_file,
+            nc_files=[args.netcdf_file],
+            previous_t=previous_t,
+            scaling_stats_path=scaling_stats_path,
+            features_cfg=features_cfg  # <-- The new required argument
         )
     except Exception as e:
         print(f"Failed to initialize AdforceLazyDataset: {e}")
+        # This will now catch errors if your stats file doesn't match
+        # your config, thanks to the sanity check you added!
         exit()
         
     if len(dataset) == 0:
@@ -536,96 +674,89 @@ if __name__ == "__main__":
     total_frames = len(dataset)
     print(f"Dataset loaded. Total samples to predict: {total_frames}")
 
-    # --- 6. CONFIGURE AND LOAD MODEL ---
-    print(f"Loading model from {checkpoint_path}...")
 
-    # --- A. Model parameters from your (working) log ---
-    model_type = "GNN"
-    model_params = {
-        'model_type': 'GNN',
-        'type_gnn': 'SWEGNN',
-        'hid_features': 64,
-        'mlp_layers': 2,
-        'K': 3,
-        'normalize': True,
-        'gnn_activation': "tanh",
-        'edge_mlp': True,
-        'with_gradient': True,
-    }
+    # --- 6. CONFIGURE AND LOAD MODEL (Config-Driven) ---
+    print(f"Loading model from {args.checkpoint_path}...")
 
-    # --- B. Mock configs from your (working) log ---
-    mock_lr_info = {
-        'learning_rate': 1e-3, 'weight_decay': 1e-4,
-        'step_size': 20, 'gamma': 0.5
-    }
-    mock_trainer_options = {
-        'batch_size': 4, 'only_where_water': True,
-        'velocity_scaler': 5.0, 'type_loss': 'RMSE'
-    }
+    # --- A. Dynamically calculate model dimensions from config ---
+    num_static_node_features = len(features_cfg.static)
+    num_dynamic_node_features = len(features_cfg.forcing)
+    # The state can include derived features, so we count them all
+    num_current_state_features = len(features_cfg.state)
+    if features_cfg.get('derived_state'):
+        num_current_state_features += len(features_cfg.derived_state)
     
-    # --- C. Calculate model dimensions ---
-    p_t = previous_time_steps # Should be 1
-    NUM_STATIC_NODE_FEATURES = 5
-    NUM_DYNAMIC_NODE_FEATURES = 3
-    NUM_CURRENT_STATE_FEATURES = 3
-    NUM_STATIC_EDGE_FEATURES = 2
-    NUM_OUTPUT_FEATURES = 3
-    
-    # This should be (5 + (3*1) + 3) = 11
     num_node_features = (
-        NUM_STATIC_NODE_FEATURES
-        + (NUM_DYNAMIC_NODE_FEATURES * p_t)
-        + NUM_CURRENT_STATE_FEATURES
+        num_static_node_features
+        + (num_dynamic_node_features * previous_t)
+        + num_current_state_features
     )
-    num_edge_features = NUM_STATIC_EDGE_FEATURES
-    num_output_features = NUM_OUTPUT_FEATURES
+    num_edge_features = len(features_cfg.edge)
+    
+    # Model predicts the delta for the state (which includes derived)
+    num_output_features = num_current_state_features
 
-    # --- D. Instantiate the underlying model ---
+    print(f"Model dimensions calculated from config:")
+    print(f"  num_node_features: {num_node_features}")
+    print(f"  num_edge_features: {num_edge_features}")
+    print(f"  num_output_features: {num_output_features}")
+
+    # --- B. Get model parameters from config ---
+    model_parameters = dict(cfg.models) # Make a copy
+    model_type = model_parameters.pop("model_type")
+    
+    # Handle GNNModelAdforce-specific params that were in config
+    # but not in 'models' block
+    model_parameters['num_static_features'] = num_static_node_features
+
+    # --- C. Instantiate the underlying model ---
     try:
-        if model_type == "GNN":
-            model_to_load = GNNModelAdforce(
-                num_node_features=num_node_features,
-                num_edge_features=num_edge_features,
-                previous_t=p_t,
-                num_output_features=num_output_features,
-                num_static_features=NUM_STATIC_NODE_FEATURES,
-                **model_params,
-            )
-        else:
-             raise ValueError(f"Model type {model_type} not configured in this script")
-            
+        model_to_load = get_model(model_type)(
+            num_node_features=num_node_features,
+            num_edge_features=num_edge_features,
+            previous_t=previous_t,
+            num_output_features=num_output_features,
+            **model_parameters,
+        )
         print(f"Instantiated {model_type} model structure.")
         
     except Exception as e:
         print(f"Error: Failed to instantiate model structure: {e}")
+        print("\nCheck if your config.models block is compatible with the model's __init__.")
+        print(f"Params passed: {model_parameters}")
         exit()
 
-    # --- E. Load the LightningTrainer from checkpoint ---
+    # --- D. Load the LightningTrainer from checkpoint ---
     try:
         lightning_model = LightningTrainer.load_from_checkpoint(
-            checkpoint_path,
+            args.checkpoint_path,
             map_location=device,
             model=model_to_load,
-            lr_info=mock_lr_info,
-            trainer_options=mock_trainer_options
+            lr_info=cfg.lr_info,           # <-- From config
+            trainer_options=cfg.trainer_options # <-- From config
         )
         lightning_model.to(device)
         lightning_model.eval()
         print("Model loaded successfully.")
     except Exception as e:
         print(f"Failed to load model checkpoint: {e}")
+        print("\nThis often happens if the model architecture in your config")
+        print("does not match the architecture *saved* in the checkpoint.")
         exit()
 
 
     # --- 7. LOAD STATIC DATA & CLIMITS ---
-    x_coords, y_coords, dem = load_static_data(netcdf_file, dataset)
-    climits = calculate_global_climits(dataset, dem)
+    x_coords, y_coords, dem = load_static_data(
+        args.netcdf_file, dataset, features_cfg
+    )
+    climits = calculate_global_climits(dataset, dem, features_cfg)
 
     # --- 8. PERFORM ROLLOUT ---
     all_predictions = perform_rollout(
         lightning_model, 
         dataset, 
         device,
+        features_cfg, # <-- New argument
         rollout_horizon=ROLLOUT_HORIZON
     )
     
@@ -636,6 +767,32 @@ if __name__ == "__main__":
     # --- 9. RENDER FRAMES ---
     print("Rendering predicted frames...")
     frame_files = []
+    
+    # Create the dynamic index maps ONCE
+    # This relies on the lists in calculate_global_climits
+    # being the source of truth for plotting.
+    try:
+        forcing_vars_list = list(features_cfg.forcing)
+        state_vars_list = list(features_cfg.state)
+        
+        plot_idx_map = {
+            'forcing': {
+                'P': forcing_vars_list.index('P'),
+                'WX': forcing_vars_list.index('WX'),
+                'WY': forcing_vars_list.index('WY'),
+            },
+            'state': {
+                'WD': state_vars_list.index('WD'),
+                'VX': state_vars_list.index('VX'),
+                'VY': state_vars_list.index('VY'),
+            }
+        }
+    except ValueError as e:
+        print(f"Error: A required plotting variable is missing from config.features.")
+        print(f"Needed: P, WX, WY in features.forcing")
+        print(f"Needed: WD, VX, VY in features.state")
+        exit()
+        
     for idx in tqdm(range(total_frames), desc="Rendering frames"):
         frame_path = os.path.join(frame_dir, f"frame_{idx:05d}.png")
         frame_files.append(frame_path)
@@ -651,7 +808,9 @@ if __name__ == "__main__":
             dem,
             climits,
             frame_path,
-            prediction_state=prediction_for_this_frame 
+            prediction_state=prediction_for_this_frame,
+            features_cfg=features_cfg,      # <-- New argument
+            plot_idx_map=plot_idx_map       # <-- New argument
         )
     
     # --- 10. COMPILE & CLEANUP ---
@@ -665,6 +824,10 @@ if __name__ == "__main__":
 
     if output_video:
         compile_video_from_frames(frame_dir, output_video, anim_fps, images)
+
+    # Clean up temporary frame directory
+    # shutil.rmtree(frame_dir, ignore_errors=True)
+    print(f"Temporary frames saved in {os.path.abspath(frame_dir)}")
 
     print(f"\nPrediction animation complete.")
     if output_gif:
