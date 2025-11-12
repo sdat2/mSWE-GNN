@@ -59,7 +59,7 @@ features:
   # 'op': The operation to perform (must be implemented in AdforceLazyDataset.get)
   # 'args': List of vars to use. Can mix 'static' and 'state' vars.
   derived_state:
-    - { name: 'SSH', op: 'subtract', args: ['WD', 'DEM'] }
+    - { name: 'SSH', op: 'add', args: ['WD', 'DEM'] }
     # e.g., - { name: 'V_mag', op: 'magnitude', args: ['VX', 'VY'] }
 
   # Target variables. The model predicts the delta of these.

@@ -236,6 +236,8 @@ def _get_derived_state(
             derived_feat = arg_data[0] - arg_data[1]
         elif derived_spec['op'] == 'magnitude':
             derived_feat = torch.sqrt(arg_data[0]**2 + arg_data[1]**2)
+        elif derived_spec['op'] == 'add':
+            derived_feat = arg_data[0] + arg_data[1]
         else:
             raise ValueError(f"Scaling: Unknown op '{derived_spec['op']}'")
         

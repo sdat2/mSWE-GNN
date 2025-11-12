@@ -819,9 +819,11 @@ class AdforceLazyDataset(Dataset):
                 # Perform operation
                 if derived_spec['op'] == 'subtract':
                     derived_feat = arg_data[0] - arg_data[1]
+                elif derived_spec['op'] == 'add':
+                    derived_feat = arg_data[0] + arg_data[1]
                 elif derived_spec['op'] == 'magnitude':
                     derived_feat = torch.sqrt(arg_data[0]**2 + arg_data[1]**2)
-                # ... add more ops ('add', 'multiply', etc.) here ...
+                    # ... add more ops ('multiply', etc.) here ...
                 else:
                     raise ValueError(f"Unknown op '{derived_spec['op']}' for derived feature")
                 
@@ -1035,6 +1037,8 @@ def run_forcing_rollout(
                     derived_feat = arg_data[0] - arg_data[1]
                 elif derived_spec['op'] == 'magnitude':
                     derived_feat = torch.sqrt(arg_data[0]**2 + arg_data[1]**2)
+                elif derived_spec['op'] == 'add':
+                    derived_feat = arg_data[0] + arg_data[1]
                 else:
                     raise ValueError(f"Rollout: Unknown op '{derived_spec['op']}'")
                 
