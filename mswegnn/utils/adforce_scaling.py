@@ -12,6 +12,9 @@ It computes and saves stats for:
 2.  x_dynamic: (features_cfg.forcing)
 3.  y: (features_cfg.state + features_cfg.derived_state)
 4.  y_delta: (deltas of features_cfg.targets)
+
+This version uses a memory-efficient online algorithm (Welford's)
+to calculate stats in a single pass.
 """
 
 import os
@@ -23,16 +26,13 @@ import torch
 from tqdm import tqdm
 from omegaconf import DictConfig
 
-# We need to import the helper functions from adforce_dataset
-# to ensure the logic is identical, but to avoid circular imports,
-# we can redefine the minimal helpers we need.
-# For simplicity, we'll re-implement the derived feature logic.
-
 
 class StatsAggregator:
     """
     Computes mean and variance in a single pass using Welford's
-    online algorithm.
+    online algorithm, adapted for batches. This is memory-efficient.
+    
+    Uses float64 for intermediate calculations to ensure numerical stability.
 
     Doctest:
     >>> import torch
@@ -51,16 +51,23 @@ class StatsAggregator:
     >>> print(f"Mean: {mean}")
     Mean: tensor([ 2.5000, 25.0000])
     >>>
-    >>> # Std of [1, 2, 3, 4] is 1.29099...
-    >>> # Std of [10, 20, 30, 40] is 12.9099...
+    >>> # Std of [1, 2, 3, 4] is 1.29099... (sample std, ddof=1)
+    >>> # Std of [10, 20, 30, 40] is 12.9099... (sample std, ddof=1)
     >>> print(f"Std: {std}")
     Std: tensor([ 1.2910, 12.9099])
     """
 
-    def __init__(self):
+    def __init__(self, dtype=torch.float64):
+        """
+        Initialize the aggregator.
+        Args:
+            dtype: The torch dtype to use for intermediate calculations.
+                   float64 is recommended for numerical stability.
+        """
         self.count = 0
         self.mean = None
         self.M2 = None
+        self.dtype = dtype
 
     def update(self, data: torch.Tensor):
         """
@@ -79,83 +86,96 @@ class StatsAggregator:
         if data.dim() == 1:
              data = data.unsqueeze(-1) # Ensure 2D
 
-        if self.mean is None:
-            self.mean = torch.zeros(data.shape[1], dtype=data.dtype)
-            self.M2 = torch.zeros(data.shape[1], dtype=data.dtype)
+        # Move to high precision for stable calculation
+        data = data.to(self.dtype)
 
+        if self.mean is None:
+            # Initialize on first batch
+            self.mean = torch.zeros(data.shape[1], dtype=self.dtype)
+            self.M2 = torch.zeros(data.shape[1], dtype=self.dtype)
+
+        # Welford's algorithm for batches
         n1 = self.count
         n2 = data.shape[0]
         self.count = n1 + n2
         n = self.count
+        
+        # Mean of the new batch
+        batch_mean = data.mean(dim=0)
+        
+        # Difference between old mean and new batch mean
+        delta = batch_mean - self.mean
+        
+        # Update running mean
+        self.mean += delta * (n2 / n)
+        
+        # Update M2 (sum of squared differences from the mean)
+        batch_M2 = ((data - batch_mean) ** 2).sum(dim=0)
+        self.M2 += batch_M2 + (delta ** 2) * n1 * n2 / n
 
-        # New data mean
-        mean2 = torch.mean(data, dim=0)
-        
-        # Welford's algorithm
-        delta = mean2 - self.mean
-        self.mean = self.mean + delta * (n2 / n)
-        delta2 = mean2 - self.mean
-        self.M2 = self.M2 + torch.sum(data * data, dim=0) - n2 * (mean2 * mean2)
-        # This is a simplification of Welford's M2 update,
-        # but is more numerically stable when merged:
-        # self.M2 = self.M2 + (data - mean1).pow(2).sum(0) + (data - mean2).pow(2).sum(0)
-        # A simpler version for combining batches:
-        # self.M2 = self.M2 + torch.sum((data - self.mean) * (data - mean2), dim=0) # This is not quite right
-        
-        # Let's use a standard implementation for clarity
-        # We need to process item by item for true Welford
-        # Or just use a simpler two-pass algorithm (less ideal)
-        
-        # --- Simpler Implementation ---
-        # For a large dataset, we can compute sum and sum_sq
-        # This is less numerically stable than Welford but simpler
-        # Let's stick to the Welford-like update for batches
-        
-        # Re-deriving the batch update:
-        # M2_new = M2_old + (x - mean_old) * (x - mean_new)
-        # For a batch:
-        # M2_new = M2_old + sum((data - mean_old) * (data - mean_new))
-        
-        # Simplified: M2 = sum( (x - mean)^2 )
-        # M2_new = M2_old + sum((data_i - mean_old)^2) for i in batch
-        # No, that's wrong.
-        
-        # Let's use torch's built-in mean/std and accept the memory hit
-        # This is much safer than implementing Welford incorrectly.
-        
-        # --- RE-IMPLEMENTATION: Use list of tensors ---
-        if not hasattr(self, 'data_chunks'):
-            self.data_chunks = []
-        self.data_chunks.append(data.cpu())
-        
     def finalize(self):
         """
-        Finalizes the statistics.
+        Finalizes the statistics, returning mean and sample standard deviation.
+        
+        Returns:
+            (torch.Tensor, torch.Tensor): (mean, std) in float32
         """
-        if not hasattr(self, 'data_chunks') or not self.data_chunks:
-            return torch.tensor(0.0), torch.tensor(1.0)
-            
-        full_data = torch.cat(self.data_chunks, dim=0).to(torch.float32)
-        mean = torch.mean(full_data, dim=0)
-        std = torch.std(full_data, dim=0)
-        std = std.clamp(min=1e-6) # Avoid division by zero
+        if self.count < 2:
+            warnings.warn(f"Finalizing stats with count={self.count} (< 2 samples). Std will be 1.0.")
+            mean = self.mean if self.mean is not None else torch.tensor(0.0, dtype=self.dtype)
+            std = torch.tensor(1.0, dtype=self.dtype)
+        else:
+            mean = self.mean
+            # Sample variance (ddof=1)
+            variance = self.M2 / (self.count - 1) 
+            std = torch.sqrt(variance).clamp(min=1e-6) # Avoid div by zero
         
-        # Clear memory
-        self.data_chunks = []
-        
-        return mean, std
+        # Return in standard float32
+        return mean.to(torch.float32), std.to(torch.float32)
 
 
 def _load_tensor_from_ds(ds: xr.Dataset, var_list: List[str]) -> torch.Tensor:
-    """Loads variables from xarray dataset and stacks them into a tensor."""
+    """
+    Loads variables from xarray dataset and stacks them into a tensor.
+    
+    This function is now aware of (time, num_nodes) dimensions and
+    will return a tensor in (num_nodes, time, features) or (num_nodes, features)
+    format.
+    """
     tensors = []
+    
+    is_time_series = 'time' in ds.dims
+    
     for var in var_list:
         if var not in ds:
             raise ValueError(f"Scaling: Variable '{var}' not found in dataset.")
+        # Load as tensor, ensuring float32
         tensors.append(torch.tensor(ds[var].values, dtype=torch.float32))
+    
     if not tensors:
-        return torch.empty((ds.sizes.get("num_nodes", 0), 0), dtype=torch.float32)
-    return torch.stack(tensors, dim=1)
+        num_nodes = ds.sizes.get("num_nodes", 0)
+        if is_time_series:
+            num_time = ds.sizes.get("time", 0)
+            return torch.empty((num_nodes, num_time, 0), dtype=torch.float32)
+        else:
+            return torch.empty((num_nodes, 0), dtype=torch.float32)
+
+    # --- THIS IS THE FIX ---
+    # Stack along the *last* dimension to create the feature channel
+    # Input tensors are [T, N] (from NetCDF dump) or [N] for static
+    stacked_tensor = torch.stack(tensors, dim=-1) # Shape [T, N, F] or [N, F]
+
+    # If it's time-series, permute to [N, T, F]
+    if is_time_series:
+        # Check if first dim is time, second is nodes
+        if stacked_tensor.dim() == 3 and stacked_tensor.shape[0] == ds.sizes['time'] and stacked_tensor.shape[1] == ds.sizes['num_nodes']:
+             stacked_tensor = stacked_tensor.permute(1, 0, 2) # [T, N, F] -> [N, T, F]
+        else:
+             # This assumes (N, T, F) which might be from a doctest or different file format
+             pass
+    
+    return stacked_tensor
+    # --- END FIX ---
 
 
 def _get_derived_state(
@@ -165,6 +185,19 @@ def _get_derived_state(
 ) -> torch.Tensor:
     """Calculates derived state features."""
     derived_features_list = []
+    # Find a sample tensor to get the num_nodes dim
+    num_nodes = 0
+    if y_t_dict:
+        # y_t_dict tensors are [N] or [N, T]
+        num_nodes = y_t_dict[list(y_t_dict.keys())[0]].shape[0]
+    elif static_data_dict:
+        # static_data_dict tensors are [N]
+        num_nodes = static_data_dict[list(static_data_dict.keys())[0]].shape[0]
+
+    if num_nodes == 0:
+         # Can't derive anything if there's no data
+         return torch.empty((0, 0), dtype=torch.float32)
+
     for derived_spec in derived_state_specs:
         arg_data = []
         for arg_name in derived_spec['args']:
@@ -183,10 +216,19 @@ def _get_derived_state(
         else:
             raise ValueError(f"Scaling: Unknown op '{derived_spec['op']}'")
         
-        derived_features_list.append(derived_feat.unsqueeze(-1))
+        derived_features_list.append(derived_feat.unsqueeze(-1)) # Add feature dim
     
     if not derived_features_list:
-        return torch.empty((y_t_dict[list(y_t_dict.keys())[0]].shape[0], 0), dtype=torch.float32)
+        # Check if we are time-series
+        is_time_series = False
+        if y_t_dict:
+            is_time_series = y_t_dict[list(y_t_dict.keys())[0]].dim() > 1
+        
+        if is_time_series:
+            num_time = y_t_dict[list(y_t_dict.keys())[0]].shape[1]
+            return torch.empty((num_nodes, num_time, 0), dtype=torch.float32)
+        else:
+            return torch.empty((num_nodes, 0), dtype=torch.float32)
         
     return torch.cat(derived_features_list, dim=-1)
 
@@ -212,7 +254,6 @@ def compute_and_save_adforce_stats(
     target_vars = list(features_cfg.targets)
     derived_state_specs = list(features_cfg.derived_state)
 
-    # Check if targets match state (required for delta learning)
     if set(state_vars) != set(target_vars):
         warnings.warn(
             f"Scaling: 'features.state' ({state_vars}) and "
@@ -239,19 +280,18 @@ def compute_and_save_adforce_stats(
     print(f"Calculating static stats from: {nc_files[0]}...")
     try:
         with xr.open_dataset(nc_files[0]) as ds:
-            # Load static node features specified in config
-            if static_node_vars:
-                static_node_data = _load_tensor_from_ds(ds, static_node_vars)
-                stats_aggs['x_static'].update(static_node_data)
+            # static_node_data is [N, F_static]
+            static_node_data = _load_tensor_from_ds(ds, static_node_vars)
+            stats_aggs['x_static'].update(static_node_data)
             
             # Store static features needed for derived calculations
-            # (e.g., 'DEM' for 'SSH')
             all_derived_args = set()
             for spec in derived_state_specs:
                 all_derived_args.update(spec['args'])
             
             for var in all_derived_args:
                 if var in ds and 'time' not in ds[var].dims:
+                    # Load as [N] tensor
                     static_data_dict_cpu[var] = torch.tensor(
                         ds[var].values, dtype=torch.float32
                     )
@@ -263,45 +303,44 @@ def compute_and_save_adforce_stats(
     print(f"Calculating dynamic stats from {len(nc_files)} training files...")
     for nc_path in tqdm(nc_files, desc="Processing files for stats"):
         try:
-            with xr.open_dataset(nc_path) as ds:
+            # .load() pulls all data into memory for this *one* file
+            with xr.open_dataset(nc_path).load() as ds:
                 
-                # Load all time-series data into memory (Tensors)
-                # Shape: [N_nodes, N_time, N_features]
+                # a. Forcing stats
                 if forcing_vars:
-                    forcing_data = _load_tensor_from_ds(ds[forcing_vars], forcing_vars)
+                    # forcing_data = [N, T, F_forcing]
+                    forcing_data = _load_tensor_from_ds(ds, forcing_vars)
                     stats_aggs['x_dynamic'].update(forcing_data)
                 
+                # b. State and Delta stats
                 if state_vars:
-                    state_data = _load_tensor_from_ds(ds[state_vars], state_vars)
-                    num_timesteps = state_data.shape[1]
+                    # state_data = [N, T, F_state]
+                    state_data = _load_tensor_from_ds(ds, state_vars)
+                    # target_data = [N, T, F_target]
+                    target_data = _load_tensor_from_ds(ds, target_vars)
+
+                    # Compute deltas for all steps at once: y(t) - y(t-1)
+                    # deltas = [N, T-1, F_target]
+                    deltas = target_data[:, 1:, :] - target_data[:, :-1, :]
+                    stats_aggs['y_delta'].update(deltas)
                     
-                    # Loop through time to calculate 'y' and 'y_delta'
-                    for t in range(num_timesteps):
-                        # Get y(t)
-                        y_t = state_data[:, t, :] # [N, F_state]
-                        
-                        # --- 'y' stats (state + derived) ---
-                        y_t_dict = {
-                            var: y_t[:, i] for i, var in enumerate(state_vars)
-                        }
-                        
-                        derived_y_t = _get_derived_state(
-                            y_t_dict, static_data_dict_cpu, derived_state_specs
-                        )
-                        
-                        # Concat base state + derived state
-                        full_state_tensor = torch.cat([y_t, derived_y_t], dim=1)
-                        stats_aggs['y'].update(full_state_tensor)
-                        
-                        # --- 'y_delta' stats ---
-                        if t > 0:
-                            # We need target_vars, which we assume match state_vars
-                            # This logic assumes the *order* of targets and state is the same
-                            y_t_minus_1 = state_data[:, t - 1, :]
-                            
-                            # Delta = y(t) - y(t-1)
-                            delta = y_t - y_t_minus_1
-                            stats_aggs['y_delta'].update(delta)
+                    # Compute derived features for all steps
+                    # y_t_dict = { 'WD': [N, T], ... }
+                    y_t_dict = {
+                        var: state_data[:, :, i] for i, var in enumerate(state_vars)
+                    }
+                    
+                    # derived_y_t = [N, T, F_derived]
+                    derived_y_t = _get_derived_state(
+                        y_t_dict, 
+                        # Unsqueeze static data to broadcast along time dim [N] -> [N, 1]
+                        {k: v.unsqueeze(1) for k, v in static_data_dict_cpu.items()},
+                        derived_state_specs
+                    )
+                    
+                    # full_state_tensor = [N, T, F_state + F_derived]
+                    full_state_tensor = torch.cat([state_data, derived_y_t], dim=-1)
+                    stats_aggs['y'].update(full_state_tensor)
 
         except Exception as e:
             warnings.warn(f"Failed to process file {nc_path}: {e}. Skipping.")
@@ -311,7 +350,6 @@ def compute_and_save_adforce_stats(
     print("Finalizing statistics...")
     final_stats = {}
     
-    # .finalize() returns (mean, std)
     mean, std = stats_aggs['x_static'].finalize()
     final_stats['x_static_mean'] = mean.tolist()
     final_stats['x_static_std'] = std.tolist()
@@ -335,7 +373,6 @@ def compute_and_save_adforce_stats(
             yaml.dump(final_stats, f, default_flow_style=False)
         print("Stats saved successfully.")
         
-        # Print a summary of the stats for verification
         print("\n--- STATS SUMMARY (MEANS) ---")
         print(f"x_static_mean ({len(final_stats['x_static_mean'])} features):")
         print(f"  {final_stats['x_static_mean']}")
@@ -362,34 +399,3 @@ if __name__ == "__main__":
     
     doctest.testmod(verbose=True)
     print("Doctests for mswegnn.utils.adforce_scaling complete.")
-    
-    # --- Example usage (requires actual config and data) ---
-    # print("\n--- RUNNING EXAMPLE (requires config and data) ---")
-    # try:
-    #     from omegaconf import OmegaConf
-    #     # This is a mock config for demonstration
-    #     mock_features_cfg = OmegaConf.create({
-    #         'static': ['DEM', 'slopex', 'slopey', 'area'],
-    #         'edge': ['face_distance', 'edge_slope'],
-    #         'forcing': ['WX', 'WY', 'P'],
-    #         'state': ['WD', 'VX', 'VY'],
-    #         'derived_state': [
-    #             {'name': 'SSH', 'op': 'subtract', 'args': ['WD', 'DEM']}
-    #         ],
-    #         'targets': ['WD', 'VX', 'VY']
-    #     })
-    #
-    #     # FAKE DATA: Replace with real paths
-    #     mock_nc_files = sorted(glob.glob("path/to/your/data/*.nc"))
-    #     if not mock_nc_files:
-    #         print("Skipping example: No mock data files found.")
-    #     else:
-    #         compute_and_save_adforce_stats(
-    #             nc_files=mock_nc_files,
-    #             save_path="scaling_stats_TEST.yaml",
-    #             features_cfg=mock_features_cfg
-    #         )
-    # except ImportError:
-    #     print("Skipping example: omegaconf not installed.")
-    # except Exception as e:
-    #     print(f"Example failed: {e}")

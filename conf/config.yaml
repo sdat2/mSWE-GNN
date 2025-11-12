@@ -71,9 +71,23 @@ features:
 
 # --- data_params ---
 data_params:
+  # --- MODE 1: RANDOM SPLIT ---
+  # These are used if 'split_files' section below is null.
   held_out_test_size: 0.2
-  test_size: 0.2
+  test_size: 0.2  # This is the validation size (relative to train+val)
   random_state: 42
+  # Move hard-coded Katrina file here
+  manual_test_holdout: "152_KATRINA_2005.nc" 
+
+  # --- MODE 2: EXPLICIT SPLIT FILES ---
+  # If paths are provided, these files will be used *instead* # of the random split. Paths can be relative to your run directory.
+  # The files should contain one .nc filename per line (e.g., "262_GILBERT_1988.nc")
+  split_files:
+    train: null   # e.g., "conf/splits/train_files.txt"
+    val: null     # e.g., "conf/splits/val_files.txt"
+    test: null    # e.g., "conf/splits/test_files.txt"
+
+  # --- Other params ---
   num_workers: 4
 
 # --- model_params ---

@@ -5,16 +5,15 @@ This script ties together all the new components:
 1.  Loads the configuration from Hydra via @hydra.main.
     Config is injected into the main() function as 'cfg'.
 2.  Finds and splits NetCDF files.
+    --- REFACTOR ---
+    a.  Supports two modes: random split (default) or explicit split
+        by providing .txt files in `cfg.data_params.split_files`.
+    b.  Manual holdout (e.g., Katrina) is now defined in config.
+    ---
 3.  Calculates scaling statistics (mean/std) from the training files.
 4.  Uses 'AdforceLazyDataset' to create train/val datasets
     (which now apply the scaling).
-    --- REFACTOR ---
-    a.  Passes the 'cfg.features' object to the dataset.
-    b.  The dataset is now responsible for loading/assembling features
-        based on the config.
-    ---
 5.  Calculates model dimensions based on the 'cfg.features' config.
-    (This removes all hard-coded feature counts).
 6.  Instantiates the correct model ('GNNModelAdforce', 'MonolithicMLPModel',
     or 'PointwiseMLPModel') using the calculated dimensions.
 7.  Uses the 'DataModule' and 'LightningTrainer' from adforce_train.py to run
@@ -35,6 +34,8 @@ import xarray as xr
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import wandb
+from typing import List
+import warnings
 
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset, _load_static_data_from_ds
 from mswegnn.utils.load import (
@@ -62,6 +63,32 @@ def print_tensor_size_mb(tensor_dict):
             total_size += size
             print(f"  - Static tensor '{k}': {size / (1024**2):.2f} MB")
     print(f"  --- TOTAL STATIC DATA SIZE: {total_size / (1024**2):.2f} MB ---")
+
+
+def _load_split_file(split_file_path: str, data_dir: str) -> List[str]:
+    """
+    Reads a .txt file containing a list of basenames and
+    returns a list of full paths.
+    """
+    # Resolve the path to the .txt file (e.g., conf/splits/train.txt)
+    # This makes it relative to the original working directory
+    abs_split_path = hydra.utils.to_absolute_path(split_file_path)
+    
+    if not os.path.exists(abs_split_path):
+        raise FileNotFoundError(
+            f"Split file not found. Expected at: {abs_split_path}\n"
+            f"Check 'data_params.split_files' in your config."
+        )
+
+    print(f"Loading split from: {abs_split_path}")
+    with open(abs_split_path, 'r') as f:
+        # Read basenames (e.g., "262_GILBERT_1988.nc")
+        basenames = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        
+    # Create full paths (e.g., /path/to/data_dir/262_GILBERT_1988.nc)
+    full_paths = [os.path.join(data_dir, basename) for basename in basenames]
+    
+    return full_paths
 
 
 torch.set_float32_matmul_precision("medium") # try get higher performance with Tensor Cores
@@ -101,85 +128,150 @@ def main(cfg: DictConfig):
         return
     print(f"Found {len(all_nc_files)} total simulation files.")
 
-    # --- MODIFICATION START: 3-way split with manual file reservation ---
-    manual_test_file_name = "152_KATRINA_2005.nc"
-    katrina_path = None
-    for f_path in all_nc_files:
-        if f_path.endswith(manual_test_file_name):
-            katrina_path = f_path
-            break
-
-    if katrina_path is None:
-        raise FileNotFoundError(
-            f"Could not find required test file {manual_test_file_name} in {data_dir}. "
-            f"Please ensure this file exists."
+    # --- REFACTOR: Check for explicit split files vs. random split ---
+    
+    if cfg.data_params.split_files.train:
+        # --- MODE 2: Load splits from explicit files ---
+        print("Using explicit split files defined in config.")
+        
+        train_files = _load_split_file(cfg.data_params.split_files.train, data_dir)
+        val_files = _load_split_file(cfg.data_params.split_files.val, data_dir)
+        test_files = _load_split_file(cfg.data_params.split_files.test, data_dir)
+        
+        # Verify that the loaded files are a subset of all files
+        all_found_files = set([os.path.basename(f) for f in all_nc_files])
+        all_split_files = set(
+            [os.path.basename(f) for f in train_files + val_files + test_files]
         )
+        
+        missing_files = all_split_files - all_found_files
+        if missing_files:
+            warnings.warn(
+                f"WARNING: The following {len(missing_files)} files from your split lists "
+                f"were not found in data_dir ({data_dir}): {missing_files}"
+            )
+        
+        # Check for overlaps
+        train_val_overlap = set(train_files) & set(val_files)
+        train_test_overlap = set(train_files) & set(test_files)
+        val_test_overlap = set(val_files) & set(test_files)
+
+        if train_val_overlap or train_test_overlap or val_test_overlap:
+            warnings.warn("WARNING: Overlap detected between train/val/test split files!")
+            if train_val_overlap: print(f"  Train-Val overlap: {train_val_overlap}")
+            if train_test_overlap: print(f"  Train-Test overlap: {train_test_overlap}")
+            if val_test_overlap: print(f"  Val-Test overlap: {val_test_overlap}")
+
     else:
-        print(f"Manually reserving file for test set: {manual_test_file_name}")
+        # --- MODE 1: Use random train_test_split (original logic) ---
+        print("Using random split based on 'data_params' config.")
+        
+        # 1. Manually reserve the required test file
+        manual_test_file_name = cfg.data_params.manual_test_holdout
+        katrina_path = None
+        if manual_test_file_name:
+            for f_path in all_nc_files:
+                if f_path.endswith(manual_test_file_name):
+                    katrina_path = f_path
+                    break
 
-    remaining_files = [f for f in all_nc_files if f != katrina_path]
+            if katrina_path is None:
+                raise FileNotFoundError(
+                    f"Could not find required test file {manual_test_file_name} in {data_dir}. "
+                    f"Please check 'data_params.manual_test_holdout' in your config."
+                )
+            else:
+                print(f"Manually reserving file for test set: {manual_test_file_name}")
+            
+            # 2. Get all other files available for splitting
+            remaining_files = [f for f in all_nc_files if f != katrina_path]
+        else:
+            print("No 'manual_test_holdout' specified. Splitting all files.")
+            remaining_files = all_nc_files
+            katrina_path = None # Ensure it's None
 
-    try:
-        held_out_test_size = cfg.data_params.held_out_test_size
-    except Exception:
-        print("\n" + "=" * 50)
-        print("ERROR: 'data_params.held_out_test_size' not found in config file.")
-        print("Please add 'held_out_test_size: <ratio>' (e.g., 0.1) to")
-        print("the 'data_params' section in your YAML config.")
-        print("=" * 50 + "\n")
-        raise
+        # 3. Define split ratios from config
+        try:
+            held_out_test_size = cfg.data_params.held_out_test_size
+        except Exception:
+            # (Original error handling for missing config param)
+            print("\n" + "=" * 50)
+            print("ERROR: 'data_params.held_out_test_size' not found in config file.")
+            print("=" * 50 + "\n")
+            raise
 
-    validation_size = cfg.data_params.test_size
-    random_state = cfg.data_params.random_state
+        validation_size = cfg.data_params.test_size
+        random_state = cfg.data_params.random_state
 
-    if held_out_test_size + validation_size >= 1.0:
-        raise ValueError(
-            f"Sum of held_out_test_size ({held_out_test_size}) and "
-            f"validation_size ({validation_size}) must be less than 1.0"
+        if held_out_test_size + validation_size >= 1.0:
+            raise ValueError(
+                f"Sum of held_out_test_size ({held_out_test_size}) and "
+                f"validation_size ({validation_size}) must be less than 1.0"
+            )
+
+        # 4. Split 'remaining_files' into (train+val) and (additional_test)
+        train_val_files, additional_test_files = train_test_split(
+            remaining_files,
+            test_size=held_out_test_size,
+            random_state=random_state,
         )
 
-    train_val_files, additional_test_files = train_test_split(
-        remaining_files,
-        test_size=held_out_test_size,
-        random_state=random_state,
-    )
+        # 5. Create the final, held-out test set
+        test_files = additional_test_files
+        if katrina_path:
+            test_files = [katrina_path] + additional_test_files
 
-    test_files = [katrina_path] + additional_test_files
+        # 6. Split 'train_val_files' into train and val
+        val_split_ratio = validation_size / (1.0 - held_out_test_size)
+        train_files, val_files = train_test_split(
+            train_val_files,
+            test_size=val_split_ratio,
+            random_state=random_state,
+        )
 
-    val_split_ratio = validation_size / (1.0 - held_out_test_size)
+    # --- END REFACTOR ---
 
-    train_files, val_files = train_test_split(
-        train_val_files,
-        test_size=val_split_ratio,
-        random_state=random_state,
-    )
+    # Ensure no files were lost
+    if not train_files:
+        raise ValueError("No training files were found. Check your data_dir or split logic.")
+    if not val_files:
+        warnings.warn("No validation files were found. Check your data_dir or split logic.")
+    if not test_files:
+        warnings.warn("No test files were found. Check your data_dir or split logic.")
+
 
     print(
         f"Training on {len(train_files)} files, validating on {len(val_files)} files."
     )
     print(
-        f"Held-out test set: {len(test_files)} files (including {manual_test_file_name})."
+        f"Held-out test set: {len(test_files)} files."
     )
 
-    test_file_list_path = os.path.join(os.getcwd(), "held_out_test_files.txt")
+    # 7. (Optional) Save the split file lists to the Hydra run directory
     try:
-        with open(test_file_list_path, "w") as f:
-            f.write(
-                "# This is the held-out test set, it was NOT used for training or validation.\n"
-            )
-            for item in test_files:
-                f.write(f"{os.path.basename(item)}\n")
-        print(f"Saved list of held-out test file names to: {test_file_list_path}")
+        with open(os.path.join(os.getcwd(), "train_files.txt"), "w") as f:
+            f.write("# Training files\n")
+            f.write("\n".join([os.path.basename(item) for item in train_files]))
+        
+        with open(os.path.join(os.getcwd(), "val_files.txt"), "w") as f:
+            f.write("# Validation files\n")
+            f.write("\n".join([os.path.basename(item) for item in val_files]))
+            
+        with open(os.path.join(os.getcwd(), "test_files.txt"), "w") as f:
+            f.write("# Test files\n")
+            f.write("\n".join([os.path.basename(item) for item in test_files]))
+            
+        print(f"Saved lists of train/val/test file names to: {os.getcwd()}")
     except Exception as e:
-        print(f"Warning: Could not save test file list: {e}")
-    # --- MODIFICATION END ---
+        print(f"Warning: Could not save split file lists: {e}")
+    # --- END SPLIT LOGIC ---
 
 
     print(f"Loading shared static data from: {train_files[0]}...")
     static_data_cpu = {}
     try:
         with xr.open_dataset(train_files[0]) as ds:
-            # --- REFACTOR: Pass the feature lists from the config ---
+            # --- REFACTOR (BUG FIX): Pass the feature lists from the config ---
             static_data_cpu = _load_static_data_from_ds(
                 ds,
                 cfg.features.static,
@@ -187,12 +279,14 @@ def main(cfg: DictConfig):
             )
         print("Shared static data loaded to CPU. Measuring size...")
 
+        print_tensor_size_mb(static_data_cpu)
+
     except Exception as e:
         raise IOError(f"Failed to load static data from {train_files[0]}: {e}")
 
     try:
         # --- NEW 3: Compute scaling stats if they don't exist ---
-        train_root = os.path.join(processed_dir, "train_new")
+        train_root = os.path.join(processed_dir, "train")
         train_stats_path = os.path.join(train_root, "scaling_stats.yaml")
         os.makedirs(train_root, exist_ok=True)
 
@@ -203,7 +297,7 @@ def main(cfg: DictConfig):
             compute_and_save_adforce_stats(
                 train_files, 
                 train_stats_path, 
-                cfg.features
+                cfg.features  # <-- NEW
             )
             # --- END MODIFICATION ---
             print(f"Stats saved to {train_stats_path}.")
