@@ -400,6 +400,7 @@ class GNNModelAdforce(nn.Module):
         # out_delta = self.gnn(
         #     static_features, dynamic_features, edge_index, edge_attr, batch=batch
         # )
+        # we switch to direct delta prediction for Adforce
         out = self.gnn(
              static_features, dynamic_features, edge_index, edge_attr, batch=batch
         )
