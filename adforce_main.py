@@ -152,6 +152,14 @@ def main(cfg: DictConfig) -> None:
         save_last=True,
     )
 
+    last_model_callback = ModelCheckpoint(
+            dirpath=checkpoint_dir,
+            filename=f"{cfg.model_params.model_type}-last-{{epoch:02d}}",
+            save_last=True,
+        )
+
+    all_callbacks = [best_model_callback, last_model_callback]
+
     # --- [ THE SUGGESTED ADDITION ] ---
     # Save a copy of the config in the checkpoint directory
     # This makes inference *much* easier later.
@@ -233,24 +241,39 @@ def main(cfg: DictConfig) -> None:
         features_cfg=features_cfg,
     )
 
+
+
+    # 4. Create "lazy" datasets
+    # print("Initializing training dataset (this may run .process()...)")
+    # # --- REFACTOR: Pass features_cfg to dataset ---
+    # train_dataset = AdforceLazyDataset(
+    #         root=train_root,
+    #         nc_files=train_files,
+    #         previous_t=p_t,
+    #         scaling_stats_path=train_stats_path,
+    #         features_cfg=cfg.features  # <-- PASS THE FEATURES CONFIG
+    #     )
+
+    # print("Initializing validation dataset (this may run .process()...)")
+    #     # --- REFACTOR: Pass features_cfg to dataset ---
+    # val_dataset = AdforceLazyDataset(
+    #         root=val_root,
+    #         nc_files=val_files,
+    #         previous_t=p_t,
+    #         scaling_stats_path=train_stats_path,  # <-- PASS THE *TRAIN* STATS
+    #         features_cfg=cfg.features  # <-- PASS THE FEATURES CONFIG
+    #     )
+
+    # 5. Instantiate Lightning DataModule
+    data_module = DataModule(
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            batch_size=cfg.trainer_options.batch_size,
+            num_workers=cfg.data_params.num_workers,
+        )
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Validation dataset size: {len(val_dataset)}")
 
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=cfg.trainer_options.batch_size,
-        shuffle=True,  # Shuffle is True for training
-        num_workers=cfg.machine.num_workers,
-        pin_memory=True,
-    )
-
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=cfg.trainer_options.batch_size,
-        shuffle=False,  # No shuffle for validation
-        num_workers=cfg.machine.num_workers,
-        pin_memory=True,
-    )
 
     # --- 6. Initialize Model ---
     print("Initializing model...")
@@ -343,7 +366,7 @@ def main(cfg: DictConfig) -> None:
     trainer = L.Trainer(
         max_epochs=cfg.trainer_options.max_epochs,
         logger=wandb_logger,
-        callbacks=[checkpoint_callback, lr_monitor],
+        callbacks=[*all_callbacks, lr_monitor],
         accelerator=cfg.machine.accelerator,
         devices=cfg.machine.devices,
         precision=cfg.trainer_options.precision,
@@ -352,7 +375,7 @@ def main(cfg: DictConfig) -> None:
 
     # --- 9. Start Training ---
     print("Starting training...")
-    trainer.fit(pl_trainer, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    trainer.fit(pl_trainer, datamodule=data_module)
 
     wandb.finish()
     print("Training complete.")
