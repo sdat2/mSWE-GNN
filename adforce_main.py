@@ -179,12 +179,13 @@ def main(cfg: DictConfig):
     static_data_cpu = {}
     try:
         with xr.open_dataset(train_files[0]) as ds:
-            # --- REFACTOR: _load_static_data_from_ds will need to be updated
-            # to accept cfg.features to load the correct vars
-            static_data_cpu = _load_static_data_from_ds(ds)
+            # --- REFACTOR: Pass the feature lists from the config ---
+            static_data_cpu = _load_static_data_from_ds(
+                ds,
+                cfg.features.static,
+                cfg.features.edge
+            )
         print("Shared static data loaded to CPU. Measuring size...")
-
-        print_tensor_size_mb(static_data_cpu)
 
     except Exception as e:
         raise IOError(f"Failed to load static data from {train_files[0]}: {e}")
