@@ -299,8 +299,8 @@ def main(cfg: DictConfig):
 
     try:
         # --- NEW 3: Compute scaling stats if they don't exist ---
-        train_root = os.path.join(processed_dir, "train_flex5")
-        val_root = os.path.join(processed_dir, "val_flex5")
+        train_root = os.path.join(processed_dir, "train_flex6")
+        val_root = os.path.join(processed_dir, "val_flex6")
         train_stats_path = os.path.join(train_root, "scaling_stats.yaml")
         os.makedirs(train_root, exist_ok=True)
 
