@@ -48,7 +48,7 @@ data_params:
   
   # Set to true to force re-computation of stats from the training files.
   # Set to false to load from scaling_stats_path.
-  compute_scaling: false
+  compute_scaling: true
 
 
 # --- 4. Feature Configuration ---
@@ -99,12 +99,12 @@ models:
 
 # --- 7. Training Parameters ---
 trainer_options:
-  batch_size: 16
+  batch_size: 8
   max_epochs: 100
   precision: "bf16-mixed"
   type_loss: "RMSE"
   only_where_water: true
-  velocity_scaler: 5.0
+  velocity_scaler: 1.0
 
 
 # --- 8. Learning Rate & Optimizer ---
