@@ -133,7 +133,7 @@ variables:
 """
 
 import os
-from typing import Dict, List
+from typing import Dict, List, Union
 import warnings
 import yaml
 import numpy as np
@@ -142,7 +142,7 @@ import torch
 from torch_geometric.data import Dataset, Data
 from mswegnn.utils.adforce_scaling import StatsAggregator
 from tqdm import tqdm
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig
 
 
 # ----------------------------------------------------------------------------
@@ -151,7 +151,9 @@ from omegaconf import DictConfig
 
 
 def _load_static_data_from_ds(
-    ds: xr.Dataset, static_node_vars: List[str], static_edge_vars: List[str]
+    ds: xr.Dataset, 
+    static_node_vars: Union[List[str], ListConfig], 
+    static_edge_vars: Union[List[str], ListConfig]
 ) -> Dict[str, torch.Tensor]:
     """
     Loads all static mesh and BC data from an open xarray dataset
@@ -163,20 +165,11 @@ def _load_static_data_from_ds(
 
     Args:
         ds (xarray.Dataset): An open xarray.Dataset handle.
-        static_node_vars (List[str]): List of static node vars to load
-            (e.g., ['DEM', 'slopex']).
-        static_edge_vars (List[str]): List of static edge vars to load
-            (e.g., ['face_distance', 'edge_slope']).
+        static_node_vars (List[str] or ListConfig): List of static node vars.
+        static_edge_vars (List[str] or ListConfig): List of static edge vars.
 
     Returns:
         Dict[str, torch.Tensor]: A dictionary containing all static data.
-        Includes:
-        - 'edge_index': The graph connectivity.
-        - 'static_edge_attr': Stacked tensor of edge features.
-        - 'node_BC': Indices of boundary nodes.
-        - 'edge_BC_length': Length of boundary edges.
-        - 'node_type': Binary tensor (1=boundary, 0=interior).
-        - ...and all tensors for keys in 'static_node_vars'.
 
     Doctest:
     >>> # Create a mock xarray.Dataset for testing
@@ -233,7 +226,8 @@ def _load_static_data_from_ds(
 
     # --- Static Edge Features (from config) ---
     edge_attr_list = []
-    for var_name in static_edge_vars:
+    # Cast to list to handle omegaconf.ListConfig
+    for var_name in list(static_edge_vars):
         if var_name not in ds:
             raise ValueError(f"Static edge variable '{var_name}' not found in dataset.")
         edge_attr_list.append(
@@ -242,13 +236,13 @@ def _load_static_data_from_ds(
     if edge_attr_list:
         data_dict["static_edge_attr"] = torch.stack(edge_attr_list, dim=1)
     else:
-        # Create a placeholder if no edge features are specified
         num_edges = ds.sizes.get("edge", 0)
         data_dict["static_edge_attr"] = torch.empty((num_edges, 0), dtype=torch.float)
 
 
     # --- Static Node Features (from config) ---
-    for var_name in static_node_vars:
+    # Cast to list to handle omegaconf.ListConfig
+    for var_name in list(static_node_vars):
         if var_name not in ds:
             raise ValueError(f"Static node variable '{var_name}' not found in dataset.")
         data_dict[var_name] = torch.tensor(ds[var_name].values, dtype=torch.float)
@@ -283,22 +277,10 @@ def _load_static_data_from_ds(
 
 
 def _get_forcing_slice(
-    ds: xr.Dataset, t_start: int, num_steps: int, forcing_vars: List[str]
+    ds: xr.Dataset, t_start: int, num_steps: int, forcing_vars: Union[List[str], ListConfig]
 ) -> torch.Tensor:
     """
     Loads a slice of *forcing* data and formats it for input.
-
-    This function reads `num_steps` starting from `t_start` and
-    reshapes the data from [vars, nodes, steps] to [nodes, vars * steps].
-
-    Args:
-        ds (xarray.Dataset): An open xarray.Dataset handle.
-        t_start (int): The starting time index.
-        num_steps (int): The number of time steps to load.
-        forcing_vars (List[str]): List of forcing vars (e.g., ['WX', 'WY', 'P']).
-
-    Returns:
-        torch.Tensor: A tensor of shape [num_nodes, len(forcing_vars) * num_steps].
 
     Doctest:
     >>> import xarray as xr
@@ -331,13 +313,17 @@ def _get_forcing_slice(
     >>> print(torch.all(torch.eq(forcing_slice, expected_tensor)))
     tensor(True)
     """
-    if not forcing_vars:
+    # --- BUG FIX: Cast omegaconf.ListConfig to list for xarray ---
+    forcing_vars_list = list(forcing_vars)
+    # --- END FIX ---
+
+    if not forcing_vars_list:
         num_nodes = ds.sizes.get("num_nodes", 0)
         return torch.empty((num_nodes, 0), dtype=torch.float)
 
     # 1. Get the DataArray from xarray
     data_array = (
-        ds[forcing_vars].isel(time=slice(t_start, t_start + num_steps)).to_array()
+        ds[forcing_vars_list].isel(time=slice(t_start, t_start + num_steps)).to_array()
     )
 
     # 2. Define canonical order
@@ -362,23 +348,10 @@ def _get_forcing_slice(
 
 
 def _get_target_slice(
-    ds: xr.Dataset, t_start: int, num_steps: int, target_vars: List[str]
+    ds: xr.Dataset, t_start: int, num_steps: int, target_vars: Union[List[str], ListConfig]
 ) -> torch.Tensor:
     """
     Loads a slice of *target* data (e.g., WD, VX, VY) and formats it.
-
-    This function reads `num_steps` starting from `t_start` and
-    reshapes the data. If num_steps=1, it squeezes the time dimension.
-
-    Args:
-        ds (xarray.Dataset): An open xarray.Dataset handle.
-        t_start (int): The starting time index.
-        num_steps (int): The number of time steps to load.
-        target_vars (List[str]): List of target vars (e.g., ['WD', 'VX', 'VY']).
-
-    Returns:
-        torch.Tensor: A tensor of shape [num_nodes, len(target_vars) * num_steps].
-                      If num_steps=1, shape is [num_nodes, len(target_vars)].
 
     Doctest:
     >>> import xarray as xr
@@ -411,13 +384,17 @@ def _get_target_slice(
     >>> print(torch.all(torch.eq(target_slice, expected_tensor)))
     tensor(True)
     """
-    if not target_vars:
+    # --- BUG FIX: Cast omegaconf.ListConfig to list for xarray ---
+    target_vars_list = list(target_vars)
+    # --- END FIX ---
+
+    if not target_vars_list:
         num_nodes = ds.sizes.get("num_nodes", 0)
         return torch.empty((num_nodes, 0), dtype=torch.float)
 
     # 1. Get the DataArray from xarray
     data_array = (
-        ds[target_vars].isel(time=slice(t_start, t_start + num_steps)).to_array()
+        ds[target_vars_list].isel(time=slice(t_start, t_start + num_steps)).to_array()
     )
 
     # 2. Define canonical order
@@ -450,17 +427,6 @@ class AdforceLazyDataset(Dataset):
     """
     A "lazy-loading" PyG Dataset for multiple NetCDF simulations,
     driven by a feature configuration object.
-
-    --- MODIFIED FOR DELTA LEARNING & CONFIG-DRIVEN FEATURES ---
-    This implementation trains the model to predict the *scaled increment*.
-    It assembles the input tensor 'x' based on the `features_cfg`:
-    x = [static_features, forcing_features, state_features]
-    
-    - static_features: (cfg.features.static + 'node_type')
-    - forcing_features: (cfg.features.forcing * previous_t)
-    - state_features: (cfg.features.state + cfg.features.derived_state)
-
-    It predicts the scaled delta of `cfg.features.targets`.
     """
 
     def __init__(
@@ -491,8 +457,7 @@ class AdforceLazyDataset(Dataset):
 
         self.total_nodes = None
         self.index_map = []
-        # --- REFACTOR: static_data is now a dictionary ---
-        self.static_data = {}  # Will hold the SINGLE copy of static data
+        self.static_data = {}
 
         # This super() call will trigger .process() if needed
         super().__init__(root, transform, pre_transform)
@@ -505,7 +470,6 @@ class AdforceLazyDataset(Dataset):
                 with open(scaling_stats_path, "r") as f:
                     scaling_stats = yaml.safe_load(f)
                 
-                # --- MODIFICATION: All tensors are created and left on CPU ---
                 self.x_static_mean = torch.tensor(
                     scaling_stats["x_static_mean"], dtype=torch.float32
                 )
@@ -534,7 +498,6 @@ class AdforceLazyDataset(Dataset):
                     .clamp(min=1e-6)
                 )
                 
-                # --- REFACTOR: Calculate expected feature counts from config ---
                 num_static_cfg = len(self.features_cfg.static)
                 num_forcing_cfg = len(self.features_cfg.forcing)
                 num_state_cfg = len(self.features_cfg.state)
@@ -544,7 +507,6 @@ class AdforceLazyDataset(Dataset):
                 self.x_dyn_mean_broadcast = x_dyn_mean.repeat(self.previous_t)
                 self.x_dyn_std_broadcast = x_dyn_std.repeat(self.previous_t)
                 
-                # --- REFACTOR: Dynamic sanity checks based on config ---
                 assert (
                     self.x_static_mean.shape[0] == num_static_cfg
                 ), f"Scaling stats 'x_static_mean' has {self.x_static_mean.shape[0]} features, but config 'features.static' has {num_static_cfg}."
@@ -560,7 +522,6 @@ class AdforceLazyDataset(Dataset):
                 assert (
                     self.y_delta_mean.shape[0] == num_targets_cfg
                 ), f"Scaling stats 'y_delta_mean' has {self.y_delta_mean.shape[0]} features, but config 'features.targets' has {num_targets_cfg}."
-                # --- END REFACTOR ---
 
                 self.apply_scaling = True
                 print("Scaling stats loaded, tensors created (on CPU), and shapes validated against config.")
@@ -581,13 +542,15 @@ class AdforceLazyDataset(Dataset):
         try:
             with xr.open_dataset(self.processed_paths[0]) as ds:
                 self.total_nodes = ds.attrs["total_nodes"]
-                # (omitted window mismatch check for brevity)
                 file_paths = ds["file_paths"].values
                 time_indices = ds["time_indices"].values
                 self.index_map = list(zip(file_paths, time_indices))
+
         except FileNotFoundError:
              raise RuntimeError(
-                f"Processed file not found at {self.processed_paths[0]}. Please check 'root' or re-run processing."
+                f"Processed file not found at {self.processed_paths[0]}. "
+                f"Your 'root' directory is '{self.root}'. "
+                f"Delete this directory and re-run to trigger '.process()'."
             )
         except Exception as e:
             raise IOError(f"Failed to load processed index file: {e}")
@@ -599,7 +562,6 @@ class AdforceLazyDataset(Dataset):
                 if "num_nodes" not in ds.sizes:
                     raise IOError(f"File {self.nc_files[0]} is missing 'num_nodes' dimension.")
                 
-                # --- REFACTOR: Pass feature lists to helper ---
                 self.static_data = _load_static_data_from_ds(
                     ds,
                     self.features_cfg.static,
@@ -610,9 +572,6 @@ class AdforceLazyDataset(Dataset):
         except Exception as e:
             raise IOError(f"Failed to load static data from {self.nc_files[0]}: {e}")
         
-        # --- Sanity check ---
-        # +1 for node_type which is auto-added
-        num_static_node_features_loaded = len(self.features_cfg.static) + 1
         num_static_nodes = self.static_data["node_type"].shape[0]
         if self.total_nodes != num_static_nodes:
             warnings.warn(
@@ -635,12 +594,13 @@ class AdforceLazyDataset(Dataset):
         )
 
         # --- REFACTOR: Define required vars from config ---
+        # --- BUG FIX: Cast omegaconf.ListConfig to list ---
         required_static_node_vars = list(self.features_cfg.static)
         required_static_edge_vars = list(self.features_cfg.edge)
         required_forcing_vars = list(self.features_cfg.forcing)
         required_target_vars = list(self.features_cfg.targets)
+        # --- END FIX ---
 
-        # Base vars that are always needed for structure
         required_base_vars = [
             "edge_index",
             "face_BC",
@@ -664,7 +624,8 @@ class AdforceLazyDataset(Dataset):
 
         for nc_path in tqdm(self.nc_files, desc="Processing files"):
             try:
-                with xr.open_dataset(nc_path) as ds:
+                # --- BUG FIX: .load() forces xarray to read data, not just header ---
+                with xr.open_dataset(nc_path).load() as ds:
 
                     # Check Variable Presence
                     available_vars = set(ds.data_vars.keys())
@@ -674,6 +635,29 @@ class AdforceLazyDataset(Dataset):
                             f"File {nc_path} is missing variables: {missing}. Skipping file."
                         )
                         continue
+                    
+                    # --- BUG FIX 2: Try to access data to catch empty/corrupt files ---
+                    try:
+                        # Check that forcing vars actually have data
+                        if required_forcing_vars:
+                            # Use list() to avoid omegaconf bug
+                            test_forcing = ds[required_forcing_vars].isel(time=0).to_array()
+                            if test_forcing.size == 0:
+                                warnings.warn(f"File {nc_path} has empty forcing data. Skipping file.")
+                                continue
+                        # Check target vars
+                        if required_target_vars:
+                            # Use list() to avoid omegaconf bug
+                            test_target = ds[required_target_vars].isel(time=0).to_array()
+                            if test_target.size == 0:
+                                warnings.warn(f"File {nc_path} has empty target data. Skipping file.")
+                                continue
+                    except Exception as e:
+                        warnings.warn(
+                            f"File {nc_path} failed on data access check: {e}. Skipping file."
+                        )
+                        continue
+                    # --- END FIX ---
                     
                     if "num_nodes" not in ds.sizes:
                         warnings.warn(
@@ -705,6 +689,13 @@ class AdforceLazyDataset(Dataset):
                     valid_steps = (
                         num_timesteps - self.previous_t - self.rollout_steps + 1
                     )
+                    if valid_steps <= 0:
+                        warnings.warn(
+                            f"File {nc_path} has {num_timesteps} timesteps, which is not enough "
+                            f"for previous_t={self.previous_t}. Skipping file."
+                        )
+                        continue
+
                     for t in range(valid_steps):
                         index_map.append((nc_path, t))
                 valid_datasets += 1
@@ -741,6 +732,7 @@ class AdforceLazyDataset(Dataset):
         ds_index.attrs["rollout_steps"] = self.rollout_steps
 
         try:
+            os.makedirs(self.processed_dir, exist_ok=True)
             ds_index.to_netcdf(self.processed_paths[0], mode="w")
         except Exception as e:
             raise IOError(f"Failed to write processed index file: {e}")
@@ -755,10 +747,6 @@ class AdforceLazyDataset(Dataset):
         THE "LAZY" PART.
         Loads a single sample, assembles features based on config,
         and applies scaling.
-
-        --- REFACTORED FOR CONFIG-DRIVEN FEATURES ---
-        Model Input 'x': (static_scaled, forcing_scaled, state_scaled)
-        Model Target 'y': (delta_scaled)
         """
         nc_path, t_start = self.index_map[idx]
 
@@ -782,7 +770,8 @@ class AdforceLazyDataset(Dataset):
                 # y(t) State: Load as dict for assembly and derived features
                 t_last_input_step = t_start + self.previous_t - 1
                 y_t_dict = {}
-                for var in self.features_cfg.state:
+                # --- BUG FIX: Cast omegaconf.ListConfig to list ---
+                for var in list(self.features_cfg.state):
                     y_t_dict[var] = torch.tensor(
                         ds[var].isel(time=t_last_input_step).values, dtype=torch.float
                     )
@@ -823,7 +812,6 @@ class AdforceLazyDataset(Dataset):
                     derived_feat = arg_data[0] + arg_data[1]
                 elif derived_spec['op'] == 'magnitude':
                     derived_feat = torch.sqrt(arg_data[0]**2 + arg_data[1]**2)
-                    # ... add more ops ('multiply', etc.) here ...
                 else:
                     raise ValueError(f"Unknown op '{derived_spec['op']}' for derived feature")
                 
@@ -850,21 +838,17 @@ class AdforceLazyDataset(Dataset):
             y_delta_scaled = delta_raw
 
             if self.apply_scaling:
-                # Scale static (all except 'node_type' at the end)
                 num_static_cfg = len(self.features_cfg.static)
                 static_scaled[:, :num_static_cfg] = (
                     static_input_tensor[:, :num_static_cfg] - self.x_static_mean
                 ) / self.x_static_std
                 
-                # Scale forcing
                 forcing_scaled = (
                     dyn_forcing_features_t - self.x_dyn_mean_broadcast
                 ) / self.x_dyn_std_broadcast
                 
-                # Scale full state (base + derived)
                 state_scaled = (full_state_tensor - self.y_mean) / self.y_std
                 
-                # Scale delta
                 y_delta_scaled = (delta_raw - self.y_delta_mean) / self.y_delta_std
 
             # 6. Combine ALL INPUTS (on CPU)
@@ -904,27 +888,16 @@ def run_forcing_rollout(
     """
     Runs a full, memory-efficient, forcing-driven rollout for one simulation,
     using the specified feature configuration.
-
-    --- MODIFIED FOR DELTA LEARNING & CONFIG-DRIVEN FEATURES ---
-    This function now requires the `scaling_stats` dictionary and
-    `features_cfg` to:
-    1.  Scale all inputs (`static`, `forcing`, `y_t`, `derived`)
-        before feeding them to the model.
-    2.  De-scale the model's output (which is `scaled_delta`) to get `raw_delta`.
-    3.  Add the `raw_delta` to the unscaled `y_t` to get `y_tplus1`.
-    4.  Propagate the new `y_tplus1` (as `y_t`) for the next step.
     """
 
     predictions = []
     device = next(model.parameters()).device
     model.eval()
 
-    # --- NEW: Load scaling tensors from dictionary ---
     if scaling_stats is None:
         raise ValueError("run_forcing_rollout now requires 'scaling_stats' dictionary.")
 
     try:
-        # --- MODIFICATION: All stats tensors are moved to the model's device ---
         y_mean = torch.tensor(scaling_stats["y_mean"], dtype=torch.float32).to(device)
         y_std = (
             torch.tensor(scaling_stats["y_std"], dtype=torch.float32)
@@ -960,14 +933,12 @@ def run_forcing_rollout(
 
     except (KeyError, TypeError) as e:
         raise ValueError(f"Scaling stats dict is missing keys or invalid: {e}")
-    # --- END NEW ---
 
     with xr.open_dataset(nc_path) as ds:
         # 1. Load all static data (once to CPU)
         static_data_dict_cpu = _load_static_data_from_ds(
             ds, features_cfg.static, features_cfg.edge
         )
-        #    Move (once) to the model's device
         static_data_gpu = {k: v.to(device) for k, v in static_data_dict_cpu.items()}
 
         # --- NEW: Assemble and Scale static features (on device) ---
@@ -1016,7 +987,8 @@ def run_forcing_rollout(
             # --- NEW: Calculate Derived Features for this step (on device) ---
             y_t_dict_gpu = {
                 var: current_y_t_raw[:, i] 
-                for i, var in enumerate(features_cfg.state)
+                # --- BUG FIX: Cast omegaconf.ListConfig to list ---
+                for i, var in enumerate(list(features_cfg.state))
             }
             static_dict_gpu_for_derived = {
                 k: static_data_gpu[k] for k in features_cfg.static
@@ -1035,10 +1007,10 @@ def run_forcing_rollout(
                 
                 if derived_spec['op'] == 'subtract':
                     derived_feat = arg_data[0] - arg_data[1]
-                elif derived_spec['op'] == 'magnitude':
-                    derived_feat = torch.sqrt(arg_data[0]**2 + arg_data[1]**2)
                 elif derived_spec['op'] == 'add':
                     derived_feat = arg_data[0] + arg_data[1]
+                elif derived_spec['op'] == 'magnitude':
+                    derived_feat = torch.sqrt(arg_data[0]**2 + arg_data[1]**2)
                 else:
                     raise ValueError(f"Rollout: Unknown op '{derived_spec['op']}'")
                 
@@ -1052,10 +1024,8 @@ def run_forcing_rollout(
                 full_state_tensor_raw = current_y_t_raw
             # --- END DERIVED ---
             
-            # --- NEW: Scale current state (base + derived) ---
             current_y_t_scaled = (full_state_tensor_raw - y_mean) / y_std
 
-            # --- NEW: Combine scaled inputs (all on device) ---
             x_t_scaled = torch.cat(
                 [
                     static_features_scaled,
@@ -1075,24 +1045,14 @@ def run_forcing_rollout(
             )
 
             with torch.no_grad():
-                pred_scaled_delta = model(batch)  # shape [N, V_target]
+                pred_scaled_delta = model(batch)
 
-            # --- NEW: De-scale the prediction (on device) ---
             pred_raw_delta = (pred_scaled_delta * y_delta_std) + y_delta_mean
-
-            # --- NEW: Compute next state (unscaled, on device) ---
-            # y(t+1) = y(t) + delta
-            # Note: delta is added to the *base state*, not the full state
             next_y_t_raw = current_y_t_raw + pred_raw_delta
+            predictions.append(next_y_t_raw.cpu())
+            current_y_t_raw = next_y_t_raw
 
-            predictions.append(next_y_t_raw.cpu())  # Store unscaled pred on CPU
-
-            # --- Update state and forcing for the *next* loop iteration ---
-            current_y_t_raw = next_y_t_raw # This is [N, V_state]
-
-            # 2. Update forcing history
             if t + 1 < num_timesteps:
-                # Get *next* forcing slice (load to CPU, move to device)
                 next_forcing_slice_raw = _get_forcing_slice(
                     ds, t, 1, features_cfg.forcing
                 ).to(device)
@@ -1100,12 +1060,10 @@ def run_forcing_rollout(
                     next_forcing_slice_raw, nan=0.0
                 )
 
-                # Scale it (on device)
                 next_forcing_slice_scaled = (
                     next_forcing_slice_raw - x_dyn_mean_single
                 ) / x_dyn_std_single
 
-                # Update history: drop oldest step, append newest step
                 num_forcing_vars = len(features_cfg.forcing)
                 current_forcing_history_scaled = torch.cat(
                     [
@@ -1120,19 +1078,19 @@ def run_forcing_rollout(
     if not predictions:
         return torch.tensor([])
 
-    # Stack all predictions
-    # Result shape: [num_steps, N, 3] -> [N, 3, num_steps]
     return torch.stack(predictions, dim=0).permute(1, 2, 0)
 
 
 if __name__ == "__main__":
     """
     Run doctests for this module.
-
-    From the command line, run:
-    python -m mswegnn.utils.adforce_dataset
     """
+    # Create a mock xarray.Dataset for testing
+    import xarray as xr
+    import numpy as np
+    import torch
+    
+    # Run doctests
     import doctest
-
     doctest.testmod(verbose=True)
     print("Doctests complete.")

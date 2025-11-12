@@ -1,11 +1,10 @@
 #!/bin/bash
 
 # --- SLURM Directives (GPU Job for ORCHID) ---
-#SBATCH --job-name=GCN-GNN_GPU_FLEX_128
+#SBATCH --job-name=GCN-GNN_GPU_FLEX_64
 #SBATCH --account=orchid             # Use ORCHID account
 #SBATCH --partition=orchid           # Use ORCHID partition
-#SBATCH --qos=orchid                 # Use ORCHID QoS
-#SBATCH --exclude=gpuhost007         # bad node
+#SBATCH --qos=orchid                 # Use ORCHID QoS #SBATCH --exclude=gpuhost007         # bad node
 #SBATCH --gres=gpu:1                 # Request 1 GPU (A100)
 #SBATCH -o log/%j.out                # Standard output log
 #SBATCH -e log/%j.err                # Standard error log
@@ -57,7 +56,7 @@ python -m adforce_main \
     +lightning_trainer.devices=1 \
     model_params.model_type=GNN \
     model_params.type_gnn=GCN \
-    model_params.hid_features=128 \
+    model_params.hid_features=64 \
     model_params.K=3 \
     data_params.num_workers=8 \
     data_params.test_size=0.1 \
