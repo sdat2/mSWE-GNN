@@ -195,11 +195,16 @@ def main(cfg: DictConfig) -> None:
     features_cfg = cfg.features
     if cfg.data_params.compute_scaling:
         print("Computing scaling stats from training files...")
+        # compute_and_save_adforce_stats(
+        #     nc_files=train_files,  # <-- Use the loaded file list
+        #     output_stats_path=cfg.data_params.scaling_stats_path,
+        #     features_cfg=features_cfg,
+        # )
         compute_and_save_adforce_stats(
-            nc_files=train_files,  # <-- Use the loaded file list
-            output_stats_path=cfg.data_params.scaling_stats_path,
-            features_cfg=features_cfg,
-        )
+                train_files, 
+                cfg.data_params.scaling_stats_path,
+                features_cfg,  # <-- NEW
+            )
         print("Scaling stats computed and saved.")
     else:
         print(f"Loading scaling stats from {cfg.data_params.scaling_stats_path}")
@@ -259,7 +264,7 @@ def main(cfg: DictConfig) -> None:
     num_dynamic_node_features = len(features_cfg.forcing)
 
     # The state can include derived features, so we count them all
-    num_current_state_features = len(features_cfg.state)
+    num_current_state_features = len(features_cfg.targets)
     if features_cfg.get("derived_state"):
         num_current_state_features += len(features_cfg.derived_state)
 
