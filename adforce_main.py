@@ -16,7 +16,7 @@ This script ties together all the new components:
 5.  Calculates model dimensions based on the 'cfg.features' config.
 6.  Instantiates the correct model ('GNNModelAdforce', 'MonolithicMLPModel',
     or 'PointwiseMLPModel') using the calculated dimensions.
-7.  Uses the 'DataModule' and 'LightningTrainer' from adforce_train.py to run
+7.  Uses the 'DataModule' and 'AdforceLightningModule' from adforce_train.py to run
     the training loop.
 8.  Includes ModelCheckpoint callback for saving best/last models.
 9.  Allows resuming from a checkpoint specified in the config.
@@ -47,7 +47,7 @@ from mswegnn.models.adforce_models import (
     PointwiseMLPModel,
     MonolithicMLPModel,
 )
-from mswegnn.training.adforce_train import LightningTrainer, DataModule
+from mswegnn.training.adforce_train import AdforceLightningModule, DataModule
 from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 
@@ -158,7 +158,7 @@ def main(cfg: DictConfig) -> None:
             save_last=True,
         )
 
-    all_callbacks = [best_model_callback, last_model_callback]
+    all_callbacks = [checkpoint_callback, last_model_callback]
 
     # --- [ THE SUGGESTED ADDITION ] ---
     # Save a copy of the config in the checkpoint directory
@@ -242,34 +242,12 @@ def main(cfg: DictConfig) -> None:
     )
 
 
-
-    # 4. Create "lazy" datasets
-    # print("Initializing training dataset (this may run .process()...)")
-    # # --- REFACTOR: Pass features_cfg to dataset ---
-    # train_dataset = AdforceLazyDataset(
-    #         root=train_root,
-    #         nc_files=train_files,
-    #         previous_t=p_t,
-    #         scaling_stats_path=train_stats_path,
-    #         features_cfg=cfg.features  # <-- PASS THE FEATURES CONFIG
-    #     )
-
-    # print("Initializing validation dataset (this may run .process()...)")
-    #     # --- REFACTOR: Pass features_cfg to dataset ---
-    # val_dataset = AdforceLazyDataset(
-    #         root=val_root,
-    #         nc_files=val_files,
-    #         previous_t=p_t,
-    #         scaling_stats_path=train_stats_path,  # <-- PASS THE *TRAIN* STATS
-    #         features_cfg=cfg.features  # <-- PASS THE FEATURES CONFIG
-    #     )
-
     # 5. Instantiate Lightning DataModule
     data_module = DataModule(
             train_dataset=train_dataset,
             val_dataset=val_dataset,
             batch_size=cfg.trainer_options.batch_size,
-            num_workers=cfg.data_params.num_workers,
+            num_workers=cfg.machine.num_workers,
         )
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Validation dataset size: {len(val_dataset)}")
@@ -283,7 +261,7 @@ def main(cfg: DictConfig) -> None:
 
     # --- Dynamically calculate model dimensions from config ---
     p_t = models["previous_t"]
-    num_static_node_features = len(features_cfg.static)
+    num_static_node_features = len(features_cfg.static) + 1 # +1 for node type (not scaled)
     num_dynamic_node_features = len(features_cfg.forcing)
 
     # The state can include derived features, so we count them all
@@ -345,7 +323,7 @@ def main(cfg: DictConfig) -> None:
         )
 
     # --- 7. Initialize Lightning Trainer ---
-    pl_trainer = LightningTrainer(
+    pl_trainer = AdforceLightningModule(
         model=model, lr_info=cfg.lr_info, trainer_options=cfg.trainer_options
     )
 

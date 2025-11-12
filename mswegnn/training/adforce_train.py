@@ -16,7 +16,7 @@ from mswegnn.training.adforce_loss import loss_function
 # NUM_OUTPUT_FEATURES = 3  # WD, VX, VY
 
 
-class LightningTrainer(L.LightningModule):
+class AdforceLightningModule(L.LightningModule):
     def __init__(self, model, lr_info, trainer_options):
         """
         Args:
