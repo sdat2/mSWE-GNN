@@ -311,25 +311,27 @@ class GNNModelAdforce(nn.Module):
         **kwargs,  # Catches all other config args
     ):
 
-        # --- Split kwargs for AdforceBaseModel ---
-        base_model_kwargs = {}
-        base_keys = [
-            "learned_residuals",
-            "seed",
-            "residuals_base",
-            "residual_init",
-            "device",
-        ]
-        for k in list(kwargs.keys()):
-            if k in base_keys:
-                base_model_kwargs[k] = kwargs.pop(k)
+        # # --- Split kwargs for AdforceBaseModel ---
+        # base_model_kwargs = {}
+        # base_keys = [
+        #     "learned_residuals",
+        #     "seed",
+        #     "residuals_base",
+        #     "residual_init",
+        #     "device",
+        # ]
+        # for k in list(kwargs.keys()):
+        #     if k in base_keys:
+        #         base_model_kwargs[k] = kwargs.pop(k)
 
-        base_model_kwargs["previous_t"] = previous_t
-        base_model_kwargs["num_output_vars"] = num_output_features
+        # base_model_kwargs["previous_t"] = previous_t
+        # base_model_kwargs["num_output_vars"] = num_output_features
 
-        # Call the parent __init__ (from base.py)
-        super().__init__(**base_model_kwargs)
-        # --- END ---
+        # # Call the parent __init__ (from base.py)
+        # super().__init__(**base_model_kwargs)
+        # commented out base model init for now
+        super().__init__()
+        # # --- END ---
 
         self.previous_t = previous_t
         self.num_output_features = num_output_features
@@ -395,18 +397,21 @@ class GNNModelAdforce(nn.Module):
         edge_attr = batch.edge_attr
 
         # 1. Get the "delta" prediction from the inner GNN
-        out_delta = self.gnn(
-            static_features, dynamic_features, edge_index, edge_attr, batch=batch
+        # out_delta = self.gnn(
+        #     static_features, dynamic_features, edge_index, edge_attr, batch=batch
+        # )
+        out = self.gnn(
+             static_features, dynamic_features, edge_index, edge_attr, batch=batch
         )
 
         # 2. Add residual connection
-        out = out_delta + self._add_residual_connection(x0_input)
+        # out = out_delta + self._add_residual_connection(x0_input)
 
         # 3. Apply activation (matches old gnn.py logic)
-        out = torch.relu(out)
+        # out = torch.relu(out)
 
         # 4. Apply masking
-        out = self._mask_small_WD(out, epsilon=0.0001)
+        # out = self._mask_small_WD(out, epsilon=0.0001)
 
         out = out.reshape(-1, self.num_output_features)
         return out
