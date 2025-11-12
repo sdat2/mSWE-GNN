@@ -151,9 +151,9 @@ from omegaconf import DictConfig, ListConfig
 
 
 def _load_static_data_from_ds(
-    ds: xr.Dataset, 
-    static_node_vars: Union[List[str], ListConfig], 
-    static_edge_vars: Union[List[str], ListConfig]
+    ds: xr.Dataset,
+    static_node_vars: Union[List[str], ListConfig],
+    static_edge_vars: Union[List[str], ListConfig],
 ) -> Dict[str, torch.Tensor]:
     """
     Loads all static mesh and BC data from an open xarray dataset
@@ -230,15 +230,12 @@ def _load_static_data_from_ds(
     for var_name in list(static_edge_vars):
         if var_name not in ds:
             raise ValueError(f"Static edge variable '{var_name}' not found in dataset.")
-        edge_attr_list.append(
-            torch.tensor(ds[var_name].values, dtype=torch.float)
-        )
+        edge_attr_list.append(torch.tensor(ds[var_name].values, dtype=torch.float))
     if edge_attr_list:
         data_dict["static_edge_attr"] = torch.stack(edge_attr_list, dim=1)
     else:
         num_edges = ds.sizes.get("edge", 0)
         data_dict["static_edge_attr"] = torch.empty((num_edges, 0), dtype=torch.float)
-
 
     # --- Static Node Features (from config) ---
     # Cast to list to handle omegaconf.ListConfig
@@ -264,7 +261,7 @@ def _load_static_data_from_ds(
                 )
             if valid_indices.numel() > 0:
                 node_type[valid_indices] = 1.0  # Mark as boundary
-    
+
     data_dict["node_type"] = node_type
     data_dict["node_BC"] = boundary_face_indices
 
@@ -277,7 +274,10 @@ def _load_static_data_from_ds(
 
 
 def _get_forcing_slice(
-    ds: xr.Dataset, t_start: int, num_steps: int, forcing_vars: Union[List[str], ListConfig]
+    ds: xr.Dataset,
+    t_start: int,
+    num_steps: int,
+    forcing_vars: Union[List[str], ListConfig],
 ) -> torch.Tensor:
     """
     Loads a slice of *forcing* data and formats it for input.
@@ -348,7 +348,10 @@ def _get_forcing_slice(
 
 
 def _get_target_slice(
-    ds: xr.Dataset, t_start: int, num_steps: int, target_vars: Union[List[str], ListConfig]
+    ds: xr.Dataset,
+    t_start: int,
+    num_steps: int,
+    target_vars: Union[List[str], ListConfig],
 ) -> torch.Tensor:
     """
     Loads a slice of *target* data (e.g., WD, VX, VY) and formats it.
@@ -434,7 +437,7 @@ class AdforceLazyDataset(Dataset):
         root,
         nc_files,
         previous_t,
-        features_cfg: DictConfig, # <-- REFACTOR: Added
+        features_cfg: DictConfig,  # <-- REFACTOR: Added
         scaling_stats_path: str = None,
         transform=None,
         pre_transform=None,
@@ -469,35 +472,30 @@ class AdforceLazyDataset(Dataset):
             try:
                 with open(scaling_stats_path, "r") as f:
                     scaling_stats = yaml.safe_load(f)
-                
+
                 self.x_static_mean = torch.tensor(
                     scaling_stats["x_static_mean"], dtype=torch.float32
                 )
-                self.x_static_std = (
-                    torch.tensor(scaling_stats["x_static_std"], dtype=torch.float32)
-                    .clamp(min=1e-6)
-                )
+                self.x_static_std = torch.tensor(
+                    scaling_stats["x_static_std"], dtype=torch.float32
+                ).clamp(min=1e-6)
                 x_dyn_mean = torch.tensor(
                     scaling_stats["x_dynamic_mean"], dtype=torch.float32
                 )
                 x_dyn_std = torch.tensor(
                     scaling_stats["x_dynamic_std"], dtype=torch.float32
                 ).clamp(min=1e-6)
-                self.y_mean = torch.tensor(
-                    scaling_stats["y_mean"], dtype=torch.float32
-                )
-                self.y_std = (
-                    torch.tensor(scaling_stats["y_std"], dtype=torch.float32)
-                    .clamp(min=1e-6)
-                )
+                self.y_mean = torch.tensor(scaling_stats["y_mean"], dtype=torch.float32)
+                self.y_std = torch.tensor(
+                    scaling_stats["y_std"], dtype=torch.float32
+                ).clamp(min=1e-6)
                 self.y_delta_mean = torch.tensor(
                     scaling_stats["y_delta_mean"], dtype=torch.float32
                 )
-                self.y_delta_std = (
-                    torch.tensor(scaling_stats["y_delta_std"], dtype=torch.float32)
-                    .clamp(min=1e-6)
-                )
-                
+                self.y_delta_std = torch.tensor(
+                    scaling_stats["y_delta_std"], dtype=torch.float32
+                ).clamp(min=1e-6)
+
                 num_static_cfg = len(self.features_cfg.static)
                 num_forcing_cfg = len(self.features_cfg.forcing)
                 num_state_cfg = len(self.features_cfg.state)
@@ -506,11 +504,11 @@ class AdforceLazyDataset(Dataset):
 
                 self.x_dyn_mean_broadcast = x_dyn_mean.repeat(self.previous_t)
                 self.x_dyn_std_broadcast = x_dyn_std.repeat(self.previous_t)
-                
+
                 assert (
                     self.x_static_mean.shape[0] == num_static_cfg
                 ), f"Scaling stats 'x_static_mean' has {self.x_static_mean.shape[0]} features, but config 'features.static' has {num_static_cfg}."
-                
+
                 assert (
                     x_dyn_mean.shape[0] == num_forcing_cfg
                 ), f"Scaling stats 'x_dynamic_mean' has {x_dyn_mean.shape[0]} features, but config 'features.forcing' has {num_forcing_cfg}."
@@ -518,15 +516,23 @@ class AdforceLazyDataset(Dataset):
                 assert (
                     self.y_mean.shape[0] == num_state_cfg + num_derived_cfg
                 ), f"Scaling stats 'y_mean' has {self.y_mean.shape[0]} features, but config 'features.state' ({num_state_cfg}) + 'features.derived_state' ({num_derived_cfg}) has {num_state_cfg + num_derived_cfg}."
-                
+
                 assert (
                     self.y_delta_mean.shape[0] == num_targets_cfg
                 ), f"Scaling stats 'y_delta_mean' has {self.y_delta_mean.shape[0]} features, but config 'features.targets' has {num_targets_cfg}."
 
                 self.apply_scaling = True
-                print("Scaling stats loaded, tensors created (on CPU), and shapes validated against config.")
+                print(
+                    "Scaling stats loaded, tensors created (on CPU), and shapes validated against config."
+                )
 
-            except (KeyError, TypeError, ValueError, FileNotFoundError, AssertionError) as e:
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+                FileNotFoundError,
+                AssertionError,
+            ) as e:
                 print(
                     f"ERROR: Failed to load, parse, or validate {scaling_stats_path}: {e}. "
                     f"Ensure stats file matches feature config. Running unscaled."
@@ -547,7 +553,7 @@ class AdforceLazyDataset(Dataset):
                 self.index_map = list(zip(file_paths, time_indices))
 
         except FileNotFoundError:
-             raise RuntimeError(
+            raise RuntimeError(
                 f"Processed file not found at {self.processed_paths[0]}. "
                 f"Your 'root' directory is '{self.root}'. "
                 f"Delete this directory and re-run to trigger '.process()'."
@@ -560,18 +566,18 @@ class AdforceLazyDataset(Dataset):
         try:
             with xr.open_dataset(self.nc_files[0]) as ds:
                 if "num_nodes" not in ds.sizes:
-                    raise IOError(f"File {self.nc_files[0]} is missing 'num_nodes' dimension.")
-                
+                    raise IOError(
+                        f"File {self.nc_files[0]} is missing 'num_nodes' dimension."
+                    )
+
                 self.static_data = _load_static_data_from_ds(
-                    ds,
-                    self.features_cfg.static,
-                    self.features_cfg.edge
+                    ds, self.features_cfg.static, self.features_cfg.edge
                 )
-                
+
             print(f"Static data loaded and cached on device: cpu")
         except Exception as e:
             raise IOError(f"Failed to load static data from {self.nc_files[0]}: {e}")
-        
+
         num_static_nodes = self.static_data["node_type"].shape[0]
         if self.total_nodes != num_static_nodes:
             warnings.warn(
@@ -606,13 +612,13 @@ class AdforceLazyDataset(Dataset):
             "face_BC",
             "edge_BC_length",
         ]
-        
+
         all_required_vars = set(
-            required_static_node_vars +
-            required_static_edge_vars +
-            required_forcing_vars +
-            required_target_vars +
-            required_base_vars
+            required_static_node_vars
+            + required_static_edge_vars
+            + required_forcing_vars
+            + required_target_vars
+            + required_base_vars
         )
         # --- END REFACTOR ---
 
@@ -635,22 +641,30 @@ class AdforceLazyDataset(Dataset):
                             f"File {nc_path} is missing variables: {missing}. Skipping file."
                         )
                         continue
-                    
+
                     # --- BUG FIX 2: Try to access data to catch empty/corrupt files ---
                     try:
                         # Check that forcing vars actually have data
                         if required_forcing_vars:
                             # Use list() to avoid omegaconf bug
-                            test_forcing = ds[required_forcing_vars].isel(time=0).to_array()
+                            test_forcing = (
+                                ds[required_forcing_vars].isel(time=0).to_array()
+                            )
                             if test_forcing.size == 0:
-                                warnings.warn(f"File {nc_path} has empty forcing data. Skipping file.")
+                                warnings.warn(
+                                    f"File {nc_path} has empty forcing data. Skipping file."
+                                )
                                 continue
                         # Check target vars
                         if required_target_vars:
                             # Use list() to avoid omegaconf bug
-                            test_target = ds[required_target_vars].isel(time=0).to_array()
+                            test_target = (
+                                ds[required_target_vars].isel(time=0).to_array()
+                            )
                             if test_target.size == 0:
-                                warnings.warn(f"File {nc_path} has empty target data. Skipping file.")
+                                warnings.warn(
+                                    f"File {nc_path} has empty target data. Skipping file."
+                                )
                                 continue
                     except Exception as e:
                         warnings.warn(
@@ -658,7 +672,7 @@ class AdforceLazyDataset(Dataset):
                         )
                         continue
                     # --- END FIX ---
-                    
+
                     if "num_nodes" not in ds.sizes:
                         warnings.warn(
                             f"File {nc_path} is missing 'num_nodes' dimension. Skipping file."
@@ -676,7 +690,7 @@ class AdforceLazyDataset(Dataset):
                     elif not torch.equal(reference_edge_index, current_edge_index):
                         warnings.warn(f"Mesh mismatch in {nc_path}! Skipping file.")
                         continue
-                    
+
                     if ds.sizes["num_nodes"] != total_nodes:
                         warnings.warn(
                             f"Node count mismatch in {nc_path}! "
@@ -760,13 +774,13 @@ class AdforceLazyDataset(Dataset):
                 dyn_forcing_features_t = _get_forcing_slice(
                     ds, t_start, self.previous_t, self.features_cfg.forcing
                 )
-                
+
                 # y(t+1) Target: [N, V_target]
                 t_target_step = t_start + self.previous_t
                 y_tplus1_tensor = _get_target_slice(
                     ds, t_target_step, self.rollout_steps, self.features_cfg.targets
                 )
-                
+
                 # y(t) State: Load as dict for assembly and derived features
                 t_last_input_step = t_start + self.previous_t - 1
                 y_t_dict = {}
@@ -782,7 +796,7 @@ class AdforceLazyDataset(Dataset):
             static_features_list = [
                 static_data_dict[k] for k in self.features_cfg.static
             ]
-            static_features_list.append(static_data_dict['node_type'])
+            static_features_list.append(static_data_dict["node_type"])
             static_input_tensor = torch.stack(static_features_list, dim=1)
             static_input_tensor = torch.nan_to_num(static_input_tensor, nan=0.0)
 
@@ -790,44 +804,52 @@ class AdforceLazyDataset(Dataset):
             y_t_base_list = [y_t_dict[k] for k in self.features_cfg.state]
             y_t_tensor = torch.stack(y_t_base_list, dim=1)
             y_t_tensor = torch.nan_to_num(y_t_tensor, nan=0.0)
-            
+
             # c. Derived state features: [N, V_derived]
             derived_state_features_list = []
-            static_dict_for_derived = {k: static_data_dict[k] for k in self.features_cfg.static}
+            static_dict_for_derived = {
+                k: static_data_dict[k] for k in self.features_cfg.static
+            }
 
             for derived_spec in self.features_cfg.derived_state:
                 arg_data = []
-                for arg_name in derived_spec['args']:
+                for arg_name in derived_spec["args"]:
                     if arg_name in y_t_dict:
                         arg_data.append(y_t_dict[arg_name])
                     elif arg_name in static_dict_for_derived:
                         arg_data.append(static_dict_for_derived[arg_name])
                     else:
-                        raise ValueError(f"Unknown arg '{arg_name}' for derived feature '{derived_spec['name']}'")
-                
+                        raise ValueError(
+                            f"Unknown arg '{arg_name}' for derived feature '{derived_spec['name']}'"
+                        )
+
                 # Perform operation
-                if derived_spec['op'] == 'subtract':
+                if derived_spec["op"] == "subtract":
                     derived_feat = arg_data[0] - arg_data[1]
-                elif derived_spec['op'] == 'add':
+                elif derived_spec["op"] == "add":
                     derived_feat = arg_data[0] + arg_data[1]
-                elif derived_spec['op'] == 'magnitude':
-                    derived_feat = torch.sqrt(arg_data[0]**2 + arg_data[1]**2)
+                elif derived_spec["op"] == "magnitude":
+                    derived_feat = torch.sqrt(arg_data[0] ** 2 + arg_data[1] ** 2)
                 else:
-                    raise ValueError(f"Unknown op '{derived_spec['op']}' for derived feature")
-                
+                    raise ValueError(
+                        f"Unknown op '{derived_spec['op']}' for derived feature"
+                    )
+
                 derived_state_features_list.append(derived_feat.unsqueeze(1))
-            
+
             # d. Combine state + derived state
             if derived_state_features_list:
-                full_state_tensor = torch.cat([y_t_tensor] + derived_state_features_list, dim=1)
+                full_state_tensor = torch.cat(
+                    [y_t_tensor] + derived_state_features_list, dim=1
+                )
             else:
                 full_state_tensor = y_t_tensor
-            
+
             # --- 4. Handle NaNs and Deltas ---
             dyn_forcing_features_t = torch.nan_to_num(dyn_forcing_features_t, nan=0.0)
             y_tplus1_tensor = torch.nan_to_num(y_tplus1_tensor, nan=0.0)
             y_unscaled_tplus1 = y_tplus1_tensor.clone()
-            
+
             # Delta is based on *base state* (targets), not derived features
             delta_raw = y_tplus1_tensor - y_t_tensor
 
@@ -842,19 +864,17 @@ class AdforceLazyDataset(Dataset):
                 static_scaled[:, :num_static_cfg] = (
                     static_input_tensor[:, :num_static_cfg] - self.x_static_mean
                 ) / self.x_static_std
-                
+
                 forcing_scaled = (
                     dyn_forcing_features_t - self.x_dyn_mean_broadcast
                 ) / self.x_dyn_std_broadcast
-                
+
                 state_scaled = (full_state_tensor - self.y_mean) / self.y_std
-                
+
                 y_delta_scaled = (delta_raw - self.y_delta_mean) / self.y_delta_std
 
             # 6. Combine ALL INPUTS (on CPU)
-            x_t = torch.cat(
-                [static_scaled, forcing_scaled, state_scaled], dim=1
-            )
+            x_t = torch.cat([static_scaled, forcing_scaled, state_scaled], dim=1)
 
             # 7. Construct Data object (all tensors on CPU)
             return Data(
@@ -882,8 +902,8 @@ def run_forcing_rollout(
     model: torch.nn.Module,
     nc_path: str,
     previous_t: int,
-    features_cfg: DictConfig, # <-- REFACTOR: Added
-    scaling_stats: dict,      # <-- REFACTOR: Now required
+    features_cfg: DictConfig,  # <-- REFACTOR: Added
+    scaling_stats: dict,  # <-- REFACTOR: Now required
 ) -> torch.Tensor:
     """
     Runs a full, memory-efficient, forcing-driven rollout for one simulation,
@@ -920,12 +940,14 @@ def run_forcing_rollout(
             .to(device)
             .clamp(min=1e-6)
         )
-        
-        x_dyn_mean_cpu = torch.tensor(scaling_stats["x_dynamic_mean"], dtype=torch.float32)
+
+        x_dyn_mean_cpu = torch.tensor(
+            scaling_stats["x_dynamic_mean"], dtype=torch.float32
+        )
         x_dyn_std_cpu = torch.tensor(
             scaling_stats["x_dynamic_std"], dtype=torch.float32
         ).clamp(min=1e-6)
-        
+
         x_dyn_mean_broadcast = x_dyn_mean_cpu.repeat(previous_t).to(device)
         x_dyn_std_broadcast = x_dyn_std_cpu.repeat(previous_t).to(device)
         x_dyn_mean_single = x_dyn_mean_cpu.to(device)
@@ -942,13 +964,11 @@ def run_forcing_rollout(
         static_data_gpu = {k: v.to(device) for k, v in static_data_dict_cpu.items()}
 
         # --- NEW: Assemble and Scale static features (on device) ---
-        static_features_list = [
-            static_data_gpu[k] for k in features_cfg.static
-        ]
-        static_features_list.append(static_data_gpu['node_type'])
+        static_features_list = [static_data_gpu[k] for k in features_cfg.static]
+        static_features_list.append(static_data_gpu["node_type"])
         static_input_tensor = torch.stack(static_features_list, dim=1)
         static_input_tensor = torch.nan_to_num(static_input_tensor, nan=0.0)
-        
+
         static_features_scaled = static_input_tensor.clone()
         num_static_cfg = len(features_cfg.static)
         static_features_scaled[:, :num_static_cfg] = (
@@ -958,7 +978,9 @@ def run_forcing_rollout(
 
         num_timesteps = ds.sizes["time"]
         if num_timesteps <= previous_t:
-            warnings.warn(f"File {nc_path} has {num_timesteps} steps... Skipping rollout.")
+            warnings.warn(
+                f"File {nc_path} has {num_timesteps} steps... Skipping rollout."
+            )
             return torch.tensor([])
 
         # 2. Get initial forcing history (load to CPU, move to device)
@@ -986,7 +1008,7 @@ def run_forcing_rollout(
 
             # --- NEW: Calculate Derived Features for this step (on device) ---
             y_t_dict_gpu = {
-                var: current_y_t_raw[:, i] 
+                var: current_y_t_raw[:, i]
                 # --- BUG FIX: Cast omegaconf.ListConfig to list ---
                 for i, var in enumerate(list(features_cfg.state))
             }
@@ -997,25 +1019,27 @@ def run_forcing_rollout(
             derived_state_features_list = []
             for derived_spec in features_cfg.derived_state:
                 arg_data = []
-                for arg_name in derived_spec['args']:
+                for arg_name in derived_spec["args"]:
                     if arg_name in y_t_dict_gpu:
                         arg_data.append(y_t_dict_gpu[arg_name])
                     elif arg_name in static_dict_gpu_for_derived:
                         arg_data.append(static_dict_gpu_for_derived[arg_name])
                     else:
-                        raise ValueError(f"Rollout: Unknown arg '{arg_name}' for derived feature")
-                
-                if derived_spec['op'] == 'subtract':
+                        raise ValueError(
+                            f"Rollout: Unknown arg '{arg_name}' for derived feature"
+                        )
+
+                if derived_spec["op"] == "subtract":
                     derived_feat = arg_data[0] - arg_data[1]
-                elif derived_spec['op'] == 'add':
+                elif derived_spec["op"] == "add":
                     derived_feat = arg_data[0] + arg_data[1]
-                elif derived_spec['op'] == 'magnitude':
-                    derived_feat = torch.sqrt(arg_data[0]**2 + arg_data[1]**2)
+                elif derived_spec["op"] == "magnitude":
+                    derived_feat = torch.sqrt(arg_data[0] ** 2 + arg_data[1] ** 2)
                 else:
                     raise ValueError(f"Rollout: Unknown op '{derived_spec['op']}'")
-                
+
                 derived_state_features_list.append(derived_feat.unsqueeze(1))
-            
+
             if derived_state_features_list:
                 full_state_tensor_raw = torch.cat(
                     [current_y_t_raw] + derived_state_features_list, dim=1
@@ -1023,7 +1047,7 @@ def run_forcing_rollout(
             else:
                 full_state_tensor_raw = current_y_t_raw
             # --- END DERIVED ---
-            
+
             current_y_t_scaled = (full_state_tensor_raw - y_mean) / y_std
 
             x_t_scaled = torch.cat(
@@ -1067,9 +1091,7 @@ def run_forcing_rollout(
                 num_forcing_vars = len(features_cfg.forcing)
                 current_forcing_history_scaled = torch.cat(
                     [
-                        current_forcing_history_scaled[
-                            :, num_forcing_vars:
-                        ],
+                        current_forcing_history_scaled[:, num_forcing_vars:],
                         next_forcing_slice_scaled,
                     ],
                     dim=1,
@@ -1089,8 +1111,9 @@ if __name__ == "__main__":
     import xarray as xr
     import numpy as np
     import torch
-    
+
     # Run doctests
     import doctest
+
     doctest.testmod(verbose=True)
     print("Doctests complete.")

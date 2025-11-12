@@ -23,7 +23,9 @@ from mswegnn.training.train import LightningTrainer, DataModule, CurriculumLearn
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = True
-torch.set_float32_matmul_precision("medium") # try get higher performance with Tensor Cores
+torch.set_float32_matmul_precision(
+    "medium"
+)  # try get higher performance with Tensor Cores
 
 
 def main(config):

@@ -120,5 +120,4 @@ lr_info:
 wandb:
   project: "mswe-gnn-adforce"
   name: "GNN-64hid-3K-SSH_derived"
-  entity: "your-wandb-username"
-  mode: "online"
+  entity: "sdat2"

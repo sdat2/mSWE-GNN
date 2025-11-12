@@ -22,6 +22,7 @@ This script ties together all the new components:
 9.  Allows resuming from a checkpoint specified in the config.
 10. Integrates WandbLogger for experiment tracking.
 """
+
 import glob
 import os
 import lightning as L
@@ -31,7 +32,7 @@ from lightning.pytorch.loggers import WandbLogger
 import torch
 import xarray as xr
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, ListConfig
 import wandb
 from typing import List
 import warnings
@@ -50,7 +51,6 @@ from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
 from mswegnn.training.adforce_train import LightningTrainer
-from mswegnn.utils.miscellaneous import get_model
 
 
 def _load_files_from_split(split_file_path: str, data_dir: str) -> List[str]:
@@ -73,22 +73,29 @@ def _load_files_from_split(split_file_path: str, data_dir: str) -> List[str]:
         )
 
     print(f"Loading split from: {abs_split_path}")
-    with open(abs_split_path, 'r') as f:
+    with open(abs_split_path, "r") as f:
         # Use OmegaConf to load the simple list from YAML
         basenames = OmegaConf.load(f)
-        if not isinstance(basenames, list):
-            raise ValueError(f"Split file {abs_split_path} did not contain a valid list.")
-    
+
+        # --- THIS IS THE FIX ---
+        # We must check against 'ListConfig', not Python's 'list'
+        if not isinstance(basenames, ListConfig):
+            raise ValueError(
+                f"Split file {abs_split_path} did not contain a valid YAML list."
+            )
+        # --- END OF FIX ---
+
     # Create full paths (e.g., /path/to/data_dir/262_GILBERT_1988.nc)
-    full_paths = [os.path.join(data_dir, basename) for basename in basenames]
-    
+    # We also convert the OmegaConf ListConfig to a standard Python list here
+    full_paths = [os.path.join(data_dir, str(basename)) for basename in basenames]
+
     # Verify that files exist
     if full_paths:
         if not os.path.exists(full_paths[0]):
             print(f"Warning: File {full_paths[0]} not found.")
             print(f"       (Basename: {basenames[0]}, Data Dir: {data_dir})")
             print("       Please check 'machine.data_dir' and split file paths.")
-    
+
     return full_paths
 
 
@@ -97,7 +104,7 @@ def main(cfg: DictConfig) -> None:
     """
     Main training loop initiated by Hydra.
     """
-    
+
     # --- 1. Setup & Config Resolution ---
     # Resolve all interpolations (e.g., ${paths.raw_dir}) *FIRST*.
     # This is critical for all other paths to work.
@@ -105,17 +112,19 @@ def main(cfg: DictConfig) -> None:
         OmegaConf.resolve(cfg)
     except Exception as e:
         print(f"Error resolving config: {e}")
-        print("Check for missing variables or syntax errors in config.yaml and machine/*.yaml")
+        print(
+            "Check for missing variables or syntax errors in config.yaml and machine/*.yaml"
+        )
         return
 
     # Now that config is resolved, we can safely access values
     L.seed_everything(cfg.models.seed)
-    
+
     # Get the current working directory (Hydra's output folder)
     hydra_run_dir = os.getcwd()
     print(f"Hydra run directory: {hydra_run_dir}")
     print("--- Resolved Config ---")
-    print(OmegaConf.to_yaml(cfg)) # Print the resolved config for debugging
+    print(OmegaConf.to_yaml(cfg))  # Print the resolved config for debugging
     print("-----------------------")
 
     # --- 2. Weights & Biases Setup ---
@@ -123,18 +132,18 @@ def main(cfg: DictConfig) -> None:
         project=cfg.wandb.project,
         name=cfg.wandb.name,
         entity=cfg.wandb.entity,
-        mode=cfg.wandb.mode,
+        # mode=cfg.wandb.mode,
         save_dir=cfg.machine.wandb_dir,
     )
     # --- BUG FIX: .watch() call moved to after model is created ---
-    
+
     # Log the *resolved* config to W&B
     wandb_logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
-    
+
     # --- 3. Checkpointing Setup ---
     checkpoint_dir = cfg.machine.checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
-    
+
     checkpoint_callback = ModelCheckpoint(
         dirpath=checkpoint_dir,
         filename=f"{cfg.model_params.model_type}-{{epoch}}-{{val_loss:.4f}}",
@@ -143,15 +152,15 @@ def main(cfg: DictConfig) -> None:
         save_top_k=1,
         save_last=True,
     )
-    
+
     # --- [ THE SUGGESTED ADDITION ] ---
     # Save a copy of the config in the checkpoint directory
     # This makes inference *much* easier later.
     config_save_path = os.path.join(checkpoint_dir, "config.yaml")
     try:
         # Save the *resolved* config
-        with open(config_save_path, 'w') as f:
-            OmegaConf.save(cfg, f) # Save the resolved DictConfig
+        with open(config_save_path, "w") as f:
+            OmegaConf.save(cfg, f)  # Save the resolved DictConfig
         print(f"Saved resolved config to {config_save_path}")
     except Exception as e:
         print(f"Warning: Could not save config copy. Error: {e}")
@@ -161,30 +170,35 @@ def main(cfg: DictConfig) -> None:
     data_dir = hydra.utils.to_absolute_path(cfg.machine.data_dir)
     print(f"Loading data splits relative to: {data_dir}")
 
-    if not cfg.data_params.get('split_files'):
-        raise ValueError("Configuration must provide 'data_params.split_files' (e.g., train, val paths)")
+    if not cfg.data_params.get("split_files"):
+        raise ValueError(
+            "Configuration must provide 'data_params.split_files' (e.g., train, val paths)"
+        )
 
     split_files_cfg = cfg.data_params.split_files
-    
+
     train_files = _load_files_from_split(split_files_cfg.train, data_dir)
     val_files = _load_files_from_split(split_files_cfg.val, data_dir)
-    
+
     print(f"Found {len(train_files)} train files and {len(val_files)} val files.")
 
     if not train_files:
-        raise ValueError("No training files were loaded. Check 'data_params.split_files.train'.")
+        raise ValueError(
+            "No training files were loaded. Check 'data_params.split_files.train'."
+        )
     if not val_files:
-        print("Warning: No validation files were loaded. Check 'data_params.split_files.val'.")
-
+        print(
+            "Warning: No validation files were loaded. Check 'data_params.split_files.val'."
+        )
 
     # --- 4. Calculate or Load Scaling Statistics ---
     features_cfg = cfg.features
     if cfg.data_params.compute_scaling:
         print("Computing scaling stats from training files...")
         compute_and_save_adforce_stats(
-            nc_files=train_files, # <-- Use the loaded file list
+            nc_files=train_files,  # <-- Use the loaded file list
             output_stats_path=cfg.data_params.scaling_stats_path,
-            features_cfg=features_cfg
+            features_cfg=features_cfg,
         )
         print("Scaling stats computed and saved.")
     else:
@@ -200,62 +214,62 @@ def main(cfg: DictConfig) -> None:
     # --- Train Dataset ---
     train_dataset = AdforceLazyDataset(
         root=cfg.data_params.train_root_path,
-        nc_files=train_files, # <-- Use the loaded file list
+        nc_files=train_files,  # <-- Use the loaded file list
         previous_t=cfg.model_params.previous_t,
         scaling_stats_path=cfg.data_params.scaling_stats_path,
-        features_cfg=features_cfg
+        features_cfg=features_cfg,
     )
-    
+
     # --- Validation Dataset ---
     val_dataset = AdforceLazyDataset(
         root=cfg.data_params.val_root_path,
-        nc_files=val_files, # <-- Use the loaded file list
+        nc_files=val_files,  # <-- Use the loaded file list
         previous_t=cfg.model_params.previous_t,
         scaling_stats_path=cfg.data_params.scaling_stats_path,
-        features_cfg=features_cfg
+        features_cfg=features_cfg,
     )
-    
+
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Validation dataset size: {len(val_dataset)}")
-    
+
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=cfg.trainer_options.batch_size,
-        shuffle=True, # Shuffle is True for training
+        shuffle=True,  # Shuffle is True for training
         num_workers=cfg.machine.num_workers,
         pin_memory=True,
     )
-    
+
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=cfg.trainer_options.batch_size,
-        shuffle=False, # No shuffle for validation
+        shuffle=False,  # No shuffle for validation
         num_workers=cfg.machine.num_workers,
         pin_memory=True,
     )
 
     # --- 6. Initialize Model ---
     print("Initializing model...")
-    model_params = dict(cfg.models) # Make a copy
+    model_params = dict(cfg.models)  # Make a copy
     model_type = model_params.pop("model_type")
-    
+
     # --- Dynamically calculate model dimensions from config ---
     p_t = cfg.model_params.previous_t
     num_static_node_features = len(features_cfg.static)
     num_dynamic_node_features = len(features_cfg.forcing)
-    
+
     # The state can include derived features, so we count them all
     num_current_state_features = len(features_cfg.state)
-    if features_cfg.get('derived_state'):
+    if features_cfg.get("derived_state"):
         num_current_state_features += len(features_cfg.derived_state)
-    
+
     num_node_features = (
         num_static_node_features
         + (num_dynamic_node_features * p_t)
         + num_current_state_features
     )
     num_edge_features = len(features_cfg.edge)
-    
+
     # Model predicts the delta for the state (which includes derived)
     num_output_features = num_current_state_features
 
@@ -263,26 +277,52 @@ def main(cfg: DictConfig) -> None:
     print(f"  num_node_features: {num_node_features}")
     print(f"  num_edge_features: {num_edge_features}")
     print(f"  num_output_features: {num_output_features}")
-    
+
     # Instantiate the underlying model
-    model = get_model(model_type)(
-        num_node_features=num_node_features,
-        num_edge_features=num_edge_features,
-        previous_t=p_t,
-        num_output_features=num_output_features,
-        num_static_features=num_static_node_features, # Specific to GNNModelAdforce
-        **model_params,
-    )
-    
+    # GNNModelAdforce,
+    # PointwiseMLPModel,
+    # MonolithicMLPModel,
+
+    if model_type == "GNN":
+        model = GNNModelAdforce(
+            num_node_features=num_node_features,
+            num_edge_features=num_edge_features,
+            num_output_features=num_output_features,
+            num_static_features=num_static_features,  # Pass the calculated count
+            **model_cfg_dict,  # This dict includes previous_t
+        )
+
+    elif model_type == "MLP":
+        model = PointwiseMLPModel(
+            num_node_features=num_node_features,
+            num_output_features=num_output_features,
+            **model_cfg_dict,
+        )
+    elif model_type == "MonolithicMLP":
+        n_nodes_fixed = int(train_dataset.total_nodes)
+        if n_nodes_fixed is None:
+            raise ValueError(
+                "Could not determine n_nodes from train_dataset.total_nodes"
+            )
+        print(f"Found fixed n_nodes from dataset: {n_nodes_fixed}")
+        model = MonolithicMLPModel(
+            n_nodes=n_nodes_fixed,
+            num_node_features=num_node_features,
+            num_output_features=num_output_features,
+            **model_cfg_dict,
+        )
+    else:
+        raise ValueError(
+            f"Unknown model_type in config: {model_type}. Must be 'GNN', 'SWEGNN', 'MLP', or 'MonolithicMLP'."
+        )
+
     # --- 7. Initialize Lightning Trainer ---
     pl_trainer = LightningTrainer(
-        model=model,
-        lr_info=cfg.lr_info,
-        trainer_options=cfg.trainer_options
+        model=model, lr_info=cfg.lr_info, trainer_options=cfg.trainer_options
     )
-    
+
     # --- 8. Setup Trainer ---
-    
+
     # --- BUG FIX: Moved .watch() call to *after* model is initialized ---
     # Now we can watch the model, since it exists.
     # We watch pl_trainer.model to get the raw torch model.
@@ -294,7 +334,7 @@ def main(cfg: DictConfig) -> None:
     # --- END BUG FIX ---
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
-    
+
     trainer = L.Trainer(
         max_epochs=cfg.trainer_options.max_epochs,
         logger=wandb_logger,
@@ -304,15 +344,11 @@ def main(cfg: DictConfig) -> None:
         precision=cfg.trainer_options.precision,
         log_every_n_steps=10,
     )
-    
+
     # --- 9. Start Training ---
     print("Starting training...")
-    trainer.fit(
-        pl_trainer,
-        train_dataloaders=train_loader,
-        val_dataloaders=val_loader
-    )
-    
+    trainer.fit(pl_trainer, train_dataloaders=train_loader, val_dataloaders=val_loader)
+
     wandb.finish()
     print("Training complete.")
 

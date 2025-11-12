@@ -13,7 +13,7 @@ if __name__ == "__main__":
     # Define the repository you want to download
     REPO_ID = "sdat2/surgenet-train"
     REPO_TYPE = "dataset"
-    
+
     # Define a local path to download the dataset to
     # This will create the directory if it doesn't exist
     LOCAL_DOWNLOAD_PATH = "../swegnn_5sec_downloaded/"
@@ -27,7 +27,7 @@ if __name__ == "__main__":
         repo_type=REPO_TYPE,
         local_dir=LOCAL_DOWNLOAD_PATH,
         # Use the token if the dataset is private
-        token=os.getenv("HF_TOKEN"), 
+        token=os.getenv("HF_TOKEN"),
     )
 
     print(f"\nDownload complete. Dataset is in: {downloaded_path}")

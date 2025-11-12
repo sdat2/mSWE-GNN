@@ -9,4 +9,4 @@ if __name__ == "__main__":
         folder_path="../swegnn_5sec/",
         repo_id="sdat2/surgenet-train",
         repo_type="dataset",
-    )   
+    )

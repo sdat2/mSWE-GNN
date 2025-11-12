@@ -67,7 +67,7 @@ class AdforceBaseModel(nn.Module):
         residual_output = torch.zeros(
             x_input.shape[0],
             self.out_dim,  # device=self.device
-            device=x_input.device  # <-- This line fixes the error
+            device=x_input.device,  # <-- This line fixes the error
         )
 
         if self.learned_residuals == False:

@@ -200,7 +200,7 @@ class PointwiseMLPModel(nn.Module):
 
         # Map 'mlp_activation' (from config) to 'activation' (for make_mlp)
         activation_type = mlp_kwargs.pop("mlp_activation", "relu")
-        
+
         # Map 'mlp_layers' (from config) to 'n_layers' (for make_mlp)
         n_layers = mlp_kwargs.pop("mlp_layers", 2)
 
@@ -310,14 +310,14 @@ class GNNModelAdforce(nn.Module):
     ):
         super().__init__()
 
-        self.previous_t = kwargs.get("previous_t", 1) # Get p_t from kwargs
+        self.previous_t = kwargs.get("previous_t", 1)  # Get p_t from kwargs
         self.num_output_features = num_output_features
         self.num_static_features = num_static_features
 
         # --- REFACTOR: REMOVED FAULTY VALIDATION ---
         # The feature counts are now dynamic and passed from adforce_main.py.
         # We trust these counts.
-        
+
         # Total input features
         self.in_features = num_node_features
         # Calculate dynamic features based on what's passed
@@ -330,7 +330,6 @@ class GNNModelAdforce(nn.Module):
                 f"Total input: {self.in_features}. Output: {self.num_output_features}."
             )
         # --- END REFACTOR ---
-
 
         # --- GNN Switch Logic ---
         self.type_GNN = kwargs.pop("type_gnn", "GCN").upper()
@@ -367,7 +366,7 @@ class GNNModelAdforce(nn.Module):
         # 1. Get the "delta" prediction from the inner GNN
         # we switch to direct delta prediction for Adforce
         out = self.gnn(
-             static_features, dynamic_features, edge_index, edge_attr, batch=batch
+            static_features, dynamic_features, edge_index, edge_attr, batch=batch
         )
 
         out = out.reshape(-1, self.num_output_features)
@@ -382,8 +381,9 @@ if __name__ == "__main__":
     python -m mswegnn.models.adforce_models
     """
     import doctest
+
     # We need to import the test dependencies for the doctests to run
     from torch_geometric.data import Data
-    
+
     doctest.testmod(verbose=True)
     print("Doctests for mswegnn.models.adforce_models complete.")

@@ -38,7 +38,7 @@ def mask_on_water(diff, water_axis=1):
     return where_water
 
 
-def get_loss_variable_scaler(velocity_scaler=1, device=None): # <-- MODIFIED
+def get_loss_variable_scaler(velocity_scaler=1, device=None):  # <-- MODIFIED
     """Scales loss in velocity terms by a factor velocity_scaler
 
     Parameters:
@@ -131,7 +131,7 @@ def loss_function(
     velocity_scaler: float (default = 1)
         scales loss in velocity terms by a factor velocity_scaler
     """
-    diff = preds - real # This is on the model's device (e.g., cuda:0)
+    diff = preds - real  # This is on the model's device (e.g., cuda:0)
 
     if "node_ptr" in data.keys():
         loss = get_multiscale_loss(diff, data, only_where_water, type_loss, nodes_dim=0)
@@ -139,17 +139,17 @@ def loss_function(
         if only_where_water:
             # --- MODIFICATION: Use the unscaled `y_unscaled` from the batch ---
             # `data.y_unscaled` is on the GPU because Lightning moved `data`.
-            where_water = (data.y_unscaled[:, 0].abs() > 1e-6) # 1e-6 is a small epsilon
-            
+            where_water = data.y_unscaled[:, 0].abs() > 1e-6  # 1e-6 is a small epsilon
+
             if where_water.sum() == 0:
                 # Handle case where there is no water in the batch
                 return torch.tensor(0.0, device=diff.device, requires_grad=True)
-                
+
             diff = diff[where_water]
-        
+
         if diff.shape[0] == 0:
-             return torch.tensor(0.0, device=diff.device, requires_grad=True)
-             
+            return torch.tensor(0.0, device=diff.device, requires_grad=True)
+
         loss = get_mean_error(diff, type_loss, nodes_dim=0)
 
     # --- MODIFICATION: Pass the device from `diff` ---
@@ -158,7 +158,7 @@ def loss_function(
         velocity_scaler=velocity_scaler, device=diff.device
     )
     # --- END MODIFICATION ---
-    
+
     if loss.numel() == 0:
         return torch.tensor(0.0, device=diff.device, requires_grad=True)
 
@@ -169,14 +169,15 @@ def loss_function(
         WD_index = 2
         input_WD = data.x[:, -WD_index::WD_index]
         pred_WD = preds[:, 0::WD_index]
-        
+
         try:
             loss = (
-                loss + conservation * conservation_loss(pred_WD, input_WD, data, BC).abs()
+                loss
+                + conservation * conservation_loss(pred_WD, input_WD, data, BC).abs()
             )
         except NameError:
-            pass # conservation_loss not imported, skipping
-            
+            pass  # conservation_loss not imported, skipping
+
     return loss
 
 
@@ -187,7 +188,7 @@ def conservation_loss(pred_WD, input_WD, data, BC):
     """
     # This function relies on `get_inflow_volume`, which is not imported
     # and will raise a NameError, caught by loss_function.
-    
+
     assert (
         pred_WD.shape == input_WD.shape
     ), f"Input or predictions have wrong dimensions ({pred_WD.shape} != {input_WD.shape})"
@@ -215,7 +216,7 @@ def conservation_loss(pred_WD, input_WD, data, BC):
         predicted_inflow_volume = (area * delta_WD).sum()  # [m^3]
 
     try:
-        inflow_volume = get_inflow_volume(data, BC)  # [m^3] 
+        inflow_volume = get_inflow_volume(data, BC)  # [m^3]
         boundary_correction = (
             (area * delta_WD)[data.node_BC]
         ).sum()  # [m^3] # remove values at ghost cells
