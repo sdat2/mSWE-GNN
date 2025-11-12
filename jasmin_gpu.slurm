@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- SLURM Directives (GPU Job for ORCHID) ---
-#SBATCH --job-name=SWE-GNN_GPU_FLEX_128
+#SBATCH --job-name=GAT-128hid-SSH_derived
 #SBATCH --account=orchid             # Use ORCHID account
 #SBATCH --partition=orchid           # Use ORCHID partition
 #SBATCH --qos=orchid                 # Use ORCHID QoS
@@ -61,14 +61,15 @@ python -m adforce_main \
     machine.devices=1 \
     machine.num_workers=8 \
     model_params.model_type=GNN \
-    models.type_gnn=SWEGNN \
+    models.type_gnn=GAT \
     models.hid_features=128 \
-    models.K=3 \
+    models.K=6 \
     models.normalize=True \
     models.with_gradient=True \
     models.edge_mlp=True \
     trainer_options.batch_size=4 \
-    wandb.project=surgeflexdelta
+    wandb.project=surgeflexdelta \
+    wandb.name=GAT-128hid-SSH_derived
 
 echo "Script finished."
 

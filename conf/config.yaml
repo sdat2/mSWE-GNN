@@ -5,7 +5,7 @@
 
 defaults:
   - _self_            # Loads this file first
-  # - machine: mac      # Loads the default machine config (e.g., conf/machine/mac.yaml)
+  - machine: jasmin      # Loads the default machine config (e.g., conf/machine/mac.yaml)
 
 # --- 1. Top-Level Paths (to be defined/overridden by machine configs) ---
 # We provide sensible defaults, but expect machine configs to set these.
@@ -20,6 +20,7 @@ paths:
 # These paths are now *references* to the 'paths' block above
 machine:
   data_dir: ${paths.raw_dir}
+  processed_dir: ${paths.processed_dir}
   checkpoint_dir: ${paths.checkpoint_dir}
   wandb_dir: ${paths.wandb_dir}
   
@@ -48,7 +49,7 @@ data_params:
   
   # Set to true to force re-computation of stats from the training files.
   # Set to false to load from scaling_stats_path.
-  compute_scaling: false
+  compute_scaling: true
 
 
 # --- 4. Feature Configuration ---
@@ -107,7 +108,7 @@ trainer_options:
   max_epochs: 100
   precision: "bf16-mixed"
   type_loss: "RMSE"
-  only_where_water: true
+  only_where_water: false
   velocity_scaler: 1.0
 
 
