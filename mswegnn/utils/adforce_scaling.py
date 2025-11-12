@@ -145,7 +145,12 @@ def _load_tensor_from_ds(ds: xr.Dataset, var_list: List[str]) -> torch.Tensor:
     """
     tensors = []
     
-    is_time_series = 'time' in ds.dims
+    # --- BUG FIX: Determine if loading time-series from VARS, not DATASET ---
+    is_time_series = False
+    if var_list: # If there are variables to load
+        # Check the dimensions of the *first* variable in the list
+        is_time_series = 'time' in ds[var_list[0]].dims
+    # --- END BUG FIX ---
     
     for var in var_list:
         if var not in ds:
@@ -155,13 +160,12 @@ def _load_tensor_from_ds(ds: xr.Dataset, var_list: List[str]) -> torch.Tensor:
     
     if not tensors:
         num_nodes = ds.sizes.get("num_nodes", 0)
-        if is_time_series:
+        if is_time_series: # This check is now correct
             num_time = ds.sizes.get("time", 0)
             return torch.empty((num_nodes, num_time, 0), dtype=torch.float32)
         else:
             return torch.empty((num_nodes, 0), dtype=torch.float32)
 
-    # --- THIS IS THE FIX ---
     # Stack along the *last* dimension to create the feature channel
     # Input tensors are [T, N] (from NetCDF dump) or [N] for static
     stacked_tensor = torch.stack(tensors, dim=-1) # Shape [T, N, F] or [N, F]
@@ -184,9 +188,17 @@ def _load_tensor_from_ds(ds: xr.Dataset, var_list: List[str]) -> torch.Tensor:
                 f"for time-series data with dims time={ds.sizes.get('time')}, "
                 f"num_nodes={ds.sizes.get('num_nodes')}"
             )
+    else:
+        # --- BUG FIX: This is static data, shape is [N, F]. We're done. ---
+        # It should not raise an error here.
+        if stacked_tensor.dim() != 2 or stacked_tensor.shape[0] != ds.sizes['num_nodes']:
+             raise ValueError(
+                f"Unexpected tensor shape {stacked_tensor.shape} "
+                f"for static data with num_nodes={ds.sizes.get('num_nodes')}"
+             )
+        pass # Shape is [N, F], which is correct.
     
     return stacked_tensor
-    # --- END FIX ---
 
 
 def _get_derived_state(
