@@ -27,9 +27,10 @@ import glob
 import os
 import lightning as L
 from sklearn.model_selection import train_test_split
-from lightning.pytorch.callbacks import ModelCheckpoint
-from lightning.pytorch.loggers import WandbLogger
 import torch
+from lightning.pytorch import Trainer
+from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
+from lightning.pytorch.loggers import WandbLogger
 import xarray as xr
 import hydra
 from omegaconf import DictConfig, OmegaConf, ListConfig
@@ -49,8 +50,6 @@ from mswegnn.models.adforce_models import (
 from mswegnn.training.adforce_train import LightningTrainer, DataModule
 from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
-from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
-from mswegnn.training.adforce_train import LightningTrainer
 
 
 def _load_files_from_split(split_file_path: str, data_dir: str) -> List[str]:
@@ -294,7 +293,7 @@ def main(cfg: DictConfig) -> None:
             num_node_features=num_node_features,
             num_edge_features=num_edge_features,
             num_output_features=num_output_features,
-            num_static_features=num_static_features,  # Pass the calculated count
+            num_static_features=num_static_node_features,  # Pass the calculated count
             **model_cfg_dict,  # This dict includes previous_t
         )
 
@@ -334,7 +333,7 @@ def main(cfg: DictConfig) -> None:
     # We watch pl_trainer.model to get the raw torch model.
     print("Setting up W&B model watch...")
     try:
-        wandb_logger.watch(pl_trainer.model, log="all", log_freq=500)
+        wandb_logger.watch(pl_trainer.model, log="all", log_freq=100)
     except Exception as e:
         print(f"Warning: wandb_logger.watch() failed: {e}")
     # --- END BUG FIX ---
@@ -348,7 +347,7 @@ def main(cfg: DictConfig) -> None:
         accelerator=cfg.machine.accelerator,
         devices=cfg.machine.devices,
         precision=cfg.trainer_options.precision,
-        log_every_n_steps=10,
+        log_every_n_steps=100,
     )
 
     # --- 9. Start Training ---
