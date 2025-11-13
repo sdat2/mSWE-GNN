@@ -29,7 +29,7 @@ def feature_count(cfg: DictConfig) -> Dict[str, int]:
         ... })
         >>> feature_count(ex)
         {'num_node_features': 12, 'num_edge_features': 2, 'num_output_features': 3, 'num_static_node_features': 5}
-        >>> ex.models["previous_t"] = 2
+        >>> ex.model_params["previous_t"] = 2
         >>> feature_count(ex)
         {'num_node_features': 15, 'num_edge_features': 2, 'num_output_features': 3, 'num_static_node_features': 5} 
     """
@@ -57,8 +57,8 @@ def feature_count(cfg: DictConfig) -> Dict[str, int]:
             "num_static_node_features": num_static_node_features}
 
 
-def _create_model(model_cfg_dict, 
-                 model_type,
+def _create_model(model_cfg_dict: dict, 
+                 model_type: str,
                  num_node_features=None,
                  num_edge_features=None,
                  num_output_features=None,
@@ -153,8 +153,6 @@ def model_from_cfg_and_checkpoint(cfg: DictConfig, checkpoint_path: str) -> Adfo
     #  lightning_model.to(device)
     lightning_model.eval()
     return lightning_model
-
-
 
 
 if __name__ == "__main__":

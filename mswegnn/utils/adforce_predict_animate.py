@@ -619,6 +619,19 @@ if __name__ == "__main__":
         help="Path to the single .nc file to animate (e.g., '152_KATRINA_2005.nc').",
     )
     parser.add_argument(
+        "-o",
+        "--output_dir",
+        type=str,
+        default="./",
+        help="Directory to save output animations.",
+    )
+    parser.add_argument(
+        "--predict_root",
+        type=str,
+        default="",
+        help="Override the root directory for prediction data.",
+    )
+    parser.add_argument(
         "-r",
         "--rollout_horizon",
         type=int,
@@ -666,10 +679,9 @@ if __name__ == "__main__":
     # --- 5. INITIALIZE DATASET (Config-Driven) ---
     print(f"Initializing dataset for {args.netcdf_file}...")
 
-    # Get required params from config
-    # TODO: 'predict_root' is still hard-coded from the original script.
-    # Consider moving this to data_params.predict_root in your config.
-    predict_root = "/Volumes/s/tcpips/mSWE-GNN/data_processed/predict_katrina"
+    predict_root = os.path.join(
+        args.predict_root, "predict_katrina"
+    )
     previous_t = cfg.model_params.previous_t
     scaling_stats_path = cfg.data_params.scaling_stats_path
 
