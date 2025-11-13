@@ -17,7 +17,7 @@ def feature_count(cfg: DictConfig) -> Dict[str, int]:
 
     Doctest::
         >>> ex = DictConfig({
-        ...     "models": {"previous_t": 1},
+        ...     "model_params": {"previous_t": 1},
         ...     "features": {
         ...         "static": ["DEM", "slopex", "slopey", "area"],
         ...         "forcing": ["P", "WX", "WY"],
@@ -33,7 +33,7 @@ def feature_count(cfg: DictConfig) -> Dict[str, int]:
         >>> feature_count(ex)
         {'num_node_features': 15, 'num_edge_features': 2, 'num_output_features': 3, 'num_static_node_features': 5} 
     """
-    p_t = cfg.models.previous_t
+    p_t = cfg.model_params.previous_t
     num_static_node_features = len(cfg.features.static) + 1 # +1 for node_type feature (not scaled)
     num_forcing_features = len(cfg.features.forcing)
     # The state can include derived features, so we count them all
@@ -119,9 +119,18 @@ def _create_model(model_cfg_dict,
 # would not work with monolithic MLP as no node_num
 def model_from_cfg(cfg: DictConfig) -> nn.Module:
     fcount_d = feature_count(cfg)
-    model = _create_model(model_cfg_dict=dict(cfg.model), **fcount_d)
+    model = _create_model(dict(cfg.models), cfg.model_params.model_type, **fcount_d)
     return model
 
+
+def lightning_model_from_cfg(cfg: DictConfig) -> AdforceLightningModule:
+    model = model_from_cfg(cfg)
+    lightning_model = AdforceLightningModule(
+            model=model,
+            lr_info=cfg.lr_info,  # <-- From config
+            trainer_options=cfg.trainer_options,  # <-- From config
+        )
+    return lightning_model
 
 def model_from_cfg_and_checkpoint(cfg: DictConfig, checkpoint_path: str) -> AdforceLightningModule:
     """Load a model from config and checkpoint.
@@ -146,7 +155,10 @@ def model_from_cfg_and_checkpoint(cfg: DictConfig, checkpoint_path: str) -> Adfo
     return lightning_model
 
 
+
+
 if __name__ == "__main__":
+    # python -m mswegnn.utils.adforce_misc
     import os
     path = "/work/scratch-pw3/sithom/49751608/my_results/checkpoints"
     cfg_path =  os.path.join(path, "config.yaml")
@@ -154,4 +166,7 @@ if __name__ == "__main__":
     cfg = OmegaConf.load(cfg_path)
     model = model_from_cfg_and_checkpoint(cfg, checkpoint_path)
     print(model)
+    # cfg_path = "/Users/simon/mSWE-GNN/test/checkpoints/config.yaml"
+    # lmod = lightning_model_from_cfg(OmegaConf.load(cfg_path))
+    # print(lmod)
 
