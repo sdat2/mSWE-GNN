@@ -1,0 +1,81 @@
+# /home/users/sithom/my_results/checkpoints/GNN-epoch=99-val_loss=0.3644.ckpt
+paths:
+  raw_dir: /home/users/sithom/swegnn_5sec/
+  processed_dir: /home/users/sithom/swegnn_5sec/
+  checkpoint_dir: /home/users/sithom/my_results/checkpoints
+  wandb_dir: /home/users/sithom/my_results/wandb
+machine:
+  data_dir: /home/users/sithom/swegnn_5sec/
+  processed_dir: /home/users/sithom/swegnn_5sec/data_processed2
+  checkpoint_dir: /home/users/sithom/my_results/checkpoints
+  wandb_dir: /home/users/sithom/my_results/wandb
+  accelerator: gpu
+  devices: 1
+  num_workers: 8
+  output_dir: /home/users/sithom/swegnn_5sec/outputs2
+data_params:
+  split_files:
+    train: conf/train.yaml
+    val: conf/val.yaml
+    test: conf/test.yaml
+  train_root_path: /work/scratch-pw3/sithom/49763119/my_results/processed/train/
+  val_root_path: /work/scratch-pw3/sithom/49763119/my_results/processed/val/
+  scaling_stats_path: /work/scratch-pw3/sithom/49763119/my_results/processed/scaling_stats.yaml
+  compute_scaling: true
+features:
+  static:
+  - DEM
+  - slopex
+  - slopey
+  - area
+  edge:
+  - face_distance
+  - edge_slope
+  forcing:
+  - P
+  - WX
+  - WY
+  targets:
+  - WD
+  - VX
+  - VY
+  state:
+  - WD
+  - VX
+  - VY
+  derived_state:
+  - name: SSH
+    op: add
+    args:
+    - WD
+    - DEM
+model_params:
+  previous_t: 1
+  model_type: GNN
+models:
+  seed: 42
+  type_gnn: SWEGNN
+  hid_features: 128
+  mlp_layers: 2
+  K: 3
+  normalize: true
+  gnn_activation: tanh
+  edge_mlp: true
+  with_gradient: true
+trainer_options:
+  batch_size: 4
+  max_epochs: 100
+  precision: bf16-mixed
+  type_loss: RMSE
+  only_where_water: false
+  velocity_scaler: 1.0
+lr_info:
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  use_lr_scheduler: true
+  step_size: 20
+  gamma: 0.5
+wandb:
+  project: surgeflexdelta
+  name: GNN-128hid-6K-SSH_derived
+  entity: sdat2

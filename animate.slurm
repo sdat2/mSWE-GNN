@@ -38,9 +38,9 @@ echo "Animating..."
 # --- THIS COMMAND IS UPDATED FOR THE NEW HYDRA CONFIG ---
 # ---
 python -m mswegnn.utils.adforce_predict_animate \
-     -c /work/scratch-pw3/sithom/49751608/my_results/checkpoints/config.yaml \
-     -ckpt /work/scratch-pw3/sithom/49751608/my_results/checkpoints/GNN-epoch=78-val_loss=0.3645.ckpt \
-     -nc /work/scratch-pw3/sithom/49751608/swegnn_5sec/152_KATRINA_2005.nc \
+     -c /home/users/sithom/mSWE-GNN/best_config.yaml \
+     -ckpt /home/users/sithom/my_results/checkpoints/GNN-epoch=99-val_loss=0.3644.ckpt \
+     -nc /home/users/sithom/swegnn_5sec/152_KATRINA_2005.nc \
      -r -1
 
 echo "Job completed."

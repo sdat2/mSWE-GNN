@@ -94,16 +94,21 @@ def load_static_data(
         print(f"Failed to read file coordinates from {nc_file_path}: {e}")
         raise
 
+    # --- FIX: Refactored to read 'DEM' directly from dataset.static_data ---
+    # The AdforceLazyDataset now stores static features individually in this dict.
     try:
-        # DEM is found dynamically from the config
-        static_vars_list = list(features_cfg.static)
-        dem_idx = static_vars_list.index("DEM")
+        if "DEM" not in dataset.static_data:
+            raise KeyError(
+                f"'DEM' not found in dataset.static_data. Available keys: {list(dataset.static_data.keys())}"
+            )
+        
+        dem = dataset.static_data["DEM"].cpu().numpy()
 
-        dem = dataset.static_data["static_node_features"][:, dem_idx].cpu().numpy()
     except Exception as e:
         print(f"Failed to get DEM from dataset.static_data.")
-        print(f"Could not find 'DEM' in features_cfg.static: {static_vars_list}")
+        print(f"Config expected 'DEM' in features_cfg.static: {list(features_cfg.static)}")
         raise e
+    # --- END FIX ---
 
     return x_coords, y_coords, dem
 
@@ -147,20 +152,27 @@ def perform_rollout(
     y_delta_std = dataset.y_delta_std.to(device)
 
     predictions_list = []
-    # we should make a function that just calculates these somewhere.
+    
     # --- Get feature counts from config ---
-    num_static_features = len(features_cfg.static) + 1 # +1 for node type
+    num_static_features = len(features_cfg.static) + 1  # +1 for node type
     num_forcing_features = len(features_cfg.forcing)
-    num_state_features = len(features_cfg.state)  # excludes derived features?
+    num_state_features = len(features_cfg.state)
     num_derived_features = len(features_cfg.derived_state)
     p_t = dataset.previous_t
-    num_dynamic_features = num_forcing_features + num_state_features + num_derived_features
     num_total_state_features = num_state_features + num_derived_features
 
-    # Calculate state indices in the x tensor
-    # x tensor structure: [static, forcing (p_t * N_forcing), state]
-    state_start_idx = num_static_features + (num_forcing_features * p_t) + num_total_state_features
-    state_end_idx = state_start_idx + num_state_features
+    # --- FIX: Corrected state index calculation ---
+    # The 'x' tensor is structured: [static, forcing, state (base + derived)]
+    # We need to find the slice corresponding to the *base state* to replace it.
+    
+    # Start of the *full* state block (base + derived)
+    state_block_start_idx = num_static_features + (num_forcing_features * p_t)
+    
+    # The slice for the *base state* (which we predict and replace)
+    # is the first num_state_features of this block.
+    state_base_start_idx = state_block_start_idx
+    state_base_end_idx = state_block_start_idx + num_state_features
+    # --- END FIX ---
 
     # --- BRANCH 1: FULL, FREE-RUNNING ROLLOUT ---
     if rollout_horizon == -1:
@@ -168,11 +180,19 @@ def perform_rollout(
 
         # --- 1. Get the *initial state* from frame 0 ---
         current_batch = dataset.get(0).to(device)
-        # Find state vector dynamically
-        current_y_t_scaled = current_batch.x[
-            :, state_start_idx:state_end_idx
-        ].clone()  # State y(t)
-        current_y_t_raw = (current_y_t_scaled * y_std) + y_mean
+        
+        # Get the SCALED state from the initial batch
+        # We need to clone the *full* state (base + derived)
+        current_full_state_scaled = current_batch.x[
+            :, state_block_start_idx : state_block_start_idx + num_total_state_features
+        ].clone()
+        
+        # Get the RAW *base state* for applying deltas
+        # We find this from the *unscaled* data stored in the dataset
+        current_y_t_raw = (
+            current_batch.x[:, state_base_start_idx:state_base_end_idx].clone() * y_std[:num_state_features]
+        ) + y_mean[:num_state_features]
+        
 
         for idx in tqdm(range(len(dataset)), desc="Full Rollout"):
             # 1. Get the *ground truth batch* for this step's *forcing*
@@ -181,8 +201,8 @@ def perform_rollout(
             # 2. Create the *prediction input*
             pred_input_batch = gt_batch.clone()
 
-            # 3. ...but replace the state with our *predicted* state
-            pred_input_batch.x[:, state_start_idx:state_end_idx] = current_y_t_scaled
+            # 3. ...but replace the *full state* with our *predicted* state
+            pred_input_batch.x[:, state_block_start_idx : state_block_start_idx + num_total_state_features] = current_full_state_scaled
 
             # 4. Run the model to predict the *scaled delta*
             pred_scaled_delta = model.model(pred_input_batch)
@@ -190,64 +210,195 @@ def perform_rollout(
             # 5. Un-scale the predicted delta
             pred_raw_delta = (pred_scaled_delta * y_delta_std) + y_delta_mean
 
-            # 6. Apply the delta to get the next state
+            # 6. Apply the delta to get the next *base state*
             next_y_t_raw = current_y_t_raw + pred_raw_delta
 
-            # 7. Store the *unscaled predicted state*
+            # 7. Store the *unscaled predicted base state*
             predictions_list.append(next_y_t_raw.cpu().numpy())
 
             # 8. Prepare for the *next* loop iteration
+            
+            # --- 8a. Re-calculate derived features ---
+            # This is complex. For now, we assume the derived features
+            # can be computed from the base state, or we must pass them.
+            # Let's simplify and just re-scale the *full* state.
+            # This assumes derived features are simple (like SSH = WD + DEM)
+            # and that the y_mean/y_std can scale the full vector.
+            # This part is tricky and depends on `features_cfg.derived_state`.
+            
+            # TODO: This logic only works if derived features are 1-to-1 with
+            # the base state AND are scaled similarly.
+            # A more robust way would be to re-compute derived features manually here.
+            
+            # Let's use the simple way for now:
             current_y_t_raw = next_y_t_raw
-            current_y_t_scaled = (current_y_t_raw - y_mean) / y_std
+            
+            # We must construct the *full state* (base + derived)
+            # This animation script doesn't have the logic to re-calculate
+            # derived features. We will assume the y_mean/y_std
+            # is aligned and just scale the new base state.
+            # This is a POTENTIAL BUG if derived features are complex.
+            
+            # HACK/Assumption: We rebuild the *full* scaled state from the *new raw base state*
+            # This only works if derived features are not used or their
+            # scaling is correctly handled.
+            
+            # Let's re-read AdforceLazyDataset.get()
+            # It builds full_state_tensor, then scales it with self.y_mean
+            # self.y_mean must have shape (num_state + num_derived)
+            
+            # We need to re-compute the derived features.
+            # We only have the *base* state: next_y_t_raw
+            # We need the static data (DEM)
+            dem_gpu = dataset.static_data["DEM"].to(device)
+            
+            # Manually re-create derived state (assuming it's just SSH)
+            wd_raw = next_y_t_raw[:, features_cfg.state.index("WD")]
+            
+            # This is hard-coded for SSH, which is bad.
+            # This whole section needs to be re-thought or simplified.
+            
+            # --- Simplified Logic (from original file) ---
+            # This logic assumes the model's prediction (delta)
+            # can be applied, and the resulting raw state can be re-scaled
+            # to form the *next input*. This only works if the
+            # derived features are correctly handled.
+            
+            # The original logic was:
+            current_y_t_raw = next_y_t_raw
+            # This assumes `y_mean` and `y_std` can scale the *base state*
+            # to the *full state* portion of the input, which is wrong.
+            
+            # --- Let's try the *correct* (but complex) way ---
+            
+            # 1. We have `next_y_t_raw` (base state) [N, 3]
+            
+            # 2. Get static DEM for derived feature
+            dem_gpu = dataset.static_data["DEM"].to(device)
+            
+            # 3. Get component features from `next_y_t_raw`
+            y_t_dict_gpu = {
+                var: next_y_t_raw[:, i]
+                for i, var in enumerate(list(features_cfg.state))
+            }
+            
+            # 4. Build derived features list
+            derived_state_features_list = []
+            for derived_spec in features_cfg.derived_state:
+                arg_data = []
+                for arg_name in derived_spec["args"]:
+                    if arg_name in y_t_dict_gpu:
+                        arg_data.append(y_t_dict_gpu[arg_name])
+                    elif arg_name == "DEM": # HACK: hard-coding static features
+                         arg_data.append(dem_gpu)
+                    else:
+                        raise ValueError(f"Rollout: Unknown arg '{arg_name}'")
+
+                if derived_spec["op"] == "add":
+                    derived_feat = arg_data[0] + arg_data[1]
+                else: # Add other ops as needed
+                    raise ValueError(f"Rollout: Unknown op '{derived_spec['op']}'")
+                
+                derived_state_features_list.append(derived_feat.unsqueeze(1))
+            
+            # 5. Build *full raw state*
+            if derived_state_features_list:
+                full_state_tensor_raw = torch.cat(
+                    [next_y_t_raw] + derived_state_features_list, dim=1
+                )
+            else:
+                full_state_tensor_raw = next_y_t_raw
+
+            # 6. Scale the *full raw state* to be the next input
+            current_full_state_scaled = (full_state_tensor_raw - y_mean) / y_std
+            current_y_t_raw = next_y_t_raw # for the next loop's delta
+            
+            # --- End complex logic ---
+
 
     # --- BRANCH 2: FIXED-HORIZON ROLLOUT ---
     else:
         print(
             f"Starting {rollout_horizon}-step fixed-horizon rollout (predicting deltas)..."
         )
+        
+        # HACK: Need DEM on device for derived features in inner loop
+        dem_gpu = dataset.static_data["DEM"].to(device)
 
         # Loop for each frame we want to generate
         for idx in tqdm(range(len(dataset)), desc="Fixed-Horizon Rollout"):
 
             # 1. Determine the *start* of this mini-rollout
-            # For frame 0, start_idx=0. For frame 1, start_idx=0. ...
-            # For frame 3 (n=3), start_idx=1.
             start_idx = max(0, idx - rollout_horizon + 1)
 
             # 2. Determine how many steps to run
-            # For frame 0, steps=1. For frame 1, steps=2. ...
-            # For frame 2 (n=3), steps=3. For frame 3 (n=3), steps=3.
             steps_to_run = idx - start_idx + 1
 
             # 3. Get the *ground truth* state at the *start* of the mini-rollout
             gt_batch_start = dataset.get(start_idx).to(device)
-            current_y_t_scaled = gt_batch_start.x[
-                :, state_start_idx:state_end_idx
+            
+            current_full_state_scaled = gt_batch_start.x[
+                :, state_block_start_idx : state_block_start_idx + num_total_state_features
             ].clone()
-            current_y_t_raw = (current_y_t_scaled * y_std) + y_mean
+        
+            current_y_t_raw = (
+                gt_batch_start.x[:, state_base_start_idx:state_base_end_idx].clone() * y_std[:num_state_features]
+            ) + y_mean[:num_state_features]
+            
 
             # 4. Run the inner mini-rollout loop
             for k in range(steps_to_run):
                 # Get the *forcing data* for step 'k' of this rollout
                 forcing_batch_idx = start_idx + k
 
-                # This should not happen if steps_to_run is correct, but as a safeguard:
                 if forcing_batch_idx >= len(dataset):
                     break
 
                 gt_forcing_batch = dataset.get(forcing_batch_idx).to(device)
 
                 pred_input_batch = gt_forcing_batch.clone()
-                pred_input_batch.x[:, state_start_idx:state_end_idx] = (
-                    current_y_t_scaled
+                pred_input_batch.x[:, state_block_start_idx : state_block_start_idx + num_total_state_features] = (
+                    current_full_state_scaled
                 )
 
                 pred_scaled_delta = model.model(pred_input_batch)
                 pred_raw_delta = (pred_scaled_delta * y_delta_std) + y_delta_mean
 
                 # Update the state for the next inner-loop step
-                current_y_t_raw = current_y_t_raw + pred_raw_delta
-                current_y_t_scaled = (current_y_t_raw - y_mean) / y_std
+                next_y_t_raw = current_y_t_raw + pred_raw_delta
+                
+                # --- Re-compute derived features ---
+                y_t_dict_gpu = {
+                    var: next_y_t_raw[:, i]
+                    for i, var in enumerate(list(features_cfg.state))
+                }
+                derived_state_features_list = []
+                for derived_spec in features_cfg.derived_state:
+                    arg_data = []
+                    for arg_name in derived_spec["args"]:
+                        if arg_name in y_t_dict_gpu:
+                            arg_data.append(y_t_dict_gpu[arg_name])
+                        elif arg_name == "DEM":
+                             arg_data.append(dem_gpu)
+                        else:
+                            raise ValueError(f"Rollout: Unknown arg '{arg_name}'")
+
+                    if derived_spec["op"] == "add":
+                        derived_feat = arg_data[0] + arg_data[1]
+                    else:
+                        raise ValueError(f"Rollout: Unknown op '{derived_spec['op']}'")
+                    derived_state_features_list.append(derived_feat.unsqueeze(1))
+                
+                if derived_state_features_list:
+                    full_state_tensor_raw = torch.cat(
+                        [next_y_t_raw] + derived_state_features_list, dim=1
+                    )
+                else:
+                    full_state_tensor_raw = next_y_t_raw
+                
+                current_full_state_scaled = (full_state_tensor_raw - y_mean) / y_std
+                current_y_t_raw = next_y_t_raw
+                # --- End derived features ---
 
             # 5. After the inner loop, 'current_y_t_raw' holds the
             # final N-step-ahead prediction. Store it.
@@ -286,7 +437,9 @@ def get_frame_data(
     x_data = data.x.cpu()
 
     # --- 1. Extract and Un-scale Inputs (P, WX, WY) ---
-    num_static = len(features_cfg.static)
+    # --- FIX: This index was wrong. Must account for +1 node_type ---
+    num_static = len(features_cfg.static) + 1 # +1 for node_type
+    # --- END FIX ---
     num_forcing = len(features_cfg.forcing)
 
     forcing_start_idx = num_static
@@ -323,7 +476,6 @@ def get_frame_data(
 
     # --- 3. Calculate SSH ---
     # This assumes 'SSH' is a derived feature and not in the state vector
-    # If 'SSH' *is* in the state vector, this logic needs to adapt
     ssh_data = wd_data + dem
 
     return {
@@ -334,6 +486,34 @@ def get_frame_data(
         "VX": vx_data,
         "VY": vy_data,
     }
+
+
+# --- REUSE: New helper function to centralize index map creation ---
+def _create_plot_index_map(features_cfg: Dict[str, Any]) -> Dict[str, Dict[str, int]]:
+    """Creates a mapping from plot variable names to their index in the config lists."""
+    try:
+        forcing_vars_list = list(features_cfg.forcing)
+        state_vars_list = list(features_cfg.state)
+
+        plot_idx_map = {
+            "forcing": {
+                "P": forcing_vars_list.index("P"),
+                "WX": forcing_vars_list.index("WX"),
+                "WY": forcing_vars_list.index("WY"),
+            },
+            "state": {
+                "WD": state_vars_list.index("WD"),
+                "VX": state_vars_list.index("VX"),
+                "VY": state_vars_list.index("VY"),
+            },
+        }
+        return plot_idx_map
+    except ValueError as e:
+        print(f"Error: A required plotting variable is missing from config.features.")
+        print(f"Needed: P, WX, WY in features.forcing")
+        print(f"Needed: WD, VX, VY in features.state")
+        raise e
+# --- END REUSE ---
 
 
 def calculate_global_climits(
@@ -360,30 +540,17 @@ def calculate_global_climits(
     p2_vals = {key: [] for key in plot_order}
     p98_vals = {key: [] for key in plot_order}
 
-    # --- Create dynamic index maps ---
-    try:
-        forcing_vars_list = list(features_cfg.forcing)
-        state_vars_list = list(features_cfg.state)
-
-        idx_map_forcing = {
-            "P": forcing_vars_list.index("P"),
-            "WX": forcing_vars_list.index("WX"),
-            "WY": forcing_vars_list.index("WY"),
-        }
-        idx_map_state = {
-            "WD": state_vars_list.index("WD"),
-            "VX": state_vars_list.index("VX"),
-            "VY": state_vars_list.index("VY"),
-        }
-    except ValueError as e:
-        print(f"Error: A required plotting variable is missing from config.features.")
-        print(f"Needed: P, WX, WY in features.forcing")
-        print(f"Needed: WD, VX, VY in features.state")
-        raise e
-
+    # --- REUSE: Call the new helper function ---
+    plot_idx_map = _create_plot_index_map(features_cfg)
+    idx_map_forcing = plot_idx_map["forcing"]
+    idx_map_state = plot_idx_map["state"]
+    # --- END REUSE ---
+    
     # --- Get feature counts for slicing ---
     p_t = dataset.previous_t
-    num_static = len(features_cfg.static)
+    # --- FIX: This index was wrong. Must account for +1 node_type ---
+    num_static = len(features_cfg.static) + 1 # +1 for node_type
+    # --- END FIX ---
     num_forcing = len(features_cfg.forcing)
     forcing_end_idx = num_static + (num_forcing * p_t)
     last_forcing_step_start = forcing_end_idx - num_forcing
@@ -695,12 +862,10 @@ if __name__ == "__main__":
             nc_files=[args.netcdf_file],
             previous_t=previous_t,
             scaling_stats_path=scaling_stats_path,
-            features_cfg=features_cfg,  # <-- The new required argument
+            features_cfg=features_cfg,  # <-- The required argument
         )
     except Exception as e:
         print(f"Failed to initialize AdforceLazyDataset: {e}")
-        # This will now catch errors if your stats file doesn't match
-        # your config, thanks to the sanity check you added!
         exit()
 
     if len(dataset) == 0:
@@ -712,13 +877,13 @@ if __name__ == "__main__":
 
     # --- 6. CONFIGURE AND LOAD MODEL (Config-Driven) ---
     print(f"Loading model from {args.checkpoint_path}...")
-    # --- A. Dynamically calculate model 
 
     try:
         lightning_model = model_from_cfg_and_checkpoint(
             cfg,
             args.checkpoint_path,
         )
+        lightning_model.to(device) # --- Don't forget to move model to device! ---
     except Exception as e:
         print(f"Error: Failed to instantiate model structure: {e}")
         print(
@@ -735,7 +900,7 @@ if __name__ == "__main__":
         lightning_model,
         dataset,
         device,
-        features_cfg,  # <-- New argument
+        features_cfg,
         rollout_horizon=ROLLOUT_HORIZON,
     )
 
@@ -749,30 +914,9 @@ if __name__ == "__main__":
     print("Rendering predicted frames...")
     frame_files = []
 
-    # Create the dynamic index maps ONCE
-    # This relies on the lists in calculate_global_climits
-    # being the source of truth for plotting.
-    try:
-        forcing_vars_list = list(features_cfg.forcing)
-        state_vars_list = list(features_cfg.state)
-
-        plot_idx_map = {
-            "forcing": {
-                "P": forcing_vars_list.index("P"),
-                "WX": forcing_vars_list.index("WX"),
-                "WY": forcing_vars_list.index("WY"),
-            },
-            "state": {
-                "WD": state_vars_list.index("WD"),
-                "VX": state_vars_list.index("VX"),
-                "VY": state_vars_list.index("VY"),
-            },
-        }
-    except ValueError as e:
-        print(f"Error: A required plotting variable is missing from config.features.")
-        print(f"Needed: P, WX, WY in features.forcing")
-        print(f"Needed: WD, VX, VY in features.state")
-        exit()
+    # --- REUSE: Create the dynamic index maps ONCE ---
+    plot_idx_map = _create_plot_index_map(features_cfg)
+    # --- END REUSE ---
 
     for idx in tqdm(range(total_frames), desc="Rendering frames"):
         frame_path = os.path.join(frame_dir, f"frame_{idx:05d}.png")
@@ -790,8 +934,8 @@ if __name__ == "__main__":
             climits,
             frame_path,
             prediction_state=prediction_for_this_frame,
-            features_cfg=features_cfg,  # <-- New argument
-            plot_idx_map=plot_idx_map,  # <-- New argument
+            features_cfg=features_cfg,
+            plot_idx_map=plot_idx_map,
         )
 
     # --- 10. COMPILE & CLEANUP ---
