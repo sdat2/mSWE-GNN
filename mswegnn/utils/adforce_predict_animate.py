@@ -19,7 +19,14 @@ python -m mswegnn.utils.adforce_predict_animate \
     -c /path/to/your/config.yaml \
     -ckpt /path/to/your/model.ckpt \
     -nc /path/to/your/152_KATRINA_2005.nc \
-    -r 3
+    -r -1
+
+python -m mswegnn.utils.adforce_predict_animate \
+     -c /work/scratch-pw3/sithom/49751608/my_results/checkpoints/config.yaml \
+     -ckpt /work/scratch-pw3/sithom/49751608/my_results/checkpoints/GNN-epoch=46-val_loss=0.3692.ckpt \
+     -nc /work/scratch-pw3/sithom/49751608/swegnn_5sec/152_KATRINA_2005.nc \
+     -r -1
+
 """
 
 import os
@@ -143,16 +150,19 @@ def perform_rollout(
     y_delta_std = dataset.y_delta_std.to(device)
 
     predictions_list = []
-
+    # we should make a function that just calculates these somewhere.
     # --- Get feature counts from config ---
-    num_static_features = len(features_cfg.static)
+    num_static_features = len(features_cfg.static) + 1 # +1 for node type
     num_forcing_features = len(features_cfg.forcing)
-    num_state_features = len(features_cfg.state)
+    num_state_features = len(features_cfg.state)  # excludes derived features?
+    num_derived_features = len(features_cfg.derived_state)
     p_t = dataset.previous_t
+    num_dynamic_features = num_forcing_features + num_state_features + num_derived_features
+    num_total_state_features = num_state_features + num_derived_features
 
     # Calculate state indices in the x tensor
     # x tensor structure: [static, forcing (p_t * N_forcing), state]
-    state_start_idx = num_static_features + (num_forcing_features * p_t)
+    state_start_idx = num_static_features + (num_forcing_features * p_t) + num_total_state_features
     state_end_idx = state_start_idx + num_state_features
 
     # --- BRANCH 1: FULL, FREE-RUNNING ROLLOUT ---

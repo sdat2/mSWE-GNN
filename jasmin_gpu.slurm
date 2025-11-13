@@ -1,11 +1,12 @@
 #!/bin/bash
 
 # --- SLURM Directives (GPU Job for ORCHID) ---
-#SBATCH --job-name=GAT-128hid-SSH_derived
+#SBATCH --job-name=SWEGNN-K9
 #SBATCH --account=orchid             # Use ORCHID account
 #SBATCH --partition=orchid           # Use ORCHID partition
 #SBATCH --qos=orchid                 # Use ORCHID QoS
 #SBATCH --gres=gpu:1                 # Request 1 GPU (A100)
+#SBATCH --exclude=gpuhost007         # Exclude problematic host (it seems to have some cuda issue)
 #SBATCH -o log/%j.out                # Standard output log
 #SBATCH -e log/%j.err                # Standard error log
 #SBATCH --time=23:30:00              # Set to 23 hours
@@ -61,15 +62,15 @@ python -m adforce_main \
     machine.devices=1 \
     machine.num_workers=8 \
     model_params.model_type=GNN \
-    models.type_gnn=GAT \
+    models.type_gnn=SWEGNN \
     models.hid_features=128 \
-    models.K=6 \
+    models.K=9 \
     models.normalize=True \
     models.with_gradient=True \
     models.edge_mlp=True \
     trainer_options.batch_size=4 \
     wandb.project=surgeflexdelta \
-    wandb.name=GAT-128hid-SSH_derived
+    wandb.name=${SLURM_JOB_NAME}
 
 echo "Script finished."
 
