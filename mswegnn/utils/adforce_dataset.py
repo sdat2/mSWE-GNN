@@ -771,6 +771,7 @@ class AdforceLazyDataset(Dataset):
             # 2. Open file, read dynamic tensors (to CPU), close file
             with xr.open_dataset(nc_path, cache=False) as ds:
                 # Forcing: [N, V_forcing * p_t]
+                # features_cfg has to be DictConfig
                 dyn_forcing_features_t = _get_forcing_slice(
                     ds, t_start, self.previous_t, self.features_cfg.forcing
                 )

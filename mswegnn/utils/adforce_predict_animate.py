@@ -44,17 +44,12 @@ from tqdm import tqdm
 import imageio.v3 as iio
 
 # --- IMPORTS ---
+from sithom.plot import plot_defaults, label_subplots
 import lightning as L
 from mswegnn.training.adforce_train import AdforceLightningModule
-from mswegnn.models.adforce_models import (
-    GNNModelAdforce,
-    PointwiseMLPModel,
-    MonolithicMLPModel,
-)
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
-from mswegnn.utils.load import read_config
-from mswegnn.utils.miscellaneous import get_model
-from sithom.plot import plot_defaults, label_subplots
+from mswegnn.utils.adforce_misc import model_from_cfg_and_checkpoint
+
 
 # --- END IMPORTS ---
 

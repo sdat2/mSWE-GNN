@@ -6,7 +6,7 @@ import torch.nn as nn
 from torch_geometric.data import Data, Batch
 
 # Import from our new refactored files
-from .adforce_base import AdforceBaseModel
+# from .adforce_base import AdforceBaseModel
 from .adforce_helpers import make_mlp
 from .adforce_processors import GNN_Adforce, SWEGNN_Adforce
 
