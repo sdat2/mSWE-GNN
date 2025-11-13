@@ -29,19 +29,24 @@ export PATH=/usr/local/cuda-12.8/bin${PATH:+:${PATH}}
 echo "Checking for GPU..."
 nvidia-smi # Print GPU status to the log
 
-# --- 2. Data Setup ---
-# Define permanent paths
+# --- 2. Data Setup (NEW) ---
+# Create a unique output directory for this job's cache, frames, and video
+# This now points to your home directory
+OUTPUT_DIR="/home/users/sithom/animation_runs/$SLURM_JOB_ID"
+echo "Creating output directory: $OUTPUT_DIR"
+mkdir -p $OUTPUT_DIR
 
-# --- 3. Run Executable ---
+
+# --- 3. Run Executable (UPDATED) ---
 echo "Animating..."
-# ---
-# --- THIS COMMAND IS UPDATED FOR THE NEW HYDRA CONFIG ---
-# ---
+
+# Use the config/checkpoint for K=3
+# Added the new required -o argument
 python -m mswegnn.utils.adforce_predict_animate \
      -c /home/users/sithom/mSWE-GNN/best_config.yaml \
      -ckpt /home/users/sithom/my_results/checkpoints/GNN-epoch=99-val_loss=0.3644.ckpt \
      -nc /home/users/sithom/swegnn_5sec/152_KATRINA_2005.nc \
-     -r -1
+     -r -1 \
+     -o $OUTPUT_DIR
 
 echo "Job completed."
-

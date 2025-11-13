@@ -15,17 +15,17 @@ This version supports two rollout modes via ROLLOUT_HORIZON:
    'k'-step-long prediction.
 
 Example Usage:
+# Create a unique output directory
+export RUN_ID=my_katrina_run_01
+export RUN_DIR=/work/scratch-pw3/sithom/animation_runs/$RUN_ID
+mkdir -p $RUN_DIR
+
 python -m mswegnn.utils.adforce_predict_animate \
     -c /path/to/your/config.yaml \
     -ckpt /path/to/your/model.ckpt \
     -nc /path/to/your/152_KATRINA_2005.nc \
-    -r -1
-
-python -m mswegnn.utils.adforce_predict_animate \
-     -c /work/scratch-pw3/sithom/49751608/my_results/checkpoints/config.yaml \
-     -ckpt /work/scratch-pw3/sithom/49751608/my_results/checkpoints/GNN-epoch=78-val_loss=0.3645.ckpt \
-     -nc /work/scratch-pw3/sithom/49751608/swegnn_5sec/152_KATRINA_2005.nc \
-     -r -1
+    -r -1 \
+    -o $RUN_DIR
 
 """
 
@@ -79,8 +79,7 @@ def load_static_data(
     Args:
         nc_file_path (str): Path to the NetCDF file.
         dataset (AdforceLazyDataset): The initialized dataset instance.
-        features_cfg (Dict[str, Any]): The 'features' block from the config,
-                                       used to find 'DEM'.
+        features_cfg (Dict[str, Any]): The 'features' block from the config.
 
     Returns:
         Tuple[np.ndarray, np.ndarray, np.ndarray]: x_coords, y_coords, dem
@@ -150,6 +149,10 @@ def perform_rollout(
     y_std = dataset.y_std.to(device)
     y_delta_mean = dataset.y_delta_mean.to(device)
     y_delta_std = dataset.y_delta_std.to(device)
+    
+    # --- HACK: Need DEM on device for derived features ---
+    # A more robust solution would pass all static features needed.
+    dem_gpu = dataset.static_data["DEM"].to(device)
 
     predictions_list = []
     
@@ -163,10 +166,10 @@ def perform_rollout(
 
     # --- FIX: Corrected state index calculation ---
     # The 'x' tensor is structured: [static, forcing, state (base + derived)]
-    # We need to find the slice corresponding to the *base state* to replace it.
     
     # Start of the *full* state block (base + derived)
     state_block_start_idx = num_static_features + (num_forcing_features * p_t)
+    state_block_end_idx = state_block_start_idx + num_total_state_features
     
     # The slice for the *base state* (which we predict and replace)
     # is the first num_state_features of this block.
@@ -181,14 +184,13 @@ def perform_rollout(
         # --- 1. Get the *initial state* from frame 0 ---
         current_batch = dataset.get(0).to(device)
         
-        # Get the SCALED state from the initial batch
-        # We need to clone the *full* state (base + derived)
+        # Get the SCALED *full* state (base + derived) from the initial batch
         current_full_state_scaled = current_batch.x[
-            :, state_block_start_idx : state_block_start_idx + num_total_state_features
+            :, state_block_start_idx : state_block_end_idx
         ].clone()
         
         # Get the RAW *base state* for applying deltas
-        # We find this from the *unscaled* data stored in the dataset
+        # We un-scale just the base state part of the input vector
         current_y_t_raw = (
             current_batch.x[:, state_base_start_idx:state_base_end_idx].clone() * y_std[:num_state_features]
         ) + y_mean[:num_state_features]
@@ -202,7 +204,7 @@ def perform_rollout(
             pred_input_batch = gt_batch.clone()
 
             # 3. ...but replace the *full state* with our *predicted* state
-            pred_input_batch.x[:, state_block_start_idx : state_block_start_idx + num_total_state_features] = current_full_state_scaled
+            pred_input_batch.x[:, state_block_start_idx : state_block_end_idx] = current_full_state_scaled
 
             # 4. Run the model to predict the *scaled delta*
             pred_scaled_delta = model.model(pred_input_batch)
@@ -219,70 +221,16 @@ def perform_rollout(
             # 8. Prepare for the *next* loop iteration
             
             # --- 8a. Re-calculate derived features ---
-            # This is complex. For now, we assume the derived features
-            # can be computed from the base state, or we must pass them.
-            # Let's simplify and just re-scale the *full* state.
-            # This assumes derived features are simple (like SSH = WD + DEM)
-            # and that the y_mean/y_std can scale the full vector.
-            # This part is tricky and depends on `features_cfg.derived_state`.
-            
-            # TODO: This logic only works if derived features are 1-to-1 with
-            # the base state AND are scaled similarly.
-            # A more robust way would be to re-compute derived features manually here.
-            
-            # Let's use the simple way for now:
-            current_y_t_raw = next_y_t_raw
-            
-            # We must construct the *full state* (base + derived)
-            # This animation script doesn't have the logic to re-calculate
-            # derived features. We will assume the y_mean/y_std
-            # is aligned and just scale the new base state.
-            # This is a POTENTIAL BUG if derived features are complex.
-            
-            # HACK/Assumption: We rebuild the *full* scaled state from the *new raw base state*
-            # This only works if derived features are not used or their
-            # scaling is correctly handled.
-            
-            # Let's re-read AdforceLazyDataset.get()
-            # It builds full_state_tensor, then scales it with self.y_mean
-            # self.y_mean must have shape (num_state + num_derived)
-            
-            # We need to re-compute the derived features.
-            # We only have the *base* state: next_y_t_raw
-            # We need the static data (DEM)
-            dem_gpu = dataset.static_data["DEM"].to(device)
-            
-            # Manually re-create derived state (assuming it's just SSH)
-            wd_raw = next_y_t_raw[:, features_cfg.state.index("WD")]
-            
-            # This is hard-coded for SSH, which is bad.
-            # This whole section needs to be re-thought or simplified.
-            
-            # --- Simplified Logic (from original file) ---
-            # This logic assumes the model's prediction (delta)
-            # can be applied, and the resulting raw state can be re-scaled
-            # to form the *next input*. This only works if the
-            # derived features are correctly handled.
-            
-            # The original logic was:
-            current_y_t_raw = next_y_t_raw
-            # This assumes `y_mean` and `y_std` can scale the *base state*
-            # to the *full state* portion of the input, which is wrong.
-            
-            # --- Let's try the *correct* (but complex) way ---
             
             # 1. We have `next_y_t_raw` (base state) [N, 3]
             
-            # 2. Get static DEM for derived feature
-            dem_gpu = dataset.static_data["DEM"].to(device)
-            
-            # 3. Get component features from `next_y_t_raw`
+            # 2. Get component features from `next_y_t_raw`
             y_t_dict_gpu = {
                 var: next_y_t_raw[:, i]
                 for i, var in enumerate(list(features_cfg.state))
             }
             
-            # 4. Build derived features list
+            # 3. Build derived features list
             derived_state_features_list = []
             for derived_spec in features_cfg.derived_state:
                 arg_data = []
@@ -292,16 +240,20 @@ def perform_rollout(
                     elif arg_name == "DEM": # HACK: hard-coding static features
                          arg_data.append(dem_gpu)
                     else:
-                        raise ValueError(f"Rollout: Unknown arg '{arg_name}'")
+                        raise ValueError(f"Rollout: Unknown arg '{arg_name}' for derived feature '{derived_spec['name']}'")
 
                 if derived_spec["op"] == "add":
                     derived_feat = arg_data[0] + arg_data[1]
-                else: # Add other ops as needed
+                elif derived_spec["op"] == "subtract":
+                    derived_feat = arg_data[0] - arg_data[1]
+                elif derived_spec["op"] == "magnitude":
+                    derived_feat = torch.sqrt(arg_data[0] ** 2 + arg_data[1] ** 2)
+                else: 
                     raise ValueError(f"Rollout: Unknown op '{derived_spec['op']}'")
                 
                 derived_state_features_list.append(derived_feat.unsqueeze(1))
             
-            # 5. Build *full raw state*
+            # 4. Build *full raw state*
             if derived_state_features_list:
                 full_state_tensor_raw = torch.cat(
                     [next_y_t_raw] + derived_state_features_list, dim=1
@@ -309,11 +261,12 @@ def perform_rollout(
             else:
                 full_state_tensor_raw = next_y_t_raw
 
-            # 6. Scale the *full raw state* to be the next input
+            # 5. Scale the *full raw state* to be the next input
+            # Note: y_mean/y_std must have shape (num_state + num_derived)
             current_full_state_scaled = (full_state_tensor_raw - y_mean) / y_std
             current_y_t_raw = next_y_t_raw # for the next loop's delta
             
-            # --- End complex logic ---
+            # --- End derived feature logic ---
 
 
     # --- BRANCH 2: FIXED-HORIZON ROLLOUT ---
@@ -322,9 +275,6 @@ def perform_rollout(
             f"Starting {rollout_horizon}-step fixed-horizon rollout (predicting deltas)..."
         )
         
-        # HACK: Need DEM on device for derived features in inner loop
-        dem_gpu = dataset.static_data["DEM"].to(device)
-
         # Loop for each frame we want to generate
         for idx in tqdm(range(len(dataset)), desc="Fixed-Horizon Rollout"):
 
@@ -338,7 +288,7 @@ def perform_rollout(
             gt_batch_start = dataset.get(start_idx).to(device)
             
             current_full_state_scaled = gt_batch_start.x[
-                :, state_block_start_idx : state_block_start_idx + num_total_state_features
+                :, state_block_start_idx : state_block_end_idx
             ].clone()
         
             current_y_t_raw = (
@@ -357,7 +307,7 @@ def perform_rollout(
                 gt_forcing_batch = dataset.get(forcing_batch_idx).to(device)
 
                 pred_input_batch = gt_forcing_batch.clone()
-                pred_input_batch.x[:, state_block_start_idx : state_block_start_idx + num_total_state_features] = (
+                pred_input_batch.x[:, state_block_start_idx : state_block_end_idx] = (
                     current_full_state_scaled
                 )
 
@@ -381,11 +331,15 @@ def perform_rollout(
                         elif arg_name == "DEM":
                              arg_data.append(dem_gpu)
                         else:
-                            raise ValueError(f"Rollout: Unknown arg '{arg_name}'")
+                            raise ValueError(f"Rollout: Unknown arg '{arg_name}' for derived feature '{derived_spec['name']}'")
 
                     if derived_spec["op"] == "add":
                         derived_feat = arg_data[0] + arg_data[1]
-                    else:
+                    elif derived_spec["op"] == "subtract":
+                        derived_feat = arg_data[0] - arg_data[1]
+                    elif derived_spec["op"] == "magnitude":
+                        derived_feat = torch.sqrt(arg_data[0] ** 2 + arg_data[1] ** 2)
+                    else: 
                         raise ValueError(f"Rollout: Unknown op '{derived_spec['op']}'")
                     derived_state_features_list.append(derived_feat.unsqueeze(1))
                 
@@ -437,9 +391,7 @@ def get_frame_data(
     x_data = data.x.cpu()
 
     # --- 1. Extract and Un-scale Inputs (P, WX, WY) ---
-    # --- FIX: This index was wrong. Must account for +1 node_type ---
     num_static = len(features_cfg.static) + 1 # +1 for node_type
-    # --- END FIX ---
     num_forcing = len(features_cfg.forcing)
 
     forcing_start_idx = num_static
@@ -548,9 +500,7 @@ def calculate_global_climits(
     
     # --- Get feature counts for slicing ---
     p_t = dataset.previous_t
-    # --- FIX: This index was wrong. Must account for +1 node_type ---
     num_static = len(features_cfg.static) + 1 # +1 for node_type
-    # --- END FIX ---
     num_forcing = len(features_cfg.forcing)
     forcing_end_idx = num_static + (num_forcing * p_t)
     last_forcing_step_start = forcing_end_idx - num_forcing
@@ -558,7 +508,7 @@ def calculate_global_climits(
     for idx in tqdm(range(len(dataset)), desc="Scanning data"):
         data_gt = dataset.get(idx)
 
-        # data.y_unscaled is y_tplus1_raw (the full state)
+        # data.y_unscaled is y_tplus1_raw (the base state)
         outputs_gt = data_gt.y_unscaled.cpu().numpy()
 
         wd_gt = outputs_gt[:, idx_map_state["WD"]]
@@ -785,19 +735,15 @@ if __name__ == "__main__":
         required=True,
         help="Path to the single .nc file to animate (e.g., '152_KATRINA_2005.nc').",
     )
+    # --- FIX: Changed -o to be required and serve as the base path ---
     parser.add_argument(
         "-o",
         "--output_dir",
         type=str,
-        default="./",
-        help="Directory to save output animations.",
+        required=True,
+        help="UNIQUE base directory to save all outputs (cache, frames, video).",
     )
-    parser.add_argument(
-        "--predict_root",
-        type=str,
-        default="",
-        help="Override the root directory for prediction data.",
-    )
+    # --predict_root is now derived from -o
     parser.add_argument(
         "-r",
         "--rollout_horizon",
@@ -815,12 +761,20 @@ if __name__ == "__main__":
     cfg = OmegaConf.load(args.config_path)
     features_cfg = cfg.features
 
-    # --- 3. CONFIGURE OUTPUTS ---
+    # --- 3. CONFIGURE OUTPUTS (Now based on -o) ---
     ROLLOUT_HORIZON = args.rollout_horizon
     rollout_type_str = "full" if ROLLOUT_HORIZON == -1 else f"{ROLLOUT_HORIZON}step"
-    output_gif = f"adforce_6panel_PREDICTION_{rollout_type_str}.gif"
-    output_video = f"adforce_6panel_PREDICTION_{rollout_type_str}.mp4"
     anim_fps = 10
+    
+    # --- NEW: Define all paths based on the required output_dir ---
+    base_output_dir = args.output_dir
+    output_gif = os.path.join(base_output_dir, f"adforce_6panel_PREDICTION_{rollout_type_str}.gif")
+    output_video = os.path.join(base_output_dir, f"adforce_6panel_PREDICTION_{rollout_type_str}.mp4")
+    
+    # Cache and frames are now subdirectories
+    predict_root = os.path.join(base_output_dir, "dataset_cache")
+    frame_dir = os.path.join(base_output_dir, "animation_frames")
+    # --- END NEW PATHS ---
 
     # --- 4. SETUP DEVICE ---
     plot_defaults()
@@ -843,26 +797,30 @@ if __name__ == "__main__":
         )
         exit()
 
-    # --- 5. INITIALIZE DATASET (Config-Driven) ---
+    # --- 5. INITIALIZE DATASET (Using new paths) ---
     print(f"Initializing dataset for {args.netcdf_file}...")
+    print(f"Dataset cache will be in: {predict_root}")
+    print(f"Animation frames will be in: {frame_dir}")
 
-    predict_root = os.path.join(
-        args.predict_root, "predict_katrina"
-    )
     previous_t = cfg.model_params.previous_t
     scaling_stats_path = cfg.data_params.scaling_stats_path
 
-    frame_dir = f"./animation_frames_temp_PREDICT_{rollout_type_str}"
+    # --- NEW: Clean up *inside* the unique directory ---
+    # This deletes old cache/frames if you re-run with the *same* -o path
     shutil.rmtree(frame_dir, ignore_errors=True)
+    shutil.rmtree(predict_root, ignore_errors=True) 
+    
+    # Create the base and frame directories
     os.makedirs(frame_dir, exist_ok=True)
+    # AdforceLazyDataset will create the predict_root
 
     try:
         dataset = AdforceLazyDataset(
-            root=predict_root,
+            root=predict_root,  # <-- Use the new cache path
             nc_files=[args.netcdf_file],
             previous_t=previous_t,
             scaling_stats_path=scaling_stats_path,
-            features_cfg=features_cfg,  # <-- The required argument
+            features_cfg=features_cfg,
         )
     except Exception as e:
         print(f"Failed to initialize AdforceLazyDataset: {e}")
