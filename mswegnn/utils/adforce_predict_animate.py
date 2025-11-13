@@ -23,7 +23,7 @@ python -m mswegnn.utils.adforce_predict_animate \
 
 python -m mswegnn.utils.adforce_predict_animate \
      -c /work/scratch-pw3/sithom/49751608/my_results/checkpoints/config.yaml \
-     -ckpt /work/scratch-pw3/sithom/49751608/my_results/checkpoints/GNN-epoch=46-val_loss=0.3692.ckpt \
+     -ckpt /work/scratch-pw3/sithom/49751608/my_results/checkpoints/GNN-epoch=78-val_loss=0.3645.ckpt \
      -nc /work/scratch-pw3/sithom/49751608/swegnn_5sec/152_KATRINA_2005.nc \
      -r -1
 
@@ -42,6 +42,8 @@ import torch
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 import imageio.v3 as iio
+from omegaconf import OmegaConf
+
 
 # --- IMPORTS ---
 from sithom.plot import plot_defaults, label_subplots
@@ -630,8 +632,7 @@ if __name__ == "__main__":
     if not os.path.exists(args.config_path):
         print(f"Error: Config file not found at {args.config_path}")
         exit()
-
-    cfg = read_config(args.config_path)
+    cfg = OmegaConf.load(args.config_path)
     features_cfg = cfg.features
 
     # --- 3. CONFIGURE OUTPUTS ---
@@ -699,73 +700,18 @@ if __name__ == "__main__":
 
     # --- 6. CONFIGURE AND LOAD MODEL (Config-Driven) ---
     print(f"Loading model from {args.checkpoint_path}...")
+    # --- A. Dynamically calculate model 
 
-    # --- A. Dynamically calculate model dimensions from config ---
-    num_static_node_features = len(features_cfg.static)
-    num_dynamic_node_features = len(features_cfg.forcing)
-    # The state can include derived features, so we count them all
-    num_current_state_features = len(features_cfg.state)
-    if features_cfg.get("derived_state"):
-        num_current_state_features += len(features_cfg.derived_state)
-
-    num_node_features = (
-        num_static_node_features
-        + (num_dynamic_node_features * previous_t)
-        + num_current_state_features
-    )
-    num_edge_features = len(features_cfg.edge)
-
-    # Model predicts the delta for the state (which includes derived)
-    num_output_features = num_current_state_features
-
-    print(f"Model dimensions calculated from config:")
-    print(f"  num_node_features: {num_node_features}")
-    print(f"  num_edge_features: {num_edge_features}")
-    print(f"  num_output_features: {num_output_features}")
-
-    # --- B. Get model parameters from config ---
-    model_parameters = dict(cfg.models)  # Make a copy
-    model_type = model_parameters.pop("model_type")
-
-    # Handle GNNModelAdforce-specific params that were in config
-    # but not in 'models' block
-    model_parameters["num_static_features"] = num_static_node_features
-
-    # --- C. Instantiate the underlying model ---
     try:
-        model_to_load = get_model(model_type)(
-            num_node_features=num_node_features,
-            num_edge_features=num_edge_features,
-            previous_t=previous_t,
-            num_output_features=num_output_features,
-            **model_parameters,
+        lightning_model = model_from_cfg_and_checkpoint(
+            cfg,
+            args.checkpoint_path,
         )
-        print(f"Instantiated {model_type} model structure.")
-
     except Exception as e:
         print(f"Error: Failed to instantiate model structure: {e}")
         print(
             "\nCheck if your config.models block is compatible with the model's __init__."
         )
-        print(f"Params passed: {model_parameters}")
-        exit()
-
-    # --- D. Load the AdforceLightningModule from checkpoint ---
-    try:
-        lightning_model = AdforceLightningModule.load_from_checkpoint(
-            args.checkpoint_path,
-            map_location=device,
-            model=model_to_load,
-            lr_info=cfg.lr_info,  # <-- From config
-            trainer_options=cfg.trainer_options,  # <-- From config
-        )
-        lightning_model.to(device)
-        lightning_model.eval()
-        print("Model loaded successfully.")
-    except Exception as e:
-        print(f"Failed to load model checkpoint: {e}")
-        print("\nThis often happens if the model architecture in your config")
-        print("does not match the architecture *saved* in the checkpoint.")
         exit()
 
     # --- 7. LOAD STATIC DATA & CLIMITS ---
