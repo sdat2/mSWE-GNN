@@ -482,7 +482,7 @@ if __name__ == "__main__":
             output_gif_path = os.path.splitext(args.output_video)[0] + ".gif"
 
         print(args)
-        broken_unit_str = "m s{-1}$"
+        broken_unit_str = "m s{-1}$" # this is not very general. We could think of a way to improve it. Perhaps we could insist on "m/s" etc as input and then convert to "m s$^{-1}$" or something at this stage.
         correct_unit_str = "m s$^{-1}$"
         fixed_units = [u.replace(broken_unit_str, correct_unit_str) for u in args.units]
         args.units = fixed_units
