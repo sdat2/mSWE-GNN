@@ -1,8 +1,13 @@
 """Miscellaneous utility functions for Adforce models."""
+
 from typing import Optional, Dict
 from omegaconf import DictConfig, OmegaConf, ListConfig
 import torch.nn as nn
-from mswegnn.models.adforce_models import   MonolithicMLPModel, GNNModelAdforce, PointwiseMLPModel
+from mswegnn.models.adforce_models import (
+    MonolithicMLPModel,
+    GNNModelAdforce,
+    PointwiseMLPModel,
+)
 from mswegnn.training.adforce_train import AdforceLightningModule
 
 
@@ -31,10 +36,12 @@ def feature_count(cfg: DictConfig) -> Dict[str, int]:
         {'num_node_features': 12, 'num_edge_features': 2, 'num_output_features': 3, 'num_static_node_features': 5}
         >>> ex.model_params["previous_t"] = 2
         >>> feature_count(ex)
-        {'num_node_features': 15, 'num_edge_features': 2, 'num_output_features': 3, 'num_static_node_features': 5} 
+        {'num_node_features': 15, 'num_edge_features': 2, 'num_output_features': 3, 'num_static_node_features': 5}
     """
     p_t = cfg.model_params.previous_t
-    num_static_node_features = len(cfg.features.static) + 1 # +1 for node_type feature (not scaled)
+    num_static_node_features = (
+        len(cfg.features.static) + 1
+    )  # +1 for node_type feature (not scaled)
     num_forcing_features = len(cfg.features.forcing)
     # The state can include derived features, so we count them all
     num_current_state_features = len(cfg.features.state)
@@ -51,19 +58,23 @@ def feature_count(cfg: DictConfig) -> Dict[str, int]:
     # Model predicts the delta for the state (which does not include the derived features)
     num_output_features = len(cfg.features.targets)
 
-    return {"num_node_features": num_node_features,
-            "num_edge_features": num_edge_features,
-            "num_output_features": num_output_features,
-            "num_static_node_features": num_static_node_features}
+    return {
+        "num_node_features": num_node_features,
+        "num_edge_features": num_edge_features,
+        "num_output_features": num_output_features,
+        "num_static_node_features": num_static_node_features,
+    }
 
 
-def _create_model(model_cfg_dict: dict, 
-                 model_type: str,
-                 num_node_features=None,
-                 num_edge_features=None,
-                 num_output_features=None,
-                 num_static_node_features=None,
-                 num_nodes_fixed=None) -> nn.Module:
+def _create_model(
+    model_cfg_dict: dict,
+    model_type: str,
+    num_node_features=None,
+    num_edge_features=None,
+    num_output_features=None,
+    num_static_node_features=None,
+    num_nodes_fixed=None,
+) -> nn.Module:
     """Create a pytorch model.
 
     Args:
@@ -99,9 +110,7 @@ def _create_model(model_cfg_dict: dict,
         )
     elif model_type == "MonolithicMLP":
         if num_nodes_fixed is None:
-            raise ValueError(
-                "num_nodes_fixed must be provided for MonolithicMLPModel."
-            )
+            raise ValueError("num_nodes_fixed must be provided for MonolithicMLPModel.")
         print(f"Found fixed n_nodes from dataset: {num_nodes_fixed}")
         model = MonolithicMLPModel(
             n_nodes=num_nodes_fixed,
@@ -115,6 +124,7 @@ def _create_model(model_cfg_dict: dict,
         )
     return model
 
+
 # get empty model from cfg
 # would not work with monolithic MLP as no node_num
 def model_from_cfg(cfg: DictConfig) -> nn.Module:
@@ -126,30 +136,33 @@ def model_from_cfg(cfg: DictConfig) -> nn.Module:
 def lightning_model_from_cfg(cfg: DictConfig) -> AdforceLightningModule:
     model = model_from_cfg(cfg)
     lightning_model = AdforceLightningModule(
-            model=model,
-            lr_info=cfg.lr_info,  # <-- From config
-            trainer_options=cfg.trainer_options,  # <-- From config
-        )
+        model=model,
+        lr_info=cfg.lr_info,  # <-- From config
+        trainer_options=cfg.trainer_options,  # <-- From config
+    )
     return lightning_model
 
-def model_from_cfg_and_checkpoint(cfg: DictConfig, checkpoint_path: str) -> AdforceLightningModule:
+
+def model_from_cfg_and_checkpoint(
+    cfg: DictConfig, checkpoint_path: str
+) -> AdforceLightningModule:
     """Load a model from config and checkpoint.
 
     Args:
         cfg (DictConfig): Configuration object.
         checkpoint_path (str): Path to the checkpoint file.
-    
+
     Returns:
         AdforceLightningModule: Loaded model.
     """
     model = model_from_cfg(cfg)
     lightning_model = AdforceLightningModule.load_from_checkpoint(
-            checkpoint_path,
-            # map_location=device,
-            model=model,
-            lr_info=cfg.lr_info,  # <-- From config
-            trainer_options=cfg.trainer_options,  # <-- From config
-        )
+        checkpoint_path,
+        # map_location=device,
+        model=model,
+        lr_info=cfg.lr_info,  # <-- From config
+        trainer_options=cfg.trainer_options,  # <-- From config
+    )
     #  lightning_model.to(device)
     lightning_model.eval()
     return lightning_model
@@ -158,8 +171,9 @@ def model_from_cfg_and_checkpoint(cfg: DictConfig, checkpoint_path: str) -> Adfo
 if __name__ == "__main__":
     # python -m mswegnn.utils.adforce_misc
     import os
+
     path = "/work/scratch-pw3/sithom/49751608/my_results/checkpoints"
-    cfg_path =  os.path.join(path, "config.yaml")
+    cfg_path = os.path.join(path, "config.yaml")
     checkpoint_path = os.path.join(path, "GNN-epoch=78-val_loss=0.3645.ckpt")
     cfg = OmegaConf.load(cfg_path)
     model = model_from_cfg_and_checkpoint(cfg, checkpoint_path)
@@ -167,4 +181,3 @@ if __name__ == "__main__":
     # cfg_path = "/Users/simon/mSWE-GNN/test/checkpoints/config.yaml"
     # lmod = lightning_model_from_cfg(OmegaConf.load(cfg_path))
     # print(lmod)
-

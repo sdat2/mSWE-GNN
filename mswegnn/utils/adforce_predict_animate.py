@@ -100,12 +100,14 @@ def load_static_data(
             raise KeyError(
                 f"'DEM' not found in dataset.static_data. Available keys: {list(dataset.static_data.keys())}"
             )
-        
+
         dem = dataset.static_data["DEM"].cpu().numpy()
 
     except Exception as e:
         print(f"Failed to get DEM from dataset.static_data.")
-        print(f"Config expected 'DEM' in features_cfg.static: {list(features_cfg.static)}")
+        print(
+            f"Config expected 'DEM' in features_cfg.static: {list(features_cfg.static)}"
+        )
         raise e
     # --- END FIX ---
 
@@ -149,13 +151,13 @@ def perform_rollout(
     y_std = dataset.y_std.to(device)
     y_delta_mean = dataset.y_delta_mean.to(device)
     y_delta_std = dataset.y_delta_std.to(device)
-    
+
     # --- HACK: Need DEM on device for derived features ---
     # A more robust solution would pass all static features needed.
     dem_gpu = dataset.static_data["DEM"].to(device)
 
     predictions_list = []
-    
+
     # --- Get feature counts from config ---
     num_static_features = len(features_cfg.static) + 1  # +1 for node type
     num_forcing_features = len(features_cfg.forcing)
@@ -166,11 +168,11 @@ def perform_rollout(
 
     # --- FIX: Corrected state index calculation ---
     # The 'x' tensor is structured: [static, forcing, state (base + derived)]
-    
+
     # Start of the *full* state block (base + derived)
     state_block_start_idx = num_static_features + (num_forcing_features * p_t)
     state_block_end_idx = state_block_start_idx + num_total_state_features
-    
+
     # The slice for the *base state* (which we predict and replace)
     # is the first num_state_features of this block.
     state_base_start_idx = state_block_start_idx
@@ -183,18 +185,18 @@ def perform_rollout(
 
         # --- 1. Get the *initial state* from frame 0 ---
         current_batch = dataset.get(0).to(device)
-        
+
         # Get the SCALED *full* state (base + derived) from the initial batch
         current_full_state_scaled = current_batch.x[
-            :, state_block_start_idx : state_block_end_idx
+            :, state_block_start_idx:state_block_end_idx
         ].clone()
-        
+
         # Get the RAW *base state* for applying deltas
         # We un-scale just the base state part of the input vector
         current_y_t_raw = (
-            current_batch.x[:, state_base_start_idx:state_base_end_idx].clone() * y_std[:num_state_features]
+            current_batch.x[:, state_base_start_idx:state_base_end_idx].clone()
+            * y_std[:num_state_features]
         ) + y_mean[:num_state_features]
-        
 
         for idx in tqdm(range(len(dataset)), desc="Full Rollout"):
             # 1. Get the *ground truth batch* for this step's *forcing*
@@ -204,7 +206,9 @@ def perform_rollout(
             pred_input_batch = gt_batch.clone()
 
             # 3. ...but replace the *full state* with our *predicted* state
-            pred_input_batch.x[:, state_block_start_idx : state_block_end_idx] = current_full_state_scaled
+            pred_input_batch.x[:, state_block_start_idx:state_block_end_idx] = (
+                current_full_state_scaled
+            )
 
             # 4. Run the model to predict the *scaled delta*
             pred_scaled_delta = model.model(pred_input_batch)
@@ -219,17 +223,17 @@ def perform_rollout(
             predictions_list.append(next_y_t_raw.cpu().numpy())
 
             # 8. Prepare for the *next* loop iteration
-            
+
             # --- 8a. Re-calculate derived features ---
-            
+
             # 1. We have `next_y_t_raw` (base state) [N, 3]
-            
+
             # 2. Get component features from `next_y_t_raw`
             y_t_dict_gpu = {
                 var: next_y_t_raw[:, i]
                 for i, var in enumerate(list(features_cfg.state))
             }
-            
+
             # 3. Build derived features list
             derived_state_features_list = []
             for derived_spec in features_cfg.derived_state:
@@ -237,10 +241,12 @@ def perform_rollout(
                 for arg_name in derived_spec["args"]:
                     if arg_name in y_t_dict_gpu:
                         arg_data.append(y_t_dict_gpu[arg_name])
-                    elif arg_name == "DEM": # HACK: hard-coding static features
-                         arg_data.append(dem_gpu)
+                    elif arg_name == "DEM":  # HACK: hard-coding static features
+                        arg_data.append(dem_gpu)
                     else:
-                        raise ValueError(f"Rollout: Unknown arg '{arg_name}' for derived feature '{derived_spec['name']}'")
+                        raise ValueError(
+                            f"Rollout: Unknown arg '{arg_name}' for derived feature '{derived_spec['name']}'"
+                        )
 
                 if derived_spec["op"] == "add":
                     derived_feat = arg_data[0] + arg_data[1]
@@ -248,11 +254,11 @@ def perform_rollout(
                     derived_feat = arg_data[0] - arg_data[1]
                 elif derived_spec["op"] == "magnitude":
                     derived_feat = torch.sqrt(arg_data[0] ** 2 + arg_data[1] ** 2)
-                else: 
+                else:
                     raise ValueError(f"Rollout: Unknown op '{derived_spec['op']}'")
-                
+
                 derived_state_features_list.append(derived_feat.unsqueeze(1))
-            
+
             # 4. Build *full raw state*
             if derived_state_features_list:
                 full_state_tensor_raw = torch.cat(
@@ -264,17 +270,16 @@ def perform_rollout(
             # 5. Scale the *full raw state* to be the next input
             # Note: y_mean/y_std must have shape (num_state + num_derived)
             current_full_state_scaled = (full_state_tensor_raw - y_mean) / y_std
-            current_y_t_raw = next_y_t_raw # for the next loop's delta
-            
-            # --- End derived feature logic ---
+            current_y_t_raw = next_y_t_raw  # for the next loop's delta
 
+            # --- End derived feature logic ---
 
     # --- BRANCH 2: FIXED-HORIZON ROLLOUT ---
     else:
         print(
             f"Starting {rollout_horizon}-step fixed-horizon rollout (predicting deltas)..."
         )
-        
+
         # Loop for each frame we want to generate
         for idx in tqdm(range(len(dataset)), desc="Fixed-Horizon Rollout"):
 
@@ -286,15 +291,15 @@ def perform_rollout(
 
             # 3. Get the *ground truth* state at the *start* of the mini-rollout
             gt_batch_start = dataset.get(start_idx).to(device)
-            
+
             current_full_state_scaled = gt_batch_start.x[
-                :, state_block_start_idx : state_block_end_idx
+                :, state_block_start_idx:state_block_end_idx
             ].clone()
-        
+
             current_y_t_raw = (
-                gt_batch_start.x[:, state_base_start_idx:state_base_end_idx].clone() * y_std[:num_state_features]
+                gt_batch_start.x[:, state_base_start_idx:state_base_end_idx].clone()
+                * y_std[:num_state_features]
             ) + y_mean[:num_state_features]
-            
 
             # 4. Run the inner mini-rollout loop
             for k in range(steps_to_run):
@@ -307,7 +312,7 @@ def perform_rollout(
                 gt_forcing_batch = dataset.get(forcing_batch_idx).to(device)
 
                 pred_input_batch = gt_forcing_batch.clone()
-                pred_input_batch.x[:, state_block_start_idx : state_block_end_idx] = (
+                pred_input_batch.x[:, state_block_start_idx:state_block_end_idx] = (
                     current_full_state_scaled
                 )
 
@@ -316,7 +321,7 @@ def perform_rollout(
 
                 # Update the state for the next inner-loop step
                 next_y_t_raw = current_y_t_raw + pred_raw_delta
-                
+
                 # --- Re-compute derived features ---
                 y_t_dict_gpu = {
                     var: next_y_t_raw[:, i]
@@ -329,9 +334,11 @@ def perform_rollout(
                         if arg_name in y_t_dict_gpu:
                             arg_data.append(y_t_dict_gpu[arg_name])
                         elif arg_name == "DEM":
-                             arg_data.append(dem_gpu)
+                            arg_data.append(dem_gpu)
                         else:
-                            raise ValueError(f"Rollout: Unknown arg '{arg_name}' for derived feature '{derived_spec['name']}'")
+                            raise ValueError(
+                                f"Rollout: Unknown arg '{arg_name}' for derived feature '{derived_spec['name']}'"
+                            )
 
                     if derived_spec["op"] == "add":
                         derived_feat = arg_data[0] + arg_data[1]
@@ -339,17 +346,17 @@ def perform_rollout(
                         derived_feat = arg_data[0] - arg_data[1]
                     elif derived_spec["op"] == "magnitude":
                         derived_feat = torch.sqrt(arg_data[0] ** 2 + arg_data[1] ** 2)
-                    else: 
+                    else:
                         raise ValueError(f"Rollout: Unknown op '{derived_spec['op']}'")
                     derived_state_features_list.append(derived_feat.unsqueeze(1))
-                
+
                 if derived_state_features_list:
                     full_state_tensor_raw = torch.cat(
                         [next_y_t_raw] + derived_state_features_list, dim=1
                     )
                 else:
                     full_state_tensor_raw = next_y_t_raw
-                
+
                 current_full_state_scaled = (full_state_tensor_raw - y_mean) / y_std
                 current_y_t_raw = next_y_t_raw
                 # --- End derived features ---
@@ -391,7 +398,7 @@ def get_frame_data(
     x_data = data.x.cpu()
 
     # --- 1. Extract and Un-scale Inputs (P, WX, WY) ---
-    num_static = len(features_cfg.static) + 1 # +1 for node_type
+    num_static = len(features_cfg.static) + 1  # +1 for node_type
     num_forcing = len(features_cfg.forcing)
 
     forcing_start_idx = num_static
@@ -465,6 +472,8 @@ def _create_plot_index_map(features_cfg: Dict[str, Any]) -> Dict[str, Dict[str, 
         print(f"Needed: P, WX, WY in features.forcing")
         print(f"Needed: WD, VX, VY in features.state")
         raise e
+
+
 # --- END REUSE ---
 
 
@@ -497,10 +506,10 @@ def calculate_global_climits(
     idx_map_forcing = plot_idx_map["forcing"]
     idx_map_state = plot_idx_map["state"]
     # --- END REUSE ---
-    
+
     # --- Get feature counts for slicing ---
     p_t = dataset.previous_t
-    num_static = len(features_cfg.static) + 1 # +1 for node_type
+    num_static = len(features_cfg.static) + 1  # +1 for node_type
     num_forcing = len(features_cfg.forcing)
     forcing_end_idx = num_static + (num_forcing * p_t)
     last_forcing_step_start = forcing_end_idx - num_forcing
@@ -765,12 +774,16 @@ if __name__ == "__main__":
     ROLLOUT_HORIZON = args.rollout_horizon
     rollout_type_str = "full" if ROLLOUT_HORIZON == -1 else f"{ROLLOUT_HORIZON}step"
     anim_fps = 10
-    
+
     # --- NEW: Define all paths based on the required output_dir ---
     base_output_dir = args.output_dir
-    output_gif = os.path.join(base_output_dir, f"adforce_6panel_PREDICTION_{rollout_type_str}.gif")
-    output_video = os.path.join(base_output_dir, f"adforce_6panel_PREDICTION_{rollout_type_str}.mp4")
-    
+    output_gif = os.path.join(
+        base_output_dir, f"adforce_6panel_PREDICTION_{rollout_type_str}.gif"
+    )
+    output_video = os.path.join(
+        base_output_dir, f"adforce_6panel_PREDICTION_{rollout_type_str}.mp4"
+    )
+
     # Cache and frames are now subdirectories
     predict_root = os.path.join(base_output_dir, "dataset_cache")
     frame_dir = os.path.join(base_output_dir, "animation_frames")
@@ -808,8 +821,8 @@ if __name__ == "__main__":
     # --- NEW: Clean up *inside* the unique directory ---
     # This deletes old cache/frames if you re-run with the *same* -o path
     shutil.rmtree(frame_dir, ignore_errors=True)
-    shutil.rmtree(predict_root, ignore_errors=True) 
-    
+    shutil.rmtree(predict_root, ignore_errors=True)
+
     # Create the base and frame directories
     os.makedirs(frame_dir, exist_ok=True)
     # AdforceLazyDataset will create the predict_root
@@ -841,7 +854,7 @@ if __name__ == "__main__":
             cfg,
             args.checkpoint_path,
         )
-        lightning_model.to(device) # --- Don't forget to move model to device! ---
+        lightning_model.to(device)  # --- Don't forget to move model to device! ---
     except Exception as e:
         print(f"Error: Failed to instantiate model structure: {e}")
         print(

@@ -437,17 +437,27 @@ def compute_and_save_adforce_stats(
 
         print("\n--- STATS SUMMARY (MEANS & STDS) ---")
         print(f"x_static ({len(final_stats['x_static_mean'])} features):")
-        print({k: v for k, v in zip(static_node_vars, final_stats['x_static_mean'])})
-        print({k: v for k, v in zip(static_node_vars, final_stats['x_static_std'])})
+        print({k: v for k, v in zip(static_node_vars, final_stats["x_static_mean"])})
+        print({k: v for k, v in zip(static_node_vars, final_stats["x_static_std"])})
         print(f"x_dynamic ({len(final_stats['x_dynamic_mean'])} features):")
-        print({k: v for k, v in zip(forcing_vars, final_stats['x_dynamic_mean'])})
-        print({k: v for k, v in zip(forcing_vars, final_stats['x_dynamic_std'])})
+        print({k: v for k, v in zip(forcing_vars, final_stats["x_dynamic_mean"])})
+        print({k: v for k, v in zip(forcing_vars, final_stats["x_dynamic_std"])})
         print(f"y ({len(final_stats['y_mean'])} features):")
-        print({k: v for k, v in zip(state_vars + derived_state_specs, final_stats['y_mean'])})
-        print({k: v for k, v in zip(state_vars + derived_state_specs, final_stats['y_std'])})
+        print(
+            {
+                k: v
+                for k, v in zip(state_vars + derived_state_specs, final_stats["y_mean"])
+            }
+        )
+        print(
+            {
+                k: v
+                for k, v in zip(state_vars + derived_state_specs, final_stats["y_std"])
+            }
+        )
         print(f"y_delta ({len(final_stats['y_delta_mean'])} features):")
-        print({k: v for k, v in zip(target_vars, final_stats['y_delta_mean'])})
-        print({k: v for k, v in zip(target_vars, final_stats['y_delta_std'])})
+        print({k: v for k, v in zip(target_vars, final_stats["y_delta_mean"])})
+        print({k: v for k, v in zip(target_vars, final_stats["y_delta_std"])})
         print("-----------------------------\n")
 
     except Exception as e:

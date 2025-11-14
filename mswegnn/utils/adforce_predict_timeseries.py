@@ -54,7 +54,6 @@ warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
-
 def find_closest_node(
     x_coords: np.ndarray, y_coords: np.ndarray, target_lon: float, target_lat: float
 ) -> int:

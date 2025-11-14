@@ -11,7 +11,7 @@ determine how to load or derive variables (e.g., SSH).
 Example usage:
 python mswegnn/utils/adforce_animate.py \
     -c conf/config.yaml \
-    -f ../SurgeNetTestPH/new_orleans_2100_3.nc \
+    -f ../SurgeNetTestPH/galveston_2015_1.nc \
     -v P WX WY SSH VX VY \
     -u "m" "m s$^{-1}$" "m s$^{-1}$" "m" "m s$^{-1}$" "m s$^{-1}$" \
     --diverging-vars WX WY VX VY SSH \
@@ -32,6 +32,7 @@ python mswegnn/utils/adforce_animate.py \
     --gif
 
 """
+
 import os
 import shutil
 import warnings
@@ -65,6 +66,7 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 # --- NEW, CONFIG-DRIVEN HELPER FUNCTIONS ---
 
+
 def _perform_op(op: str, args: List[torch.Tensor]) -> torch.Tensor:
     """
     Performs an operation (add, subtract, magnitude) on a list of tensors,
@@ -84,18 +86,18 @@ def _perform_op(op: str, args: List[torch.Tensor]) -> torch.Tensor:
     elif op == "subtract":
         result = args[0] - args[1]
     elif op == "magnitude":
-        result = torch.sqrt(args[0]**2 + args[1]**2)
+        result = torch.sqrt(args[0] ** 2 + args[1] ** 2)
     else:
         raise NotImplementedError(f"Operation '{op}' not implemented for animation.")
-    
+
     return torch.nan_to_num(result, nan=0.0)
 
 
 def get_animation_data(
-    ds: xr.Dataset, 
-    features_cfg: DictConfig, 
+    ds: xr.Dataset,
+    features_cfg: DictConfig,
     var_name: str,
-    loaded_cache: Dict[str, torch.Tensor]
+    loaded_cache: Dict[str, torch.Tensor],
 ) -> torch.Tensor:
     """
     Recursively loads or derives a variable for animation from a config.
@@ -105,11 +107,13 @@ def get_animation_data(
 
     if var_name in features_cfg.static:
         data = torch.tensor(ds[var_name].values, dtype=torch.float)
-    elif var_name in features_cfg.state or \
-         var_name in features_cfg.forcing or \
-         var_name in features_cfg.targets:
+    elif (
+        var_name in features_cfg.state
+        or var_name in features_cfg.forcing
+        or var_name in features_cfg.targets
+    ):
         data = torch.tensor(ds[var_name].values, dtype=torch.float)
-    elif hasattr(features_cfg, 'derived_state'):
+    elif hasattr(features_cfg, "derived_state"):
         for derived_spec in features_cfg.derived_state:
             if derived_spec["name"] == var_name:
                 arg_data = [
@@ -131,9 +135,9 @@ def get_animation_data(
 
 # --- ORIGINAL PLOTTING FUNCTIONS (Modified to be config-driven) ---
 
+
 def calculate_global_climits(
-    data_dict: Dict[str, torch.Tensor],
-    diverging_vars: List[str]
+    data_dict: Dict[str, torch.Tensor], diverging_vars: List[str]
 ) -> Dict[str, Tuple[float, float]]:
     """
     Calculates global vmin/vmax by operating on the pre-loaded
@@ -144,13 +148,13 @@ def calculate_global_climits(
     climits = {}
     for key, data_tensor in data_dict.items():
         data = data_tensor.numpy()
-        
+
         if data.size == 0:
             climits[key] = (0.0, 1.0)
             continue
 
-        p1 = np.nanpercentile(data, 1)
-        p99 = np.nanpercentile(data, 99)
+        p1 = np.nanpercentile(data, 0.1)
+        p99 = np.nanpercentile(data, 99.9)
 
         if key in diverging_vars:
             # Center on zero (original logic)
@@ -192,8 +196,7 @@ def plot_single_frame(
     try:
         timestamp = all_timestamps[t_idx]
         title = (
-            np.datetime_as_string(timestamp, unit="s").replace("T", " ")[:-6]
-            + ":00"
+            np.datetime_as_string(timestamp, unit="s").replace("T", " ")[:-6] + ":00"
         )
     except Exception as e:
         title = f"Frame Index: {t_idx}"
@@ -303,7 +306,7 @@ def create_animation_from_frames(
     cmap_seq_name: str,
     cmap_div_name: str,
     output_video_path: str,
-    output_gif_path: str, # Can be None
+    output_gif_path: str,  # Can be None
     fps: int,
 ):
     """
@@ -319,7 +322,7 @@ def create_animation_from_frames(
     print(f"Loading config from: {config_path}")
     cfg = OmegaConf.load(config_path)
     features_cfg = cfg.features
-    
+
     print(f"Loading data from: {nc_file_path}")
     ds = xr.open_dataset(nc_file_path)
 
@@ -336,9 +339,7 @@ def create_animation_from_frames(
     data_to_plot_torch = {}
     print(f"Loading variables: {var_names}")
     for var in var_names:
-        data_to_plot_torch[var] = get_animation_data(
-            ds, features_cfg, var, data_cache
-        )
+        data_to_plot_torch[var] = get_animation_data(ds, features_cfg, var, data_cache)
         print(f"  - Loaded '{var}' with shape {data_to_plot_torch[var].shape}")
 
     # 4. Pre-calculate global color limits (uses original logic)
@@ -347,7 +348,7 @@ def create_animation_from_frames(
     # 5. Prepare colormaps and titles
     cmap_seq = plt.get_cmap(cmap_seq_name)
     cmap_div = plt.get_cmap(cmap_div_name)
-    
+
     colormaps = {}
     titles = {}
     for var, unit in zip(var_names, var_units):
@@ -368,9 +369,9 @@ def create_animation_from_frames(
         data_for_frame = {}
         for var in var_names:
             tensor = data_to_plot_torch[var]
-            if tensor.dim() == 1: # Static data (e.g., DEM)
+            if tensor.dim() == 1:  # Static data (e.g., DEM)
                 data_for_frame[var] = tensor.numpy()
-            else: # Time-series data (e.g., WD)
+            else:  # Time-series data (e.g., WD)
                 data_for_frame[var] = tensor[t_idx, :].numpy()
 
         # Call the original, stateless plotting function
@@ -383,7 +384,7 @@ def create_animation_from_frames(
             climits,
             colormaps,
             titles,
-            frame_path
+            frame_path,
         )
 
     # 7. Read images back into memory *once*
@@ -402,62 +403,75 @@ def create_animation_from_frames(
 
     # 10. Clean up
     try:
-       shutil.rmtree(frame_dir)
-       print(f"Cleaned up temporary directory: {frame_dir}")
+        shutil.rmtree(frame_dir)
+        print(f"Cleaned up temporary directory: {frame_dir}")
     except Exception as e:
-       print(f"Warning: Failed to clean up {frame_dir}. Error: {e}")
-    
+        print(f"Warning: Failed to clean up {frame_dir}. Error: {e}")
+
     ds.close()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Animate mSWE-GNN simulation data (config-driven).")
-    
+    parser = argparse.ArgumentParser(
+        description="Animate mSWE-GNN simulation data (config-driven)."
+    )
+
     # --- File/Var Arguments ---
-    parser.add_argument("-c", "--config-path", required=True, help="Path to the main config.yaml")
-    parser.add_argument("-f", "--nc-file", required=True, help="Path to the .nc simulation file")
     parser.add_argument(
-        "-v", "--vars", 
-        nargs=6, 
-        required=True, 
-        metavar="VAR",
-        default=["P", "WX", "WY", "SSH", "VX", "VY"],
-        help="List of EXACTLY 6 variables to animate."
+        "-c", "--config-path", required=True, help="Path to the main config.yaml"
     )
     parser.add_argument(
-        "-u", "--units",
+        "-f", "--nc-file", required=True, help="Path to the .nc simulation file"
+    )
+    parser.add_argument(
+        "-v",
+        "--vars",
+        nargs=6,
+        required=True,
+        metavar="VAR",
+        default=["P", "WX", "WY", "SSH", "VX", "VY"],
+        help="List of EXACTLY 6 variables to animate.",
+    )
+    parser.add_argument(
+        "-u",
+        "--units",
         nargs=6,
         required=True,
         metavar="UNIT",
         default=["m", "m s$^{-1}$", "m s$^{-1}$", "m", "m s$^{-1}$", "m s$^{-1}$"],
-        help="List of 6 units (LaTeX format), in same order as --vars."
+        help="List of 6 units (LaTeX format), in same order as --vars.",
     )
-    
+
     # --- Plotting Arguments ---
     parser.add_argument(
-        "--cmap-seq", 
-        default="cmocean.cm.thermal", 
-        help="Colormap for sequential data (default: cmocean.cm.thermal)"
+        "--cmap-seq",
+        default="cmocean.cm.thermal",
+        help="Colormap for sequential data (default: cmocean.cm.thermal)",
     )
     parser.add_argument(
-        "--cmap-div", 
-        default="cmocean.cm.balance", 
-        help="Colormap for diverging data (default: cmocean.cm.balance)"
+        "--cmap-div",
+        default="cmocean.cm.balance",
+        help="Colormap for diverging data (default: cmocean.cm.balance)",
     )
     parser.add_argument(
         "--diverging-vars",
-        nargs='*',
+        nargs="*",
         default=["WX", "WY", "SSH", "VX", "VY"],
-        help="List of variable names to treat as diverging."
+        help="List of variable names to treat as diverging.",
     )
 
     # --- Output Arguments ---
-    parser.add_argument("-o", "--output-video", default="adforce_6panel_animation.mp4", help="Output video file")
-    parser.add_argument("--gif", action="store_true", help="Also generate a .gif version.")
-    parser.add_argument("--fps", type=int, default=10, help="Frames per second")
     parser.add_argument(
-        "--test", action="store_true", help="Run doctests and exit."
+        "-o",
+        "--output-video",
+        default="adforce_6panel_animation.mp4",
+        help="Output video file",
     )
+    parser.add_argument(
+        "--gif", action="store_true", help="Also generate a .gif version."
+    )
+    parser.add_argument("--fps", type=int, default=10, help="Frames per second")
+    parser.add_argument("--test", action="store_true", help="Run doctests and exit.")
 
     args = parser.parse_args()
 
@@ -472,17 +486,17 @@ if __name__ == "__main__":
         print(f"Error: Config file not found at {args.config_path}")
     else:
         # Check for cmocean in cmap names
-        if 'cmocean' in args.cmap_seq:
-            args.cmap_seq = getattr(cmocean.cm, args.cmap_seq.split('.')[-1])
-        if 'cmocean' in args.cmap_div:
-            args.cmap_div = getattr(cmocean.cm, args.cmap_div.split('.')[-1])
+        if "cmocean" in args.cmap_seq:
+            args.cmap_seq = getattr(cmocean.cm, args.cmap_seq.split(".")[-1])
+        if "cmocean" in args.cmap_div:
+            args.cmap_div = getattr(cmocean.cm, args.cmap_div.split(".")[-1])
 
         output_gif_path = None
         if args.gif:
             output_gif_path = os.path.splitext(args.output_video)[0] + ".gif"
 
         print(args)
-        broken_unit_str = "m s{-1}$" # this is not very general. We could think of a way to improve it. Perhaps we could insist on "m/s" etc as input and then convert to "m s$^{-1}$" or something at this stage.
+        broken_unit_str = "m s{-1}$"  # this is not very general. We could think of a way to improve it. Perhaps we could insist on "m/s" etc as input and then convert to "m s$^{-1}$" or something at this stage.
         correct_unit_str = "m s$^{-1}$"
         fixed_units = [u.replace(broken_unit_str, correct_unit_str) for u in args.units]
         args.units = fixed_units
@@ -499,7 +513,7 @@ if __name__ == "__main__":
             output_gif_path=output_gif_path,
             fps=args.fps,
         )
-        
+
         print(f"\nAnimation test complete.")
         if output_gif_path:
             print(f"GIF saved to {os.path.abspath(output_gif_path)}")

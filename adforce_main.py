@@ -25,7 +25,7 @@ This script ties together all the new components:
 
 import glob
 import os
-import lightning as L # from sklearn.model_selection import train_test_split
+import lightning as L  # from sklearn.model_selection import train_test_split
 import torch
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
@@ -152,10 +152,10 @@ def main(cfg: DictConfig) -> None:
     )
 
     last_model_callback = ModelCheckpoint(
-            dirpath=checkpoint_dir,
-            filename=f"{cfg.model_params.model_type}-last-{{epoch:02d}}",
-            save_last=True,
-        )
+        dirpath=checkpoint_dir,
+        filename=f"{cfg.model_params.model_type}-last-{{epoch:02d}}",
+        save_last=True,
+    )
 
     all_callbacks = [checkpoint_callback, last_model_callback]
 
@@ -207,10 +207,10 @@ def main(cfg: DictConfig) -> None:
         #     features_cfg=features_cfg,
         # )
         compute_and_save_adforce_stats(
-                train_files, 
-                cfg.data_params.scaling_stats_path,
-                features_cfg,  # <-- NEW
-            )
+            train_files,
+            cfg.data_params.scaling_stats_path,
+            features_cfg,  # <-- NEW
+        )
         print("Scaling stats computed and saved.")
     else:
         print(f"Loading scaling stats from {cfg.data_params.scaling_stats_path}")
@@ -240,17 +240,15 @@ def main(cfg: DictConfig) -> None:
         features_cfg=features_cfg,
     )
 
-
     # 5. Instantiate Lightning DataModule
     data_module = DataModule(
-            train_dataset=train_dataset,
-            val_dataset=val_dataset,
-            batch_size=cfg.trainer_options.batch_size,
-            num_workers=cfg.machine.num_workers,
-        )
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+        batch_size=cfg.trainer_options.batch_size,
+        num_workers=cfg.machine.num_workers,
+    )
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Validation dataset size: {len(val_dataset)}")
-
 
     # --- 6. Initialize Model ---
     print("Initializing model...")
@@ -260,7 +258,9 @@ def main(cfg: DictConfig) -> None:
 
     # --- Dynamically calculate model dimensions from config ---
     p_t = models["previous_t"]
-    num_static_node_features = len(features_cfg.static) + 1 # +1 for node type (not scaled)
+    num_static_node_features = (
+        len(features_cfg.static) + 1
+    )  # +1 for node type (not scaled)
     num_dynamic_node_features = len(features_cfg.forcing)
 
     # The state can include derived features, so we count them all

@@ -89,6 +89,20 @@ python -m mswegnn.hug.download
 
 We created extreme test data from the simulations of the Potential Height of Tropical Cyclone Storm Surges from 2015 and 2100, for New Orleans, Miami and Galverston. The numerical settings in ADCIRC are all the same as the training data, as is the mesh. 
 
+![Miami Test Data](test_miami.gif)
+
+This test data is also published on Hugging Face as:
+
+```bibtex
+@misc{Thomas2025SurgeNetTest,
+    author    = {Thomas, Simon D. A.},
+    title        = {SurgeNet Test Dataset -- Potential Height Simulations -- Alpha Version},
+    year         = 2025,
+    url          = { https://huggingface.co/datasets/sdat2/surgenet-test-ph },
+    doi          = { 10.57967/hf/7006 },
+    publisher    = { Hugging Face }
+}
+```
 
 ## Run instructions
 
