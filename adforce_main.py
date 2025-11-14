@@ -45,6 +45,9 @@ from mswegnn.training.adforce_train import AdforceLightningModule, DataModule
 from mswegnn.utils.adforce_scaling import compute_and_save_adforce_stats
 
 
+torch.set_float32_matmul_precision("medium")
+
+
 def _load_files_from_split(split_file_path: str, data_dir: str) -> List[str]:
     """
     Loads a YAML file containing a list of basenames, joins them
@@ -95,6 +98,9 @@ def _load_files_from_split(split_file_path: str, data_dir: str) -> List[str]:
 def main(cfg: DictConfig) -> None:
     """
     Main training loop initiated by Hydra.
+
+    Args:
+        cfg (DictConfig): Configuration object provided by Hydra.
     """
 
     # --- 1. Setup & Config Resolution ---
