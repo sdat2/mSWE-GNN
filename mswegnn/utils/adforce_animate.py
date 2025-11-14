@@ -149,20 +149,20 @@ def calculate_global_climits(
             climits[key] = (0.0, 1.0)
             continue
 
-        p2 = np.nanpercentile(data, 1)
-        p98 = np.nanpercentile(data, 99)
+        p1 = np.nanpercentile(data, 1)
+        p99 = np.nanpercentile(data, 99)
 
         if key in diverging_vars:
             # Center on zero (original logic)
-            v_abs = np.nanmax([np.abs(p2), np.abs(p98)])
+            v_abs = np.nanmax([np.abs(p1), np.abs(p99)])
             if v_abs == 0:
                 v_abs = 0.1
             climits[key] = (-v_abs, v_abs)
         else:
             # Sequential (original logic)
-            if p2 == p98:
-                p98 += 0.1
-            climits[key] = (p2, p98)
+            if p1 == p99:
+                p99 += 0.1
+            climits[key] = (p1, p99)
 
     print("Global color limits calculated.")
     for key, (vmin, vmax) in climits.items():
