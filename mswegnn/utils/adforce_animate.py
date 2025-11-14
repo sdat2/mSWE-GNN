@@ -1,27 +1,42 @@
 """
-Improved animation function for the AdforceLazyDataset.
+Refactored animation function for mSWE-GNN.
 
-This script creates a 6-panel animation of a full simulation event
+This script creates a 6-panel animation of a simulation event
 by rendering each frame as a PNG. It then compiles these frames
-into *both* a high-quality MP4 (for video) and a quantized GIF
-(for markdown/previews).
+into *both* a high-quality MP4 and a GIF.
 
----
-V9 (Timestamp Titles):
-- All user preferences from V8 are retained.
-- The `plot_single_frame` function now reads the 'time'
-  coordinate from the source NetCDF file for each frame.
-- The `suptitle` is set to the actual datetime of the
-  plotted data (e.g., "2005-08-28 12:00:00").
-- A try/except block provides a fallback to the index
-  number if the time lookup fails.
----
+This version is config-driven. It reads a config.yaml to
+determine how to load or derive variables (e.g., SSH).
+
+Example usage:
+python mswegnn/utils/adforce_animate.py \
+    -c conf/config.yaml \
+    -f ../SurgeNetTestPH/new_orleans_2100_3.nc \
+    -v P WX WY SSH VX VY \
+    -u "m" "m s$^{-1}$" "m s$^{-1}$" "m" "m s$^{-1}$" "m s$^{-1}$" \
+    --diverging-vars WX WY VX VY SSH \
+    --cmap-seq cmo.thermal \
+    --cmap-div cmo.balance \
+    -o test_ani.mp4 \
+    --gif
+
+python mswegnn/utils/adforce_animate.py \
+    -c conf/config.yaml \
+    -f ../swegnn_5sec/152_KATRINA_2005.nc \
+    -v P WX WY SSH VX VY \
+    -u "m" "m s$^{-1}$" "m s$^{-1}$" "m" "m s$^{-1}$" "m s$^{-1}$" \
+    --diverging-vars WX WY VX VY SSH \
+    --cmap-seq cmo.thermal \
+    --cmap-div cmo.balance \
+    -o train_ani.mp4 \ 
+    --gif
+
 """
-
 import os
 import shutil
-import glob
 import warnings
+import argparse
+import doctest
 from typing import List, Tuple, Dict
 import numpy as np
 import xarray as xr
@@ -29,8 +44,8 @@ import torch
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 import imageio.v3 as iio
+from omegaconf import DictConfig, OmegaConf
 
-from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 from sithom.plot import plot_defaults, label_subplots
 
 # Try to import cmocean
@@ -48,124 +63,106 @@ warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
-def load_static_data(
-    nc_file_path: str, dataset: AdforceLazyDataset
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+# --- NEW, CONFIG-DRIVEN HELPER FUNCTIONS ---
+
+def _perform_op(op: str, args: List[torch.Tensor]) -> torch.Tensor:
     """
-    Loads static coordinates and DEM data.
+    Performs an operation (add, subtract, magnitude) on a list of tensors,
+    handling broadcasting (e.g., [time, nodes] + [nodes]).
+
+    Doctest:
+    >>> t1 = torch.tensor([[1.0, 2.0], [3.0, 4.0]]) # [time, nodes]
+    >>> t2 = torch.tensor([10.0, 20.0])              # [nodes]
+    >>> _perform_op("add", [t1, t2])
+    tensor([[11., 22.],
+            [13., 24.]])
+    >>> _perform_op("magnitude", [torch.tensor([3., 12.]), torch.tensor([4., 5.])])
+    tensor([ 5., 13.])
     """
-    print("Loading static data (coordinates and DEM)...")
-    try:
-        with xr.open_dataset(nc_file_path) as ds:
-            x_coords = ds["x"].values
-            y_coords = ds["y"].values
-    except Exception as e:
-        print(f"Failed to read file coordinates from {nc_file_path}: {e}")
-        raise
-
-    try:
-        # DEM is the 0-th column of the static_node_features
-        dem = dataset.static_data["static_node_features"][:, 0].cpu().numpy()
-    except Exception as e:
-        print(f"Failed to get DEM from dataset.static_data: {e}")
-        raise
-
-    return x_coords, y_coords, dem
-
-
-def get_frame_data(
-    dataset: AdforceLazyDataset, idx: int, dem: np.ndarray
-) -> Dict[str, np.ndarray]:
-    """
-    Retrieves and processes all 6 variables for a single animation frame.
-    """
-    data = dataset.get(idx)
-    p_t = dataset.previous_t
-    x_data = data.x.cpu()
-
-    # --- 1. Extract and Un-scale Inputs (P, WX, WY) ---
-    forcing_start_idx = 5
-    forcing_end_idx = 5 + (3 * p_t)
-    last_forcing_step_scaled = x_data[:, forcing_end_idx - 3 : forcing_end_idx]
-
-    if dataset.apply_scaling:
-        if not hasattr(dataset, "x_dyn_mean_broadcast"):
-            inputs_unscaled = last_forcing_step_scaled
-        else:
-            mean = dataset.x_dyn_mean_broadcast[-3:].cpu()
-            std = dataset.x_dyn_std_broadcast[-3:].cpu()
-            inputs_unscaled = (last_forcing_step_scaled * std) + mean
+    if op == "add":
+        result = args[0] + args[1]
+    elif op == "subtract":
+        result = args[0] - args[1]
+    elif op == "magnitude":
+        result = torch.sqrt(args[0]**2 + args[1]**2)
     else:
-        inputs_unscaled = last_forcing_step_scaled
+        raise NotImplementedError(f"Operation '{op}' not implemented for animation.")
+    
+    return torch.nan_to_num(result, nan=0.0)
 
-    # Forcing order from _get_forcing_slice is ["WX", "WY", "P"]
-    wx_data = inputs_unscaled[:, 0].numpy()
-    wy_data = inputs_unscaled[:, 1].numpy()
-    p_data = inputs_unscaled[:, 2].numpy()
 
-    # --- 2. Extract Outputs (WD, VX, VY) ---
-    # `data.y_unscaled` holds the unscaled target state at t+1
-    # Order from _get_target_slice is ["WD", "VX", "VY"]
-    outputs = data.y_unscaled.cpu().numpy()
-    wd_data = outputs[:, 0]
-    vx_data = outputs[:, 1]
-    vy_data = outputs[:, 2]
+def get_animation_data(
+    ds: xr.Dataset, 
+    features_cfg: DictConfig, 
+    var_name: str,
+    loaded_cache: Dict[str, torch.Tensor]
+) -> torch.Tensor:
+    """
+    Recursively loads or derives a variable for animation from a config.
+    """
+    if var_name in loaded_cache:
+        return loaded_cache[var_name]
 
-    # --- 3. Calculate SSH ---
-    ssh_data = wd_data + dem
+    if var_name in features_cfg.static:
+        data = torch.tensor(ds[var_name].values, dtype=torch.float)
+    elif var_name in features_cfg.state or \
+         var_name in features_cfg.forcing or \
+         var_name in features_cfg.targets:
+        data = torch.tensor(ds[var_name].values, dtype=torch.float)
+    elif hasattr(features_cfg, 'derived_state'):
+        for derived_spec in features_cfg.derived_state:
+            if derived_spec["name"] == var_name:
+                arg_data = [
+                    get_animation_data(ds, features_cfg, arg, loaded_cache)
+                    for arg in derived_spec["args"]
+                ]
+                data = _perform_op(derived_spec["op"], arg_data)
+                loaded_cache[var_name] = data
+                return torch.nan_to_num(data, nan=0.0)
+        else:
+            raise ValueError(f"Var '{var_name}' not found in file or derived config.")
+    else:
+        raise ValueError(f"Var '{var_name}' not in config and no derived_state found.")
 
-    return {
-        "P": p_data,
-        "WX": wx_data,
-        "WY": wy_data,
-        "SSH": ssh_data,
-        "VX": vx_data,
-        "VY": vy_data,
-    }
+    data = torch.nan_to_num(data, nan=0.0)
+    loaded_cache[var_name] = data
+    return data
 
+
+# --- ORIGINAL PLOTTING FUNCTIONS (Modified to be config-driven) ---
 
 def calculate_global_climits(
-    dataset: AdforceLazyDataset, dem: np.ndarray
+    data_dict: Dict[str, torch.Tensor],
+    diverging_vars: List[str]
 ) -> Dict[str, Tuple[float, float]]:
     """
-    Calculates global vmin/vmax by iterating through the entire dataset.
+    Calculates global vmin/vmax by operating on the pre-loaded
+    data dictionary. Keeps original diverging/sequential logic.
     """
-    print(f"Calculating global color limits for {len(dataset)} frames...")
-
-    plot_order = ["P", "WX", "WY", "SSH", "VX", "VY"]
-    diverging_vars = ["WX", "WY", "SSH", "VX", "VY"]
-
-    # Store the 2nd and 98th percentiles for each frame
-    p2_vals = {key: [] for key in plot_order}
-    p98_vals = {key: [] for key in plot_order}
-
-    for idx in tqdm(range(len(dataset)), desc="Scanning data"):
-        data_dict = get_frame_data(dataset, idx, dem)
-        for key, data in data_dict.items():
-            if data.size > 0:
-                p2_vals[key].append(np.nanpercentile(data, 1))
-                p98_vals[key].append(np.nanpercentile(data, 99))
+    print("Calculating global color limits...")
 
     climits = {}
-    for key in plot_order:
-        if not p2_vals[key]:  # Handle case of no valid data
+    for key, data_tensor in data_dict.items():
+        data = data_tensor.numpy()
+        
+        if data.size == 0:
             climits[key] = (0.0, 1.0)
             continue
 
-        global_p2 = np.nanmin(p2_vals[key])
-        global_p98 = np.nanmax(p98_vals[key])
+        p2 = np.nanpercentile(data, 1)
+        p98 = np.nanpercentile(data, 99)
 
         if key in diverging_vars:
-            # Center on zero
-            v_abs = np.nanmax([np.abs(global_p2), np.abs(global_p98)])
+            # Center on zero (original logic)
+            v_abs = np.nanmax([np.abs(p2), np.abs(p98)])
             if v_abs == 0:
-                v_abs = 0.1  # Avoid vmin=vmax
+                v_abs = 0.1
             climits[key] = (-v_abs, v_abs)
         else:
-            # Sequential (Pressure)
-            if global_p2 == global_p98:
-                global_p98 += 0.1
-            climits[key] = (global_p2, global_p98)
+            # Sequential (original logic)
+            if p2 == p98:
+                p98 += 0.1
+            climits[key] = (p2, p98)
 
     print("Global color limits calculated.")
     for key, (vmin, vmax) in climits.items():
@@ -175,81 +172,62 @@ def calculate_global_climits(
 
 
 def plot_single_frame(
-    idx: int,
-    total_frames: int,
-    dataset: AdforceLazyDataset,
+    t_idx: int,
+    all_timestamps: np.ndarray,
     x_coords: np.ndarray,
     y_coords: np.ndarray,
-    dem: np.ndarray,
+    data_for_frame: Dict[str, np.ndarray],
     climits: Dict[str, Tuple[float, float]],
+    colormaps: Dict[str, plt.cm.ScalarMappable],
+    titles: Dict[str, str],
     frame_path: str,
 ):
     """
     Creates, plots, and saves a *single* frame from scratch.
-    (Incorporates user's plotting preferences)
+    (This is your original plotting function, with a new signature.
+     It no longer loads data, it just plots.)
     """
 
-    # 1. Get data for this specific frame
-    data_dict = get_frame_data(dataset, idx, dem)
-
-    # 2. Get timestamp for title
+    # 1. Get timestamp for title (original logic)
     try:
-        nc_path, t_start = dataset.index_map[idx]
-        # The plotted data is the target, which is at t_start + previous_t
-        t_plot_idx = t_start + dataset.previous_t
-        with xr.open_dataset(nc_path, cache=True) as ds:  # Use cache
-            timestamp = ds.time[t_plot_idx].values
-            # Format to 'YYYY-MM-DD HH:MM:SS'
-            title = (
-                np.datetime_as_string(timestamp, unit="s").replace("T", " ")[:-6]
-                + ":00"
-            )
+        timestamp = all_timestamps[t_idx]
+        title = (
+            np.datetime_as_string(timestamp, unit="s").replace("T", " ")[:-6]
+            + ":00"
+        )
     except Exception as e:
-        # Fallback title if time lookup fails
-        if idx == 0:  # Only warn once to avoid spam
-            print(
-                f"Warning: Could not read timestamp. Falling back to index. Error: {e}"
-            )
-        title = f"Dataset Index: {idx} / {total_frames - 1}"
+        title = f"Frame Index: {t_idx}"
 
-    # 3. Create a new figure and axes for this frame
+    # 2. Create a new figure and axes for this frame (original logic)
     fig, axs = plt.subplots(2, 3, figsize=(6 * 1.2, 4 * 1.2), sharex=True, sharey=True)
 
-    # 4. Define titles, keys, and colormaps
-    titles = [
-        ["P [m]", "WX [m s$^{-1}$]", "WY [m s$^{-1}$]"],
-        ["SSH [m]", "VX [m s$^{-1}$]", "VY [m s$^{-1}$]"],
-    ]
+    # 3. Define keys
     keys = [["P", "WX", "WY"], ["SSH", "VX", "VY"]]
-    cmaps = [
-        [cmocean.cm.thermal, cmocean.cm.balance, cmocean.cm.balance],
-        [cmocean.cm.balance, cmocean.cm.balance, cmocean.cm.balance],
-    ]
 
-    # 5. Plot all 6 subplots
+    # 5. Plot all 6 subplots (original logic)
     for i in range(2):
         for j in range(3):
             ax = axs[i, j]
             key = keys[i][j]
-            data = data_dict[key]
+            data = data_for_frame[key]
             vmin, vmax = climits[key]
+            cmap_to_use = colormaps[key]
+            title_str = titles[key]
 
-            # Plot data *directly* into the new axes
+            # Plot data *directly* (original logic)
             scat = ax.scatter(
                 x_coords,
                 y_coords,
                 c=data,
-                cmap=cmaps[i][j],
+                cmap=cmap_to_use,
                 s=0.2,
                 marker=".",
                 vmin=vmin,
                 vmax=vmax,
             )
 
-            # Add colorbar without label
             fig.colorbar(scat, ax=ax)
-
-            ax.set_title(titles[i][j])
+            ax.set_title(title_str)
             ax.set_aspect("equal")
 
             if i == 1:
@@ -257,58 +235,50 @@ def plot_single_frame(
             if j == 0:
                 ax.set_ylabel("Latitude [$^{\circ}$N]")
 
-            # Fix axes limits to prevent plot jitter
             if x_coords.size > 0 and y_coords.size > 0:
                 ax.set_xlim(np.nanmin(x_coords), np.nanmax(x_coords))
                 ax.set_ylim(np.nanmin(y_coords), np.nanmax(y_coords))
 
-    # 6. Add title and save
-    fig.suptitle(title, y=0.92)  # Use new timestamp title
+    # 6. Add title and save (original logic)
+    fig.suptitle(title, y=0.92)
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     label_subplots(axs)
     fig.savefig(frame_path, dpi=150, bbox_inches="tight")
 
-    # 7. --- VITAL --- Close the figure to free memory
+    # 7. --- VITAL --- Close the figure to free memory (original logic)
     plt.close(fig)
 
 
 def compile_gif_from_frames(
-    frame_dir: str,
     output_gif_path: str,
     fps: int,
     images: List[np.ndarray],  # Accepts pre-loaded images
 ):
     """
     Uses imageio.v3.imwrite to compile all PNGs into a single GIF.
+    (Original function)
     """
     if not images:
         print("No images found for GIF compilation.")
         return
-
     print(f"Compiling {len(images)} frames into {output_gif_path}...")
-
-    # Pass the list of *images (arrays)* to imwrite
     iio.imwrite(output_gif_path, images, fps=fps, loop=0)
-
     print("GIF compilation complete.")
 
 
 def compile_video_from_frames(
-    frame_dir: str,
     output_video_path: str,
     fps: int,
     images: List[np.ndarray],  # Accepts pre-loaded images
 ):
     """
     Uses imageio.v3.imwrite to compile all PNGs into a high-quality MP4.
+    (Original function)
     """
     if not images:
         print("No images found for Video compilation.")
         return
-
     print(f"Compiling {len(images)} frames into {output_video_path}...")
-
-    # Use 'libx264' codec for high-quality MP4
     try:
         iio.imwrite(
             output_video_path,
@@ -320,134 +290,218 @@ def compile_video_from_frames(
         )
         print("Video compilation complete.")
     except Exception as e:
-        print(f"\n--- ERROR ---")
-        print(f"Video compilation failed: {e}")
-        print("This *likely* means the 'imageio-ffmpeg' plugin is not installed.")
-        print("Please install it and try again:")
+        print(f"\n--- ERROR ---: Video compilation failed: {e}")
         print("  pip install imageio[ffmpeg]")
-        print("-------------")
 
 
 def create_animation_from_frames(
-    root_dir: str,
+    config_path: str,
     nc_file_path: str,
-    p_t: int,
-    scaling_stats_path: str = None,
-    output_gif_path: str = None,  # Can be None
-    output_video_path: str = None,  # Can be None
-    fps: int = 10,
+    var_names: List[str],
+    var_units: List[str],
+    diverging_vars: List[str],
+    cmap_seq_name: str,
+    cmap_div_name: str,
+    output_video_path: str,
+    output_gif_path: str, # Can be None
+    fps: int,
 ):
     """
-    Main function to run the full animation process.
+    Main function to run the full, config-driven animation process.
     """
     plot_defaults()
     frame_dir = "./animation_frames_temp"
 
-    # 1. Clean up and create temporary frame directory
     shutil.rmtree(frame_dir, ignore_errors=True)
     os.makedirs(frame_dir, exist_ok=True)
-    print(f"Temporary frame directory created at {frame_dir}")
 
-    # 2. Initialize Dataset
-    try:
-        dataset = AdforceLazyDataset(
-            root=root_dir,
-            nc_files=[nc_file_path],
-            previous_t=p_t,
-            scaling_stats_path=scaling_stats_path,
+    # 1. Load Config and Dataset
+    print(f"Loading config from: {config_path}")
+    cfg = OmegaConf.load(config_path)
+    features_cfg = cfg.features
+    
+    print(f"Loading data from: {nc_file_path}")
+    ds = xr.open_dataset(nc_file_path)
+
+    # 2. Load coordinates and timestamps
+    x_coords = ds["x"].values
+    y_coords = ds["y"].values
+    # The 'time' coord is needed for the titles
+    all_timestamps = ds.time.values
+    num_timesteps = ds.sizes["time"]
+    print(f"Data loaded. Found {num_timesteps} timesteps.")
+
+    # 3. Load all data *once* using config-driven helpers
+    data_cache = {}
+    data_to_plot_torch = {}
+    print(f"Loading variables: {var_names}")
+    for var in var_names:
+        data_to_plot_torch[var] = get_animation_data(
+            ds, features_cfg, var, data_cache
         )
-    except Exception as e:
-        print(f"Failed to initialize AdforceLazyDataset: {e}")
-        return
+        print(f"  - Loaded '{var}' with shape {data_to_plot_torch[var].shape}")
 
-    if len(dataset) == 0:
-        print("Dataset is empty. Check time steps and p_t.")
-        return
+    # 4. Pre-calculate global color limits (uses original logic)
+    climits = calculate_global_climits(data_to_plot_torch, diverging_vars)
 
-    total_frames = len(dataset)
-    print(f"Dataset loaded. Total samples: {total_frames}")
+    # 5. Prepare colormaps and titles
+    cmap_seq = plt.get_cmap(cmap_seq_name)
+    cmap_div = plt.get_cmap(cmap_div_name)
+    
+    colormaps = {}
+    titles = {}
+    for var, unit in zip(var_names, var_units):
+        titles[var] = f"{var} [" + unit + "]"
+        if var in diverging_vars:
+            colormaps[var] = cmap_div
+        else:
+            colormaps[var] = cmap_seq
 
-    # 3. Load static data (coords, DEM)
-    x_coords, y_coords, dem = load_static_data(nc_file_path, dataset)
-
-    # 4. Pre-calculate global color limits
-    climits = calculate_global_climits(dataset, dem)
-
-    # 5. Render all frames
-    print("Rendering frames (recreating plot for each frame)...")
-    frame_files = []  # Store file paths
-    for idx in tqdm(range(total_frames), desc="Rendering frames"):
-        frame_path = os.path.join(frame_dir, f"frame_{idx:05d}.png")
+    # 6. Render all frames
+    print("Rendering frames...")
+    frame_files = []
+    for t_idx in tqdm(range(num_timesteps), desc="Rendering frames"):
+        frame_path = os.path.join(frame_dir, f"frame_{t_idx:05d}.png")
         frame_files.append(frame_path)
 
-        # Call the stateless plotting function
+        # Build the data dict for this frame
+        data_for_frame = {}
+        for var in var_names:
+            tensor = data_to_plot_torch[var]
+            if tensor.dim() == 1: # Static data (e.g., DEM)
+                data_for_frame[var] = tensor.numpy()
+            else: # Time-series data (e.g., WD)
+                data_for_frame[var] = tensor[t_idx, :].numpy()
+
+        # Call the original, stateless plotting function
         plot_single_frame(
-            idx, total_frames, dataset, x_coords, y_coords, dem, climits, frame_path
+            t_idx,
+            all_timestamps,
+            x_coords,
+            y_coords,
+            data_for_frame,
+            climits,
+            colormaps,
+            titles,
+            frame_path
         )
 
-    # 6. Read images back into memory *once*
+    # 7. Read images back into memory *once*
     images = []
     if output_gif_path or output_video_path:
         for frame_file in tqdm(frame_files, desc="Reading frames into memory"):
             images.append(iio.imread(frame_file))
 
-    # 7. Compile GIF
+    # 8. Compile GIF
     if output_gif_path:
-        compile_gif_from_frames(frame_dir, output_gif_path, fps, images)
+        compile_gif_from_frames(output_gif_path, fps, images)
 
-    # 8. Compile Video
+    # 9. Compile Video
     if output_video_path:
-        compile_video_from_frames(frame_dir, output_video_path, fps, images)
+        compile_video_from_frames(output_video_path, fps, images)
 
-    # 9. Clean up (Commented out per user request)
-    # try:
-    #    shutil.rmtree(frame_dir)
-    #    print(f"Cleaned up temporary directory: {frame_dir}")
-    # except Exception as e:
-    #    print(f"Warning: Failed to clean up {frame_dir}. Error: {e}")
+    # 10. Clean up
+    try:
+       shutil.rmtree(frame_dir)
+       print(f"Cleaned up temporary directory: {frame_dir}")
+    except Exception as e:
+       print(f"Warning: Failed to clean up {frame_dir}. Error: {e}")
+    
+    ds.close()
 
 
 if __name__ == "__main__":
-    # --- CONFIGURE YOUR PATHS HERE ---
+    parser = argparse.ArgumentParser(description="Animate mSWE-GNN simulation data (config-driven).")
+    
+    # --- File/Var Arguments ---
+    parser.add_argument("-c", "--config-path", required=True, help="Path to the main config.yaml")
+    parser.add_argument("-f", "--nc-file", required=True, help="Path to the .nc simulation file")
+    parser.add_argument(
+        "-v", "--vars", 
+        nargs=6, 
+        required=True, 
+        metavar="VAR",
+        default=["P", "WX", "WY", "SSH", "VX", "VY"],
+        help="List of EXACTLY 6 variables to animate."
+    )
+    parser.add_argument(
+        "-u", "--units",
+        nargs=6,
+        required=True,
+        metavar="UNIT",
+        default=["m", "m s$^{-1}$", "m s$^{-1}$", "m", "m s$^{-1}$", "m s$^{-1}$"],
+        help="List of 6 units (LaTeX format), in same order as --vars."
+    )
+    
+    # --- Plotting Arguments ---
+    parser.add_argument(
+        "--cmap-seq", 
+        default="cmocean.cm.thermal", 
+        help="Colormap for sequential data (default: cmocean.cm.thermal)"
+    )
+    parser.add_argument(
+        "--cmap-div", 
+        default="cmocean.cm.balance", 
+        help="Colormap for diverging data (default: cmocean.cm.balance)"
+    )
+    parser.add_argument(
+        "--diverging-vars",
+        nargs='*',
+        default=["WX", "WY", "SSH", "VX", "VY"],
+        help="List of variable names to treat as diverging."
+    )
 
-    # This should be the directory containing your NetCDF file
-    # and the 'scaling_stats.yaml' file.
-    root_directory = "/Volumes/s/tcpips/swegnn_5sec/"
+    # --- Output Arguments ---
+    parser.add_argument("-o", "--output-video", default="adforce_6panel_animation.mp4", help="Output video file")
+    parser.add_argument("--gif", action="store_true", help="Also generate a .gif version.")
+    parser.add_argument("--fps", type=int, default=10, help="Frames per second")
+    parser.add_argument(
+        "--test", action="store_true", help="Run doctests and exit."
+    )
 
-    # This is the single .nc file you want to animate
-    netcdf_file = os.path.join(root_directory, "152_KATRINA_2005.nc")
+    args = parser.parse_args()
 
-    # This is the path to your scaling stats.
-    # Set to None if you are not using scaling.
-    scaling_stats_file = os.path.join(root_directory, "scaling_stats.yaml")
+    if args.test:
+        print("Running doctests...")
+        doctest.testmod(verbose=True)
+        exit()
 
-    # This must match the `previous_t` used to create the 'processed'
-    # directory for the AdforceLazyDataset.
-    previous_time_steps = 2
-
-    # Define the output paths
-    # Set to None to skip creation
-    output_gif = "adforce_6panel_animation.gif"
-    output_video = "adforce_6panel_animation.mp4"
-
-    # Frames per second for the final animations
-    anim_fps = 10
-    # --- END CONFIGURATION ---
-
-    if not os.path.exists(netcdf_file):
-        print(f"Error: NetCDF file not found at {netcdf_file}")
+    if not os.path.exists(args.nc_file):
+        print(f"Error: NetCDF file not found at {args.nc_file}")
+    elif not os.path.exists(args.config_path):
+        print(f"Error: Config file not found at {args.config_path}")
     else:
+        # Check for cmocean in cmap names
+        if 'cmocean' in args.cmap_seq:
+            args.cmap_seq = getattr(cmocean.cm, args.cmap_seq.split('.')[-1])
+        if 'cmocean' in args.cmap_div:
+            args.cmap_div = getattr(cmocean.cm, args.cmap_div.split('.')[-1])
+
+        output_gif_path = None
+        if args.gif:
+            output_gif_path = os.path.splitext(args.output_video)[0] + ".gif"
+
+        print(args)
+        broken_unit_str = "m s{-1}$"
+        correct_unit_str = "m s$^{-1}$"
+        fixed_units = [u.replace(broken_unit_str, correct_unit_str) for u in args.units]
+        args.units = fixed_units
+
         create_animation_from_frames(
-            root_directory,
-            netcdf_file,
-            previous_time_steps,
-            scaling_stats_path=scaling_stats_file,
-            output_gif_path=output_gif,
-            output_video_path=output_video,
-            fps=anim_fps,
+            config_path=args.config_path,
+            nc_file_path=args.nc_file,
+            var_names=args.vars,
+            var_units=args.units,
+            diverging_vars=args.diverging_vars,
+            cmap_seq_name=args.cmap_seq,
+            cmap_div_name=args.cmap_div,
+            output_video_path=args.output_video,
+            output_gif_path=output_gif_path,
+            fps=args.fps,
         )
+        
         print(f"\nAnimation test complete.")
-        if output_gif:
-            print(f"GIF saved to {os.path.abspath(output_gif)}")
-        if output_video:
-            print(f"Video saved to {os.path.abspath(output_video)}")
+        if output_gif_path:
+            print(f"GIF saved to {os.path.abspath(output_gif_path)}")
+        if args.output_video:
+            print(f"Video saved to {os.path.abspath(args.output_video)}")
