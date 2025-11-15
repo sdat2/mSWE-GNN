@@ -76,7 +76,7 @@ def find_closest_node(
 
     Returns:
         int: The index of the closest node.
-        
+
     Doctest:
     >>> import numpy as np
     >>> x = np.array([-90.0, -89.0, -88.0])
@@ -141,8 +141,8 @@ def extract_ssh_timeseries(
     # We assume 'WD' is the first feature (index 0) in the state.
     # This is a strong assumption but consistent with the original script.
     # A safer way would be to get the WD index from features_cfg.state.
-    wd_feature_index = 0 # Assuming 'WD' is the first target variable
-    
+    wd_feature_index = 0  # Assuming 'WD' is the first target variable
+
     for pred_state in all_predictions:
         # pred_state shape is [N_nodes, N_state_features] (e.g., WD, VX, VY)
         wd_at_node = pred_state[node_index, wd_feature_index]
@@ -169,7 +169,7 @@ def extract_ground_truth_ssh(
     ssh_series = []
     # We assume 'WD' is the first feature (index 0) in the *unscaled* target.
     # This is consistent with AdforceLazyDataset's `get()` method.
-    wd_feature_index = 0 # Assuming 'WD' is the first target variable
+    wd_feature_index = 0  # Assuming 'WD' is the first target variable
 
     for idx in tqdm(range(len(dataset)), desc="Reading Ground Truth"):
         # data.y_unscaled is the unscaled state [WD, VX, VY] at t+1
@@ -188,7 +188,7 @@ def plot_comparison_timeseries(
     full_rollout_ssh: np.ndarray,
     n_step_ssh: np.ndarray,
     n_step_val: int,
-    output_pdf_path: str, # <-- [NEW] Argument for output path
+    output_pdf_path: str,  # <-- [NEW] Argument for output path
 ):
     """
     Plots the three SSH time series on a single graph and saves it.
@@ -230,11 +230,13 @@ def plot_comparison_timeseries(
     # Format the x-axis for datetimes
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
     ax.xaxis.set_major_locator(mdates.HourLocator(interval=6))
-    plt.xticks(rotation=90) # Rotate x-axis labels
+    plt.xticks(rotation=90)  # Rotate x-axis labels
 
     ax.set_xlabel("Date & Time (UTC)")
     ax.set_ylabel("Sea Surface Height (SSH) [m]")
-    ax.set_title(f"SSH Time Series Comparison near ({target_coords[0]:.4f}, {target_coords[1]:.4f}) (Node {node_index})")
+    ax.set_title(
+        f"SSH Time Series Comparison near ({target_coords[0]:.4f}, {target_coords[1]:.4f}) (Node {node_index})"
+    )
     ax.legend()
     ax.grid(True, which="major", linestyle="--", alpha=0.5)
 
@@ -253,28 +255,43 @@ if __name__ == "__main__":
         description="Run mSWE-GNN time series comparison for a specific node."
     )
     parser.add_argument(
-        "-ckpt", "--checkpoint_path", type=str, required=True,
-        help="Path to the .ckpt model checkpoint file."
+        "-ckpt",
+        "--checkpoint_path",
+        type=str,
+        required=True,
+        help="Path to the .ckpt model checkpoint file.",
     )
     parser.add_argument(
-        "-nc", "--netcdf_file", type=str, required=True,
-        help="Path to the single .nc file to analyze (e.g., '152_KATRINA_2005.nc')."
+        "-nc",
+        "--netcdf_file",
+        type=str,
+        required=True,
+        help="Path to the single .nc file to analyze (e.g., '152_KATRINA_2005.nc').",
     )
     parser.add_argument(
-        "-o", "--output_file", type=str, required=True,
-        help="Path to save the output PDF plot (e.g., 'katrina_ssh_new_orleans.pdf')."
+        "-o",
+        "--output_file",
+        type=str,
+        required=True,
+        help="Path to save the output PDF plot (e.g., 'katrina_ssh_new_orleans.pdf').",
     )
     parser.add_argument(
-        "--lon", type=float, required=True,
-        help="Target longitude for time series (e.g., -90.0715 for New Orleans)."
+        "--lon",
+        type=float,
+        required=True,
+        help="Target longitude for time series (e.g., -90.0715 for New Orleans).",
     )
     parser.add_argument(
-        "--lat", type=float, required=True,
-        help="Target latitude for time series (e.g., 29.9511 for New Orleans)."
+        "--lat",
+        type=float,
+        required=True,
+        help="Target latitude for time series (e.g., 29.9511 for New Orleans).",
     )
     parser.add_argument(
-        "--horizon", type=int, default=3,
-        help="N-step horizon to compare against (default: 3)."
+        "--horizon",
+        type=int,
+        default=3,
+        help="N-step horizon to compare against (default: 3).",
     )
     args = parser.parse_args()
 
@@ -290,15 +307,15 @@ if __name__ == "__main__":
             f"config.yaml not found at: {config_path}\n"
             f"This script relies on the 'config.yaml' file saved by 'adforce_main.py'."
         )
-    
+
     cfg = OmegaConf.load(config_path)
     OmegaConf.resolve(cfg)  # Resolve any interpolations
-    features_cfg = cfg.features # Get the features block
+    features_cfg = cfg.features  # Get the features block
 
     # --- [NEW] Get paths and params from config ---
     scaling_stats_file = cfg.data_params.scaling_stats_path
     previous_time_steps = cfg.model_params.previous_t
-    
+
     print("--- Script Configuration ---")
     print(f"  Checkpoint: {args.checkpoint_path}")
     print(f"  NetCDF File: {args.netcdf_file}")
@@ -308,23 +325,21 @@ if __name__ == "__main__":
     print(f"  N-Step Horizon: {args.horizon}")
     print("----------------------------")
 
-
     # --- 4. [UPDATED] INITIALIZE DATASET ---
     print(f"Initializing dataset for {args.netcdf_file}...")
-    
+
     # Create a unique root for this script's dataset cache
     predict_root_dir = os.path.join(
-        os.path.dirname(args.output_file), 
-        "timeseries_cache"
+        os.path.dirname(args.output_file), "timeseries_cache"
     )
-    
+
     try:
         dataset = AdforceLazyDataset(
             root=predict_root_dir,
             nc_files=[args.netcdf_file],
             previous_t=previous_time_steps,
             scaling_stats_path=scaling_stats_file,
-            features_cfg=features_cfg  # <-- THE CRITICAL ADDITION
+            features_cfg=features_cfg,  # <-- THE CRITICAL ADDITION
         )
     except Exception as e:
         print(f"Failed to initialize AdforceLazyDataset: {e}")
@@ -344,7 +359,6 @@ if __name__ == "__main__":
         print(f"Failed to load model checkpoint: {e}")
         exit()
 
-
     # --- 6. [UPDATED] FIND NODE & EXTRACT STATIC DATA ---
     x_coords, y_coords, dem = load_static_data(
         args.netcdf_file, dataset, features_cfg=features_cfg
@@ -362,22 +376,22 @@ if __name__ == "__main__":
     # --- 9. [UPDATED] RUN FULL ROLLOUT ---
     print("Running full rollout (horizon = -1)...")
     preds_full = perform_rollout(
-        lightning_model, 
-        dataset, 
-        device, 
+        lightning_model,
+        dataset,
+        device,
         features_cfg=features_cfg,
-        rollout_horizon=-1  # -1 for full rollout
+        rollout_horizon=-1,  # -1 for full rollout
     )
     full_rollout_ssh = extract_ssh_timeseries(preds_full, node_index, dem_at_node)
 
     # --- 10. [UPDATED] RUN N-STEP ROLLOUT ---
     print(f"Running N-Step rollout (horizon = {args.horizon})...")
     preds_n_step = perform_rollout(
-        lightning_model, 
-        dataset, 
-        device, 
+        lightning_model,
+        dataset,
+        device,
         features_cfg=features_cfg,
-        rollout_horizon=args.horizon
+        rollout_horizon=args.horizon,
     )
     n_step_ssh = extract_ssh_timeseries(preds_n_step, node_index, dem_at_node)
 
@@ -390,7 +404,7 @@ if __name__ == "__main__":
         full_rollout_ssh,
         n_step_ssh,
         n_step_val=args.horizon,
-        output_pdf_path=args.output_file # <-- Pass the output path
+        output_pdf_path=args.output_file,  # <-- Pass the output path
     )
 
     print("\nTime series analysis complete.")
