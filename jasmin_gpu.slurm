@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- SLURM Directives (GPU Job for ORCHID) ---
-#SBATCH --job-name=SWEGNN-K3-P3
+#SBATCH --job-name=SWEGNN-K3-P1-128-bias
 #SBATCH --account=orchid             # Use ORCHID account
 #SBATCH --partition=orchid           # Use ORCHID partition
 #SBATCH --qos=orchid                 # Use ORCHID QoS
@@ -31,11 +31,11 @@ nvidia-smi # Print GPU status to the log
 
 # --- 2. Data Setup ---
 # Define permanent paths
-DATA_SOURCE_PATH="/home/users/sithom/swegnn_5sec"
-RESULTS_DEST_PATH="/home/users/sithom/my_results"
+DATA_SOURCE_PATH="/home/users/sithom/swegnn_5sec" 
+RESULTS_DEST_PATH="/home/users/sithom/my_results/${SLURM_JOB_NAME}" # Unique results path per job to keep configs etc. separate
 
 # Create a unique job-specific directory on the SHARED SCRATCH filesystem
-JOB_SCRATCH_DIR="/work/scratch-pw3/$USER/$SLURM_JOB_ID"
+JOB_SCRATCH_DIR="/work/scratch-pw3/$USER/$SLURM_JOB_ID" # scratch path
 mkdir -p $JOB_SCRATCH_DIR
 
 # Define paths within this new shared scratch directory
@@ -62,10 +62,11 @@ python -m adforce_main \
     machine.devices=1 \
     machine.num_workers=8 \
     model_params.model_type=GNN \
-    model_params.previous_t=3 \
+    model_params.previous_t=1 \
     models.type_gnn=SWEGNN \
     models.hid_features=128 \
     models.K=3 \
+    +models.bias=True \
     models.normalize=True \
     models.with_gradient=True \
     models.edge_mlp=True \

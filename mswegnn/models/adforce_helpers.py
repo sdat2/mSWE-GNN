@@ -122,6 +122,8 @@ def activation_functions(activation_name, device="cpu"):
         return nn.LeakyReLU(0.1)
     elif activation_name == "elu":
         return nn.ELU()
+    elif activation_name == "gelu":
+        return nn.GELU()
     elif activation_name == "swish":
         return nn.SiLU()
     elif activation_name == "sigmoid":

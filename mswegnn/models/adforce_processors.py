@@ -56,47 +56,6 @@ class GNN_Layer(nn.Module):
         return x
 
 
-class MSGNN_Layer(nn.Module):
-    """
-    A multi-scale wrapper for the GNN_Layer.
-    (Original from adforce_gnn.py)
-    """
-
-    def __init__(
-        self,
-        in_features,
-        out_features,
-        gnn_activation,
-        type_gnn="GCN",
-        with_filter_matrix=False,
-        K=3,
-    ):
-        super().__init__()
-        self.conv = GNN_Layer(
-            in_features, out_features, gnn_activation, type_gnn=type_gnn
-        )
-        self.with_filter_matrix = with_filter_matrix
-        self.K = K
-
-        if self.with_filter_matrix:
-            self.filter_matrix = nn.Parameter(torch.ones(self.K))
-
-    def forward(self, x, edge_index, edge_attr=None, intra_mesh_edge_index=None):
-        if self.with_filter_matrix:
-            x_conv = []
-            x_conv.append(self.conv(x, edge_index, edge_attr=edge_attr))
-            for k in range(1, self.K):
-                x_conv.append(self.conv(x_conv[-1], edge_index, edge_attr=edge_attr))
-
-            x_conv = torch.stack(x_conv, dim=-1)
-            x_conv = torch.matmul(x_conv, self.filter_matrix)
-
-        else:
-            x_conv = self.conv(x, edge_index, edge_attr=edge_attr)
-
-        return x_conv
-
-
 class GNN_Adforce(nn.Module):
     """
     Refactored GNN processor class.
@@ -124,6 +83,7 @@ class GNN_Adforce(nn.Module):
         self.in_features = in_features
         self.hid_features = hid_features
         self.out_features = num_output_features
+        self.bias = kwargs.get("bias", False)
 
         self.gnn = GNN_Layer(
             in_features, hid_features, gnn_activation, type_gnn=type_gnn
@@ -137,6 +97,7 @@ class GNN_Adforce(nn.Module):
             hidden_size=hid_features,
             n_layers=mlp_layers,
             activation=mlp_activation,
+            bias=self.bias,
         )
         # --- END REFACTOR ---
 
@@ -149,145 +110,6 @@ class GNN_Adforce(nn.Module):
         x = self.decoder(x)
 
         return x
-
-
-class MSGNN_Adforce(nn.Module):
-    """
-    Refactored MSGNN processor class.
-    (Original from adforce_gnn.py)
-
-    --- REFACTORED ---
-    Now uses `make_mlp` from .helpers instead of the local MLP class.
-    """
-
-    def __init__(
-        self,
-        in_features,
-        hid_features,
-        num_output_features,
-        mlp_layers,
-        num_scales,
-        gnn_activation="tanh",
-        mlp_activation="prelu",
-        type_gnn="GCN",
-        with_filter_matrix=False,
-        K=3,
-        learned_pooling=False,
-        skip_connections=True,
-        **kwargs,
-    ):
-        super().__init__()
-
-        self.in_features = in_features
-        self.hid_features = hid_features
-        self.out_features = num_output_features
-        self.num_scales = num_scales
-        self.learned_pooling = learned_pooling
-        self.skip_connections = skip_connections
-
-        # --- REFACTORED ---
-        # Was: MLP(in_features, hid_features, hid_features, mlp_layers, mlp_activation)
-        self.encoder = make_mlp(
-            input_size=in_features,
-            output_size=hid_features,
-            hidden_size=hid_features,
-            n_layers=mlp_layers,
-            activation=mlp_activation,
-        )
-        # --- END REFACTOR ---
-
-        self.gnn_layers = nn.ModuleList(
-            [
-                MSGNN_Layer(
-                    hid_features,
-                    hid_features,
-                    gnn_activation,
-                    type_gnn=type_gnn,
-                    with_filter_matrix=with_filter_matrix,
-                    K=K,
-                )
-                for _ in range(num_scales)
-            ]
-        )
-
-        # --- REFACTORED ---
-        # Was: MLP(hid_features, self.out_features, hid_features, mlp_layers, mlp_activation)
-        self.decoder = make_mlp(
-            input_size=hid_features,
-            output_size=self.out_features,
-            hidden_size=hid_features,
-            n_layers=mlp_layers,
-            activation=mlp_activation,
-        )
-        # --- END REFACTOR ---
-
-        if self.learned_pooling:
-            self.pooling_layers = nn.ModuleList(
-                [nn.Linear(hid_features, hid_features) for _ in range(num_scales - 1)]
-            )
-
-    def forward(
-        self, static_features, dynamic_features, edge_index, edge_attr, batch, **kwargs
-    ):
-        x = torch.cat([static_features, dynamic_features], -1)
-        x = self.encoder(x)
-
-        x_scales = self._create_scale_features(x, batch)
-
-        x_scales_out = []
-        for i in range(self.num_scales):
-            x_conv = self.gnn_layers[i](
-                x_scales[i],
-                edge_index[i],
-                edge_attr=edge_attr[i],
-                intra_mesh_edge_index=None,
-            )
-            x_scales_out.append(x_conv)
-
-        x_out = self._pool(x_scales_out, batch)
-        x_out = self.decoder(x_out)
-        return x_out
-
-    def _pool(self, x_scales, batch):
-        finest_scale = x_scales[0]
-        if self.skip_connections:
-            for i in range(self.num_scales - 1):
-                if self.learned_pooling:
-                    x_pool = self.pooling_layers[i](x_scales[i + 1])
-                else:
-                    x_pool = x_scales[i + 1]
-
-                finest_scale = finest_scale + scatter(
-                    x_pool,
-                    batch.node_ptr[
-                        batch.intra_edge_ptr[i] : batch.intra_edge_ptr[i + 1], 1
-                    ],
-                    dim=0,
-                    reduce="mean",
-                )
-        return finest_scale
-
-    def _create_scale_features(self, x, batch):
-        if isinstance(batch, Batch):
-            x_scales = [
-                x[batch.node_ptr[i, 0] : batch.node_ptr[i, -1]]
-                for i in range(batch.num_graphs)
-            ]
-            x_scales = [
-                torch.cat(
-                    [
-                        x_graph[batch.node_ptr[i, j] : batch.node_ptr[i, j + 1]]
-                        for i in range(batch.num_graphs)
-                    ]
-                )
-                for j in range(self.num_scales)
-            ]
-        else:
-            x_scales = [
-                x[batch.node_ptr[i] : batch.node_ptr[i + 1]]
-                for i in range(self.num_scales)
-            ]
-        return x_scales
 
 
 class SWEGNN(nn.Module):
@@ -331,12 +153,15 @@ class SWEGNN(nn.Module):
         n_layers = mlp_kwargs.pop("mlp_layers", 2)
         mlp_kwargs["n_layers"] = n_layers
         mlp_kwargs.pop("edge_mlp", None)
+        self.bias = mlp_kwargs.get("bias", False)
+        mlp_kwargs['bias'] = self.bias
 
         self.edge_mlp = make_mlp(
             self.edge_input_size,
             self.edge_output_size,
             hidden_size=hidden_size,
             # device=device,
+            # bias=self.bias,
             **mlp_kwargs,
         )
 
@@ -346,7 +171,7 @@ class SWEGNN(nn.Module):
                     nn.Linear(
                         dynamic_node_features,
                         dynamic_node_features,
-                        bias=False,
+                        bias=self.bias,
                         # device=device,
                     )
                     for _ in range(K + 1)
@@ -429,8 +254,6 @@ class SWEGNN_Adforce(nn.Module):
     This class replicates the encoder-processor-decoder structure
     from the original gnn.py.
 
-    --- REFACTORED ---
-    Now uses `make_mlp` from .helpers instead of the local MLP class.
     """
 
     def __init__(
@@ -449,6 +272,7 @@ class SWEGNN_Adforce(nn.Module):
         super().__init__()
 
         self.hid_features = hid_features
+        self.bias = gnn_kwargs.get("bias", False)
 
         # 1. Encoders
         # --- REFACTORED ---
@@ -458,6 +282,7 @@ class SWEGNN_Adforce(nn.Module):
             hidden_size=hid_features,
             n_layers=mlp_layers,
             activation=mlp_activation,
+            bias=self.bias,
         )
         self.dynamic_node_encoder = make_mlp(
             input_size=in_features_dynamic,
@@ -465,6 +290,7 @@ class SWEGNN_Adforce(nn.Module):
             hidden_size=hid_features,
             n_layers=mlp_layers,
             activation=mlp_activation,
+            bias=self.bias,
         )
         # --- END REFACTOR ---
 
@@ -481,6 +307,7 @@ class SWEGNN_Adforce(nn.Module):
                 hidden_size=hid_features,
                 n_layers=mlp_layers,
                 activation=mlp_activation,
+                bias=self.bias,
             )
             # --- END REFACTOR ---
 
@@ -494,6 +321,7 @@ class SWEGNN_Adforce(nn.Module):
             edge_features=self.num_edge_features_for_gnn,
             mlp_layers=mlp_layers,
             activation=mlp_activation,
+            # bias=self.bias,
             **gnn_kwargs,
         )
 
@@ -509,6 +337,7 @@ class SWEGNN_Adforce(nn.Module):
             output_size=num_output_features,
             hidden_size=hid_features,
             n_layers=mlp_layers,
+            bias=self.bias,
             activation=mlp_activation,
         )
         # --- END REFACTOR ---

@@ -7,7 +7,7 @@ from torch_geometric.data import Data, Batch
 
 # Import from our new refactored files
 # from .adforce_base import AdforceBaseModel
-from .adforce_helpers import make_mlp
+from .adforce_helpers import make_mlp, activation_functions
 from .adforce_processors import GNN_Adforce, SWEGNN_Adforce
 
 
@@ -87,19 +87,7 @@ class MonolithicMLPModel(nn.Module):
         self.flat_input_dim = self.n_nodes * self.in_features_per_node
         self.flat_output_dim = self.n_nodes * self.out_features_per_node
 
-        if mlp_activation.lower() == "relu":
-            activation = nn.ReLU()
-        elif mlp_activation.lower() == "gelu":
-            activation = nn.GELU()
-        elif mlp_activation.lower() == "tanh":
-            activation = nn.Tanh()
-        elif mlp_activation.lower() == "sigmoid":
-            activation = nn.Sigmoid()
-        elif mlp_activation.lower() == "prelu":
-            activation = nn.PReLU()
-        else:
-            raise ValueError(f"Unknown activation: {mlp_activation}")
-
+        activation = activation_functions(mlp_activation.lower())
         layers = []
         layers.append(nn.Linear(self.flat_input_dim, hid_features))
         layers.append(activation)
@@ -214,12 +202,15 @@ class PointwiseMLPModel(nn.Module):
         mlp_kwargs.pop("skip_connections", None)
         mlp_kwargs.pop("gnn_activation", None)
         mlp_kwargs.pop("type_gnn", None)
+        bias = mlp_kwargs.pop("bias", False)
+        mlp_kwargs["bias"] = bias
 
         self.mlp = make_mlp(
             input_size=self.in_features,
             output_size=self.out_features,
             activation=activation_type,
             n_layers=n_layers,
+            # bias=bias,
             **mlp_kwargs,  # Pass remaining (e.g., hid_features)
         )
 
