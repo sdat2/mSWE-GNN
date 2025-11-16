@@ -55,51 +55,6 @@ def get_loss_variable_scaler(velocity_scaler=1, device=None):  # <-- MODIFIED
     return loss_scaler
 
 
-def get_multiscale_loss(
-    diff, data, only_where_water=True, type_loss="RMSE", nodes_dim=0
-):
-    """Calculates multiscale loss by weighting loss in different scales
-
-    Parameters:
-    diff: torch.tensor
-        difference between predictions and real values
-    only_where_water: bool (default = True)
-        if True, only calculates loss where there is water
-    type_loss: str (default = 'RMSE')
-        options: 'RMSE', 'MAE'
-    nodes_dim: int (default = 0)
-        dimension where nodes are located
-    """
-    node_ptr = data.node_ptr
-    if only_where_water:
-        where_water = mask_on_water(diff)
-    else:
-        # --- MODIFICATION: Ensure tensor is on the correct device ---
-        where_water = torch.ones(diff.shape[0], device=diff.device).bool()
-
-    if isinstance(data, Batch):
-        multiscale_loss = get_mean_error(
-            torch.cat(
-                [
-                    diff[data.node_ptr[i, 0] : data.node_ptr[i, 1]][
-                        where_water[node_ptr[i, 0] : node_ptr[i, 1]]
-                    ]
-                    for i in range(data.num_graphs)
-                ]
-            ),
-            type_loss,
-            nodes_dim,
-        )
-    else:
-        multiscale_loss = get_mean_error(
-            diff[node_ptr[0] : node_ptr[1]][where_water[node_ptr[0] : node_ptr[1]]],
-            type_loss,
-            nodes_dim,
-        )
-
-    return multiscale_loss
-
-
 def loss_function(
     preds,
     real,
@@ -133,24 +88,21 @@ def loss_function(
     """
     diff = preds - real  # This is on the model's device (e.g., cuda:0)
 
-    if "node_ptr" in data.keys():
-        loss = get_multiscale_loss(diff, data, only_where_water, type_loss, nodes_dim=0)
-    else:
-        if only_where_water:
-            # --- MODIFICATION: Use the unscaled `y_unscaled` from the batch ---
-            # `data.y_unscaled` is on the GPU because Lightning moved `data`.
-            where_water = data.y_unscaled[:, 0].abs() > 1e-6  # 1e-6 is a small epsilon
+    if only_where_water:
+        # --- MODIFICATION: Use the unscaled `y_unscaled` from the batch ---
+        # `data.y_unscaled` is on the GPU because Lightning moved `data`.
+        where_water = data.y_unscaled[:, 0].abs() > 1e-6  # 1e-6 is a small epsilon
 
-            if where_water.sum() == 0:
-                # Handle case where there is no water in the batch
-                return torch.tensor(0.0, device=diff.device, requires_grad=True)
-
-            diff = diff[where_water]
-
-        if diff.shape[0] == 0:
+        if where_water.sum() == 0:
+            # Handle case where there is no water in the batch
             return torch.tensor(0.0, device=diff.device, requires_grad=True)
 
-        loss = get_mean_error(diff, type_loss, nodes_dim=0)
+        diff = diff[where_water]
+
+    if diff.shape[0] == 0:
+        return torch.tensor(0.0, device=diff.device, requires_grad=True)
+
+    loss = get_mean_error(diff, type_loss, nodes_dim=0) # get scaled rmse or mae over nodes
 
     # --- MODIFICATION: Pass the device from `diff` ---
     # This ensures loss_scaler is created on the same device as loss (e.g., cuda:0)
@@ -166,7 +118,7 @@ def loss_function(
     loss = torch.dot(loss, loss_scaler) / loss_scaler.sum()
 
     if conservation != 0:
-        WD_index = 2
+        WD_index = 2 
         input_WD = data.x[:, -WD_index::WD_index]
         pred_WD = preds[:, 0::WD_index]
 
