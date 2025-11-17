@@ -46,9 +46,10 @@ python -m mswegnn.utils.adforce_predict_animate \
      -c /home/users/sithom/my_results/SWEGNN-K3-P1-128-bias/checkpoints/config.yaml \
      -ckpt /home/users/sithom/my_results/SWEGNN-K3-P1-128-bias/checkpoints/GNN-epoch=86-val_loss=0.4457.ckpt \
      -nc /home/users/sithom/swegnn_5sec/152_KATRINA_2005.nc \
-     -s /home/users/sithom/mSWE-GNN/conf/scaling_stats.yaml \
+     -s /home/users/sithom/my_results/SWEGNN-K3-P1-128-bias/processed/scaling_stats.yaml \
      -r -1 \
      -o $OUTPUT_DIR
 
 echo "Job completed."
 echo "Output saved to: $OUTPUT_DIR"
+echo "Done."

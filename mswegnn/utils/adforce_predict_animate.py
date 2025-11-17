@@ -25,7 +25,8 @@ python -m mswegnn.utils.adforce_predict_animate \
     -ckpt /path/to/your/model.ckpt \
     -nc /path/to/your/152_KATRINA_2005.nc \
     -r -1 \
-    -o $RUN_DIR
+    -o $RUN_DIR \
+    -s /optional/override/path/to/scaling_stats.yaml
 
 """
 
@@ -120,6 +121,7 @@ def perform_rollout(
     dataset: AdforceLazyDataset,
     device: torch.device,
     features_cfg: Dict[str, Any],
+    scaling_stats: Dict[str, Any],  # <-- ADDED
     rollout_horizon: int = 1,
 ) -> List[np.ndarray]:
     """
@@ -132,6 +134,7 @@ def perform_rollout(
         dataset (AdforceLazyDataset): The dataset for a single simulation.
         device (torch.device): The torch device (e.g., 'cuda' or 'cpu').
         features_cfg (Dict[str, Any]): The 'features' block from the config.
+        scaling_stats (Dict[str, Any]): The loaded scaling_stats.yaml dict.
         rollout_horizon (int, optional): The rollout strategy.
             - (N = -1): "Full Rollout". Runs one long simulation from t=0.
               predictions_list[k] is the k-step-ahead prediction.
@@ -146,11 +149,25 @@ def perform_rollout(
     """
     model.eval()  # Set model to evaluation mode
 
-    # --- Get all necessary scaling stats from the dataset ---
-    y_mean = dataset.y_mean.to(device)
-    y_std = dataset.y_std.to(device)
-    y_delta_mean = dataset.y_delta_mean.to(device)
-    y_delta_std = dataset.y_delta_std.to(device)
+    # --- Get all necessary scaling stats from the dict ---
+    try:
+        y_mean = torch.tensor(scaling_stats["y_mean"], dtype=torch.float32).to(device)
+        y_std = (
+            torch.tensor(scaling_stats["y_std"], dtype=torch.float32)
+            .to(device)
+            .clamp(min=1e-6)
+        )
+        y_delta_mean = torch.tensor(
+            scaling_stats["y_delta_mean"], dtype=torch.float32
+        ).to(device)
+        y_delta_std = (
+            torch.tensor(scaling_stats["y_delta_std"], dtype=torch.float32)
+            .to(device)
+            .clamp(min=1e-6)
+        )
+    except (KeyError, TypeError) as e:
+        print(f"Error: Scaling stats dict is missing keys or invalid: {e}")
+        raise e
 
     # --- HACK: Need DEM on device for derived features ---
     # A more robust solution would pass all static features needed.
@@ -376,6 +393,7 @@ def get_frame_data(
     prediction_state: np.ndarray,
     features_cfg: Dict[str, Any],
     plot_idx_map: Dict[str, Dict[str, int]],
+    scaling_stats: Dict[str, Any],  # <-- ADDED
 ) -> Dict[str, np.ndarray]:
     """
     Retrieves and processes all 6 variables for a single animation frame.
@@ -389,6 +407,7 @@ def get_frame_data(
         features_cfg (Dict[str, Any]): The 'features' block from the config.
         plot_idx_map (Dict[str, Dict[str, int]]): A map to find plot variables
             (P, WX, WY, WD, VX, VY) in the config-ordered lists.
+        scaling_stats (Dict[str, Any]): The loaded scaling_stats.yaml dict.
 
     Returns:
         Dict[str, np.ndarray]: A dictionary holding the 6 plotting variables.
@@ -409,14 +428,23 @@ def get_frame_data(
     last_forcing_step_start = forcing_end_idx - num_forcing
     last_forcing_step_scaled = x_data[:, last_forcing_step_start:forcing_end_idx]
 
-    if dataset.apply_scaling:
-        # We need the mean/std for a *single* step, not broadcasted
-        # This assumes the order in x_dyn_mean matches features_cfg.forcing
-        mean = dataset.x_dyn_mean_broadcast.cpu()[:num_forcing]
-        std = dataset.x_dyn_std_broadcast.cpu()[:num_forcing]
-        inputs_unscaled = (last_forcing_step_scaled * std) + mean
-    else:
-        inputs_unscaled = last_forcing_step_scaled
+    # --- Unscale forcing data using the stats dict ---
+    try:
+        # Load stats to CPU (as data is on CPU)
+        x_dyn_mean = torch.tensor(scaling_stats["x_dynamic_mean"], dtype=torch.float32)
+        x_dyn_std = (
+            torch.tensor(scaling_stats["x_dynamic_std"], dtype=torch.float32)
+            .clamp(min=1e-6)
+        )
+    except (KeyError, TypeError) as e:
+        print(f"Error: Scaling stats dict missing x_dynamic keys: {e}")
+        raise e
+
+    # We need the mean/std for a *single* step.
+    # This assumes the order in x_dyn_mean matches features_cfg.forcing
+    mean = x_dyn_mean[:num_forcing]
+    std = x_dyn_std[:num_forcing]
+    inputs_unscaled = (last_forcing_step_scaled * std) + mean
 
     # Find P, WX, WY dynamically
     idx_map_forcing = plot_idx_map["forcing"]
@@ -478,7 +506,10 @@ def _create_plot_index_map(features_cfg: Dict[str, Any]) -> Dict[str, Dict[str, 
 
 
 def calculate_global_climits(
-    dataset: AdforceLazyDataset, dem: np.ndarray, features_cfg: Dict[str, Any]
+    dataset: AdforceLazyDataset,
+    dem: np.ndarray,
+    features_cfg: Dict[str, Any],
+    scaling_stats: Dict[str, Any],  # <-- ADDED
 ) -> Dict[str, Tuple[float, float]]:
     """
     Calculates global vmin/vmax by iterating through the *GROUND TRUTH* dataset.
@@ -487,6 +518,7 @@ def calculate_global_climits(
         dataset (AdforceLazyDataset): The initialized dataset.
         dem (np.ndarray): The DEM data.
         features_cfg (Dict[str, Any]): The 'features' block from the config.
+        scaling_stats (Dict[str, Any]): The loaded scaling_stats.yaml dict.
 
     Returns:
         Dict[str, Tuple[float, float]]: Global color limits for plot variables.
@@ -514,6 +546,21 @@ def calculate_global_climits(
     forcing_end_idx = num_static + (num_forcing * p_t)
     last_forcing_step_start = forcing_end_idx - num_forcing
 
+    # --- Load scaling stats from dict ---
+    try:
+        x_dyn_mean = torch.tensor(scaling_stats["x_dynamic_mean"], dtype=torch.float32)
+        x_dyn_std = (
+            torch.tensor(scaling_stats["x_dynamic_std"], dtype=torch.float32)
+            .clamp(min=1e-6)
+        )
+    except (KeyError, TypeError) as e:
+        print(f"Error: Scaling stats dict missing x_dynamic keys: {e}")
+        raise e
+
+    # Get single-step stats (on CPU)
+    mean = x_dyn_mean[:num_forcing]
+    std = x_dyn_std[:num_forcing]
+
     for idx in tqdm(range(len(dataset)), desc="Scanning data"):
         data_gt = dataset.get(idx)
 
@@ -529,12 +576,8 @@ def calculate_global_climits(
         x_data = data_gt.x.cpu()
         last_forcing_step_scaled = x_data[:, last_forcing_step_start:forcing_end_idx]
 
-        if dataset.apply_scaling:
-            mean = dataset.x_dyn_mean_broadcast.cpu()[:num_forcing]
-            std = dataset.x_dyn_std_broadcast.cpu()[:num_forcing]
-            inputs_unscaled = (last_forcing_step_scaled * std) + mean
-        else:
-            inputs_unscaled = last_forcing_step_scaled
+        # --- Unscale forcing data using the stats dict ---
+        inputs_unscaled = (last_forcing_step_scaled * std) + mean
 
         wx_gt = inputs_unscaled[:, idx_map_forcing["WX"]].numpy()
         wy_gt = inputs_unscaled[:, idx_map_forcing["WY"]].numpy()
@@ -592,6 +635,7 @@ def plot_single_frame(
     prediction_state: np.ndarray,
     features_cfg: Dict[str, Any],
     plot_idx_map: Dict[str, Dict[str, int]],
+    scaling_stats: Dict[str, Any],  # <-- ADDED
 ):
     """
     Creates, plots, and saves a *single* frame from scratch.
@@ -608,10 +652,17 @@ def plot_single_frame(
         prediction_state (np.ndarray): The unscaled predicted state.
         features_cfg (Dict[str, Any]): The 'features' block from the config.
         plot_idx_map (Dict[str, Dict[str, int]]): Map to find plot variables.
+        scaling_stats (Dict[str, Any]): The loaded scaling_stats.yaml dict.
     """
 
     data_dict = get_frame_data(
-        dataset, idx, dem, prediction_state, features_cfg, plot_idx_map
+        dataset,
+        idx,
+        dem,
+        prediction_state,
+        features_cfg,
+        plot_idx_map,
+        scaling_stats,  # <-- ADDED
     )
 
     try:
@@ -752,9 +803,6 @@ if __name__ == "__main__":
         required=True,
         help="UNIQUE base directory to save all outputs (cache, frames, video).",
     )
-    parser.add_argument("-s", "--scaling_stats_path", type=str, help="Path to scaling stats.",
-                        default=None)  # Optional; read from config if not provided
-
     # --predict_root is now derived from -o
     parser.add_argument(
         "-r",
@@ -763,6 +811,15 @@ if __name__ == "__main__":
         default=-1,
         help="Rollout strategy. -1 for 'Full Rollout', N > 0 for 'Fixed N-step Horizon'.",
     )
+    # --- START: NEW ARGUMENT ADDED HERE ---
+    parser.add_argument(
+        "-s",
+        "--scaling_stats_path",
+        type=str,
+        help="Path to scaling stats. (Optional; read from config if not provided)",
+        default=None,
+    )
+    # --- END: NEW ARGUMENT ---
     args = parser.parse_args()
 
     # --- 2. LOAD CONFIG AND FEATURES ---
@@ -804,15 +861,34 @@ if __name__ == "__main__":
     if not os.path.exists(args.netcdf_file):
         print(f"Error: NetCDF file not found at {args.netcdf_file}")
         exit()
-    scaling_stats_path = args.scaling_stats_path if args.scaling_stats_path is not None else cfg.data_params.scaling_stats_path
+
+    # --- 5. LOAD SCALING STATS (UPDATED BLOCK) ---
+    # Get path from args, fall back to config
+    scaling_stats_path = (
+        args.scaling_stats_path
+        if args.scaling_stats_path is not None
+        else cfg.data_params.scaling_stats_path
+    )
+
+    print(f"Loading scaling stats from: {scaling_stats_path}")
+    if args.scaling_stats_path is not None:
+        print("(Using path from -s/--scaling_stats_path argument)")
+    else:
+        print("(Using path from config.yaml: data_params.scaling_stats_path)")
+
     if not os.path.exists(scaling_stats_path):
         print(
-            f"Error: Scaling stats file not found at {cfg.data_params.scaling_stats_path}"
-        )
-        print(
-            "(This path is read from your config.yaml: data_params.scaling_stats_path)"
+            f"FATAL: Scaling stats file not found at the specified path: {scaling_stats_path}"
         )
         exit()
+    try:
+        with open(scaling_stats_path, "r") as f:
+            scaling_stats = yaml.safe_load(f)
+        print("Scaling stats loaded successfully.")
+    except Exception as e:
+        print(f"FATAL: Failed to load or parse {scaling_stats_path}: {e}")
+        exit()
+    # --- END 5. ---
 
     # --- 5. INITIALIZE DATASET (Using new paths) ---
     print(f"Initializing dataset for {args.netcdf_file}...")
@@ -820,7 +896,7 @@ if __name__ == "__main__":
     print(f"Animation frames will be in: {frame_dir}")
 
     previous_t = cfg.model_params.previous_t
-    scaling_stats_path = cfg.data_params.scaling_stats_path
+    # scaling_stats_path is already defined and validated above
 
     # --- NEW: Clean up *inside* the unique directory ---
     # This deletes old cache/frames if you re-run with the *same* -o path
@@ -836,7 +912,7 @@ if __name__ == "__main__":
             root=predict_root,  # <-- Use the new cache path
             nc_files=[args.netcdf_file],
             previous_t=previous_t,
-            scaling_stats_path=scaling_stats_path,
+            scaling_stats_path=scaling_stats_path, # <-- Pass the determined path
             features_cfg=features_cfg,
         )
     except Exception as e:
@@ -868,7 +944,9 @@ if __name__ == "__main__":
 
     # --- 7. LOAD STATIC DATA & CLIMITS ---
     x_coords, y_coords, dem = load_static_data(args.netcdf_file, dataset, features_cfg)
-    climits = calculate_global_climits(dataset, dem, features_cfg)
+    climits = calculate_global_climits(
+        dataset, dem, features_cfg, scaling_stats
+    )  # <-- Pass stats
 
     # --- 8. PERFORM ROLLOUT ---
     all_predictions = perform_rollout(
@@ -876,6 +954,7 @@ if __name__ == "__main__":
         dataset,
         device,
         features_cfg,
+        scaling_stats,  # <-- Pass stats
         rollout_horizon=ROLLOUT_HORIZON,
     )
 
@@ -911,6 +990,7 @@ if __name__ == "__main__":
             prediction_state=prediction_for_this_frame,
             features_cfg=features_cfg,
             plot_idx_map=plot_idx_map,
+            scaling_stats=scaling_stats,  # <-- Pass stats
         )
 
     # --- 10. COMPILE & CLEANUP ---
@@ -930,6 +1010,7 @@ if __name__ == "__main__":
     print(f"Temporary frames saved in {os.path.abspath(frame_dir)}")
 
     print(f"\nPrediction animation complete.")
+
     if output_gif:
         print(f"GIF saved to {os.path.abspath(output_gif)}")
     if output_video:
