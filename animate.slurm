@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # --- SLURM Directives (GPU Job for ORCHID) ---
-#SBATCH --job-name=SWEGNN-128hid-9K-SSH_derived
+#SBATCH --job-name=GCN-GNN-P1-128-bias
+# SWEGNN-128hid-9K-SSH_derived
 # GCN-GNN-P1-128-bias
 #SBATCH --account=orchid             # Use ORCHID account
 #SBATCH --partition=orchid           # Use ORCHID partition
@@ -42,8 +43,8 @@ mkdir -p $OUTPUT_DIR
 echo "Animating..."
 
 # CHECKPOINT_NAME="GNN-epoch=96-val_loss=0.5524.ckpt" # GAT
-# CHECKPOINT_NAME="GNN-epoch=65-val_loss=0.5557.ckpt" # GCN
-CHECKPOINT_NAME="GNN-epoch=81-val_loss=0.4048.ckpt"
+CHECKPOINT_NAME="GNN-epoch=65-val_loss=0.5557.ckpt" # GCN
+#CHECKPOINT_NAME="GNN-epoch=81-val_loss=0.4048.ckpt"
 
 # Use the config/checkpoint for K=3
 # Added the new required -o argument
@@ -52,7 +53,7 @@ python -m mswegnn.utils.adforce_predict_animate \
      -ckpt /home/users/sithom/my_results/${SLURM_JOB_NAME}/checkpoints/${CHECKPOINT_NAME} \
      -nc /home/users/sithom/swegnn_5sec/152_KATRINA_2005.nc \
      -s /home/users/sithom/my_results/${SLURM_JOB_NAME}/processed/scaling_stats.yaml \
-     -r -1 12 24 \
+     -r -1 2 3 12 24 \
      -o $OUTPUT_DIR
 
 echo "Job completed."
