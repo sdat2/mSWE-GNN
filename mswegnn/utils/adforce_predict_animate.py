@@ -14,17 +14,21 @@ This version supports two rollout modes via ROLLOUT_HORIZON:
    simulation from t=0. Each frame 'k' shows the result of a
    'k'-step-long prediction.
 
+This script can run multiple rollouts at once by passing a list
+of horizons to the -r flag.
+
 Example Usage:
 # Create a unique output directory
 export RUN_ID=my_katrina_run_01
 export RUN_DIR=/work/scratch-pw3/sithom/animation_runs/$RUN_ID
 mkdir -p $RUN_DIR
 
+# Run a full rollout (-1) and two fixed-horizon rollouts (12, 24)
 python -m mswegnn.utils.adforce_predict_animate \
     -c /path/to/your/config.yaml \
     -ckpt /path/to/your/model.ckpt \
     -nc /path/to/your/152_KATRINA_2005.nc \
-    -r -1 \
+    -r -1 12 24 \
     -o $RUN_DIR \
     -s /optional/override/path/to/scaling_stats.yaml
 
@@ -199,7 +203,7 @@ def perform_rollout(
     # --- BRANCH 1: FULL, FREE-RUNNING ROLLOUT ---
     if rollout_horizon == -1:
         print("Starting full, free-running rollout (predicting deltas)...")
-
+        
         # --- 1. Get the *initial state* from frame 0 ---
         current_batch = dataset.get(0).to(device)
 
@@ -214,6 +218,24 @@ def perform_rollout(
             current_batch.x[:, state_base_start_idx:state_base_end_idx].clone()
             * y_std[:num_state_features]
         ) + y_mean[:num_state_features]
+        
+        # --- AUTOREGRESSIVE LOOP: SCALING & DERIVED FEATURES ---
+        # The core logic here maintains two states:
+        # 1. `current_y_t_raw`: The UNCALED base state (e.g., [WD, VX, VY]).
+        #    This is used for physically-correct operations.
+        # 2. `current_full_state_scaled`: The SCALED full state (e.g.,
+        #    [scaled_WD, ..., scaled_SSH]). This is the input for the model.
+        #
+        # The process is:
+        # 1. Model predicts `pred_scaled_delta` from `current_full_state_scaled`.
+        # 2. `pred_scaled_delta` is un-scaled -> `pred_raw_delta`.
+        # 3. `pred_raw_delta` is added to `current_y_t_raw` -> `next_y_t_raw`.
+        # 4. Derived features (e.g., SSH) are calculated in UNCALED space
+        #    using `next_y_t_raw` and `dem_gpu`.
+        # 5. The new `full_state_tensor_raw` (base + derived) is built.
+        # 6. This full tensor is SCALED -> `current_full_state_scaled` for the
+        #    next iteration.
+        # ---
 
         for idx in tqdm(range(len(dataset)), desc="Full Rollout"):
             # 1. Get the *ground truth batch* for this step's *forcing*
@@ -236,35 +258,34 @@ def perform_rollout(
             # 6. Apply the delta to get the next *base state*
             next_y_t_raw = current_y_t_raw + pred_raw_delta
 
-            # 7. Store the *unscaled predicted base state*
+            # 7. Store the *unscaled predicted base state* (for plotting)
             predictions_list.append(next_y_t_raw.cpu().numpy())
 
             # 8. Prepare for the *next* loop iteration
 
-            # --- 8a. Re-calculate derived features ---
+            # --- 8a. Re-calculate derived features (in UNCALED space) ---
 
-            # 1. We have `next_y_t_raw` (base state) [N, 3]
-
-            # 2. Get component features from `next_y_t_raw`
+            # 1. We have `next_y_t_raw` (base state) [N, 3] (UNSCALED)
             y_t_dict_gpu = {
                 var: next_y_t_raw[:, i]
                 for i, var in enumerate(list(features_cfg.state))
             }
 
-            # 3. Build derived features list
+            # 2. Build derived features list
             derived_state_features_list = []
             for derived_spec in features_cfg.derived_state:
                 arg_data = []
                 for arg_name in derived_spec["args"]:
                     if arg_name in y_t_dict_gpu:
-                        arg_data.append(y_t_dict_gpu[arg_name])
+                        arg_data.append(y_t_dict_gpu[arg_name]) # (UNSCALED)
                     elif arg_name == "DEM":  # HACK: hard-coding static features
-                        arg_data.append(dem_gpu)
+                        arg_data.append(dem_gpu) # (UNSCALED)
                     else:
                         raise ValueError(
                             f"Rollout: Unknown arg '{arg_name}' for derived feature '{derived_spec['name']}'"
                         )
-
+                
+                # Perform operation in UNCALED space
                 if derived_spec["op"] == "add":
                     derived_feat = arg_data[0] + arg_data[1]
                 elif derived_spec["op"] == "subtract":
@@ -276,7 +297,7 @@ def perform_rollout(
 
                 derived_state_features_list.append(derived_feat.unsqueeze(1))
 
-            # 4. Build *full raw state*
+            # 3. Build *full raw state*
             if derived_state_features_list:
                 full_state_tensor_raw = torch.cat(
                     [next_y_t_raw] + derived_state_features_list, dim=1
@@ -284,10 +305,12 @@ def perform_rollout(
             else:
                 full_state_tensor_raw = next_y_t_raw
 
-            # 5. Scale the *full raw state* to be the next input
+            # 4. Scale the *full raw state* to be the next input
             # Note: y_mean/y_std must have shape (num_state + num_derived)
             current_full_state_scaled = (full_state_tensor_raw - y_mean) / y_std
-            current_y_t_raw = next_y_t_raw  # for the next loop's delta
+            
+            # 5. Update the raw state for the *next* loop's delta calculation
+            current_y_t_raw = next_y_t_raw  
 
             # --- End derived feature logic ---
 
@@ -298,7 +321,7 @@ def perform_rollout(
         )
 
         # Loop for each frame we want to generate
-        for idx in tqdm(range(len(dataset)), desc="Fixed-Horizon Rollout"):
+        for idx in tqdm(range(len(dataset)), desc=f"{rollout_horizon}-Step Rollout"):
 
             # 1. Determine the *start* of this mini-rollout
             start_idx = max(0, idx - rollout_horizon + 1)
@@ -309,37 +332,42 @@ def perform_rollout(
             # 3. Get the *ground truth* state at the *start* of the mini-rollout
             gt_batch_start = dataset.get(start_idx).to(device)
 
+            # This is the SCALED full state [scaled_WD, ..., scaled_SSH]
             current_full_state_scaled = gt_batch_start.x[
                 :, state_block_start_idx:state_block_end_idx
             ].clone()
-
+            
+            # This is the UNCALED base state [WD, VX, VY]
             current_y_t_raw = (
                 gt_batch_start.x[:, state_base_start_idx:state_base_end_idx].clone()
                 * y_std[:num_state_features]
             ) + y_mean[:num_state_features]
 
             # 4. Run the inner mini-rollout loop
+            # This loop is identical to the one in Branch 1, just for fewer steps
             for k in range(steps_to_run):
                 # Get the *forcing data* for step 'k' of this rollout
                 forcing_batch_idx = start_idx + k
 
                 if forcing_batch_idx >= len(dataset):
-                    break
+                    break # Should not happen if logic is correct, but safe_guard
 
                 gt_forcing_batch = dataset.get(forcing_batch_idx).to(device)
 
+                # Create input, but swap in our predicted state
                 pred_input_batch = gt_forcing_batch.clone()
                 pred_input_batch.x[:, state_block_start_idx:state_block_end_idx] = (
                     current_full_state_scaled
                 )
 
+                # 1. Predict scaled delta
                 pred_scaled_delta = model.model(pred_input_batch)
+                # 2. Unscale delta
                 pred_raw_delta = (pred_scaled_delta * y_delta_std) + y_delta_mean
-
-                # Update the state for the next inner-loop step
+                # 3. Apply to unscaled base state
                 next_y_t_raw = current_y_t_raw + pred_raw_delta
 
-                # --- Re-compute derived features ---
+                # --- 4. Re-compute derived features (in UNCALED space) ---
                 y_t_dict_gpu = {
                     var: next_y_t_raw[:, i]
                     for i, var in enumerate(list(features_cfg.state))
@@ -366,15 +394,18 @@ def perform_rollout(
                     else:
                         raise ValueError(f"Rollout: Unknown op '{derived_spec['op']}'")
                     derived_state_features_list.append(derived_feat.unsqueeze(1))
-
+                
+                # 5. Build new full UNCALED state
                 if derived_state_features_list:
                     full_state_tensor_raw = torch.cat(
                         [next_y_t_raw] + derived_state_features_list, dim=1
                     )
                 else:
                     full_state_tensor_raw = next_y_t_raw
-
+                
+                # 6. Re-scale full state for next model input
                 current_full_state_scaled = (full_state_tensor_raw - y_mean) / y_std
+                # 7. Update unscaled base state for next delta
                 current_y_t_raw = next_y_t_raw
                 # --- End derived features ---
 
@@ -412,9 +443,10 @@ def get_frame_data(
     Returns:
         Dict[str, np.ndarray]: A dictionary holding the 6 plotting variables.
     """
+    # Get the ground-truth data batch, which contains the *forcing* we need
     data = dataset.get(idx)
     p_t = dataset.previous_t
-    x_data = data.x.cpu()
+    x_data = data.x.cpu() # x_data is SCALED
 
     # --- 1. Extract and Un-scale Inputs (P, WX, WY) ---
     num_static = len(features_cfg.static) + 1  # +1 for node_type
@@ -446,15 +478,15 @@ def get_frame_data(
     std = x_dyn_std[:num_forcing]
     inputs_unscaled = (last_forcing_step_scaled * std) + mean
 
-    # Find P, WX, WY dynamically
+    # Find P, WX, WY dynamically using the pre-computed index map
     idx_map_forcing = plot_idx_map["forcing"]
     wx_data = inputs_unscaled[:, idx_map_forcing["WX"]].numpy()
     wy_data = inputs_unscaled[:, idx_map_forcing["WY"]].numpy()
     p_data = inputs_unscaled[:, idx_map_forcing["P"]].numpy()
 
     # --- 2. Extract Outputs (WD, VX, VY) from the prediction ---
-    outputs = prediction_state  # Use the passed-in unscaled state
-
+    outputs = prediction_state  # Use the passed-in UNCALED state from the rollout
+    
     # Find WD, VX, VY dynamically
     idx_map_state = plot_idx_map["state"]
     wd_data = outputs[:, idx_map_state["WD"]]
@@ -463,6 +495,7 @@ def get_frame_data(
 
     # --- 3. Calculate SSH ---
     # This assumes 'SSH' is a derived feature and not in the state vector
+    # We add UNCALED WD to UNCALED DEM
     ssh_data = wd_data + dem
 
     return {
@@ -479,6 +512,7 @@ def get_frame_data(
 def _create_plot_index_map(features_cfg: Dict[str, Any]) -> Dict[str, Dict[str, int]]:
     """Creates a mapping from plot variable names to their index in the config lists."""
     try:
+        # Ensure we are using simple lists, not OmegaConf lists
         forcing_vars_list = list(features_cfg.forcing)
         state_vars_list = list(features_cfg.state)
 
@@ -562,17 +596,18 @@ def calculate_global_climits(
     std = x_dyn_std[:num_forcing]
 
     for idx in tqdm(range(len(dataset)), desc="Scanning data"):
+        # Get ground truth data for this step
         data_gt = dataset.get(idx)
 
-        # data.y_unscaled is y_tplus1_raw (the base state)
+        # data.y_unscaled is y_tplus1_raw (the base state), UNCALED
         outputs_gt = data_gt.y_unscaled.cpu().numpy()
 
         wd_gt = outputs_gt[:, idx_map_state["WD"]]
         vx_gt = outputs_gt[:, idx_map_state["VX"]]
         vy_gt = outputs_gt[:, idx_map_state["VY"]]
-        ssh_gt = wd_gt + dem
+        ssh_gt = wd_gt + dem # (UNSCALED + UNCALED)
 
-        # Get input data
+        # Get input data (SCALED)
         x_data = data_gt.x.cpu()
         last_forcing_step_scaled = x_data[:, last_forcing_step_start:forcing_end_idx]
 
@@ -583,6 +618,7 @@ def calculate_global_climits(
         wy_gt = inputs_unscaled[:, idx_map_forcing["WY"]].numpy()
         p_gt = inputs_unscaled[:, idx_map_forcing["P"]].numpy()
 
+        # Collate all UNCALED ground truth data
         data_dict = {
             "P": p_gt,
             "WX": wx_gt,
@@ -592,14 +628,16 @@ def calculate_global_climits(
             "VY": vy_gt,
         }
 
+        # Store percentiles
         for key, data in data_dict.items():
             if data.size > 0:
                 p2_vals[key].append(np.nanpercentile(data, 1))
                 p98_vals[key].append(np.nanpercentile(data, 99))
 
+    # Calculate global limits from all stored percentiles
     climits = {}
     for key in plot_order:
-        if not p2_vals[key]:
+        if not p2_vals[key]: # Handle empty data
             climits[key] = (0.0, 1.0)
             continue
 
@@ -607,11 +645,13 @@ def calculate_global_climits(
         global_p98 = np.nanmax(p98_vals[key])
 
         if key in diverging_vars:
+            # Center diverging maps at 0
             v_abs = np.nanmax([np.abs(global_p2), np.abs(global_p98)])
             if v_abs == 0:
                 v_abs = 0.1
             climits[key] = (-v_abs, v_abs)
         else:
+            # Standard min/max for sequential maps
             if global_p2 == global_p98:
                 global_p98 += 0.1
             climits[key] = (global_p2, global_p98)
@@ -655,16 +695,18 @@ def plot_single_frame(
         scaling_stats (Dict[str, Any]): The loaded scaling_stats.yaml dict.
     """
 
+    # 1. Get all 6 plot variables (UNSCALED)
     data_dict = get_frame_data(
         dataset,
         idx,
         dem,
-        prediction_state,
+        prediction_state, # This is the UNCALED predicted state
         features_cfg,
         plot_idx_map,
-        scaling_stats,  # <-- ADDED
+        scaling_stats,  # <-- Pass stats
     )
 
+    # 2. Get timestamp for title
     try:
         nc_path, t_start = dataset.index_map[idx]
         t_plot_idx = t_start + dataset.previous_t
@@ -681,6 +723,7 @@ def plot_single_frame(
             )
         title = f"Dataset Index: {idx} / {total_frames - 1}"
 
+    # 3. Create 2x3 plot
     fig, axs = plt.subplots(2, 3, figsize=(6 * 1.2, 4 * 1.2), sharex=True, sharey=True)
 
     titles = [
@@ -697,8 +740,8 @@ def plot_single_frame(
         for j in range(3):
             ax = axs[i, j]
             key = keys[i][j]
-            data = data_dict[key]
-            vmin, vmax = climits[key]
+            data = data_dict[key] # Use UNCALED data
+            vmin, vmax = climits[key] # Use global UNCALED limits
 
             scat = ax.scatter(
                 x_coords,
@@ -726,6 +769,8 @@ def plot_single_frame(
     fig.suptitle(title, y=0.92)
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     label_subplots(axs)
+    
+    # 4. Save figure
     fig.savefig(frame_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -795,7 +840,6 @@ if __name__ == "__main__":
         required=True,
         help="Path to the single .nc file to animate (e.g., '152_KATRINA_2005.nc').",
     )
-    # --- FIX: Changed -o to be required and serve as the base path ---
     parser.add_argument(
         "-o",
         "--output_dir",
@@ -803,15 +847,16 @@ if __name__ == "__main__":
         required=True,
         help="UNIQUE base directory to save all outputs (cache, frames, video).",
     )
-    # --predict_root is now derived from -o
+    # --- START: MODIFIED ARGUMENT ---
     parser.add_argument(
         "-r",
         "--rollout_horizon",
         type=int,
-        default=-1,
-        help="Rollout strategy. -1 for 'Full Rollout', N > 0 for 'Fixed N-step Horizon'.",
+        nargs="+",  # <-- Accept one or more inputs as a list
+        default=[-1],
+        help="One or more rollout strategies. -1 for 'Full Rollout', N > 0 for 'Fixed N-step Horizon'. E.g., -r -1 12 24",
     )
-    # --- START: NEW ARGUMENT ADDED HERE ---
+    # --- END: MODIFIED ARGUMENT ---
     parser.add_argument(
         "-s",
         "--scaling_stats_path",
@@ -819,7 +864,6 @@ if __name__ == "__main__":
         help="Path to scaling stats. (Optional; read from config if not provided)",
         default=None,
     )
-    # --- END: NEW ARGUMENT ---
     args = parser.parse_args()
 
     # --- 2. LOAD CONFIG AND FEATURES ---
@@ -831,23 +875,14 @@ if __name__ == "__main__":
     features_cfg = cfg.features
 
     # --- 3. CONFIGURE OUTPUTS (Now based on -o) ---
-    ROLLOUT_HORIZON = args.rollout_horizon
-    rollout_type_str = "full" if ROLLOUT_HORIZON == -1 else f"{ROLLOUT_HORIZON}step"
+    # --- MODIFIED: Get list of horizons ---
+    rollout_horizons_list = args.rollout_horizon
     anim_fps = 10
-
-    # --- NEW: Define all paths based on the required output_dir ---
     base_output_dir = args.output_dir
-    output_gif = os.path.join(
-        base_output_dir, f"adforce_6panel_PREDICTION_{rollout_type_str}.gif"
-    )
-    output_video = os.path.join(
-        base_output_dir, f"adforce_6panel_PREDICTION_{rollout_type_str}.mp4"
-    )
-
-    # Cache and frames are now subdirectories
+    
+    # Dataset cache path is shared for all rollouts, defined once
     predict_root = os.path.join(base_output_dir, "dataset_cache")
-    frame_dir = os.path.join(base_output_dir, "animation_frames")
-    # --- END NEW PATHS ---
+    # --- END MODIFIED ---
 
     # --- 4. SETUP DEVICE ---
     plot_defaults()
@@ -863,7 +898,7 @@ if __name__ == "__main__":
         exit()
 
     # --- 5. LOAD SCALING STATS (UPDATED BLOCK) ---
-    # Get path from args, fall back to config
+    # Get path from -s argument, fall back to config if not provided
     scaling_stats_path = (
         args.scaling_stats_path
         if args.scaling_stats_path is not None
@@ -890,21 +925,15 @@ if __name__ == "__main__":
         exit()
     # --- END 5. ---
 
-    # --- 5. INITIALIZE DATASET (Using new paths) ---
+    # --- 6. INITIALIZE DATASET (Run Once) ---
+    # We only need to build the dataset and its index map once.
     print(f"Initializing dataset for {args.netcdf_file}...")
     print(f"Dataset cache will be in: {predict_root}")
-    print(f"Animation frames will be in: {frame_dir}")
 
     previous_t = cfg.model_params.previous_t
-    # scaling_stats_path is already defined and validated above
-
-    # --- NEW: Clean up *inside* the unique directory ---
-    # This deletes old cache/frames if you re-run with the *same* -o path
-    shutil.rmtree(frame_dir, ignore_errors=True)
+    
+    # --- NEW: Clean up *dataset cache* once ---
     shutil.rmtree(predict_root, ignore_errors=True)
-
-    # Create the base and frame directories
-    os.makedirs(frame_dir, exist_ok=True)
     # AdforceLazyDataset will create the predict_root
 
     try:
@@ -926,7 +955,7 @@ if __name__ == "__main__":
     total_frames = len(dataset)
     print(f"Dataset loaded. Total samples to predict: {total_frames}")
 
-    # --- 6. CONFIGURE AND LOAD MODEL (Config-Driven) ---
+    # --- 7. CONFIGURE AND LOAD MODEL (Run Once) ---
     print(f"Loading model from {args.checkpoint_path}...")
 
     try:
@@ -942,76 +971,113 @@ if __name__ == "__main__":
         )
         exit()
 
-    # --- 7. LOAD STATIC DATA & CLIMITS ---
+    # --- 8. LOAD STATIC DATA & CLIMITS (Run Once) ---
+    # These are the same for all rollouts, so we do it once.
     x_coords, y_coords, dem = load_static_data(args.netcdf_file, dataset, features_cfg)
     climits = calculate_global_climits(
         dataset, dem, features_cfg, scaling_stats
     )  # <-- Pass stats
-
-    # --- 8. PERFORM ROLLOUT ---
-    all_predictions = perform_rollout(
-        lightning_model,
-        dataset,
-        device,
-        features_cfg,
-        scaling_stats,  # <-- Pass stats
-        rollout_horizon=ROLLOUT_HORIZON,
-    )
-
-    if len(all_predictions) != total_frames:
-        print(
-            f"Error: Rollout returned {len(all_predictions)} frames, expected {total_frames}"
-        )
-        exit()
-
-    # --- 9. RENDER FRAMES ---
-    print("Rendering predicted frames...")
-    frame_files = []
-
-    # --- REUSE: Create the dynamic index maps ONCE ---
+        
+    # --- Create the dynamic plot variable index maps (Run Once) ---
     plot_idx_map = _create_plot_index_map(features_cfg)
-    # --- END REUSE ---
+    
+    
+    # --- 9. START MAIN ROLLOUT LOOP ---
+    # This loop will run once for each horizon provided (e.g., -r -1 12 24)
+    print(f"\nFound {len(rollout_horizons_list)} rollout(s) to run: {rollout_horizons_list}")
+    
+    for rollout_horizon in rollout_horizons_list:
+        
+        # === STARTING ROLLOUT FOR HORIZON: {rollout_horizon} ===
+        
+        # --- 9a. Define unique names for this horizon ---
+        # This creates names like "full" or "12step"
+        rollout_type_str = "full" if rollout_horizon == -1 else f"{rollout_horizon}step"
+        print(f"\n--- Starting Rollout: {rollout_type_str} (Horizon={rollout_horizon}) ---")
 
-    for idx in tqdm(range(total_frames), desc="Rendering frames"):
-        frame_path = os.path.join(frame_dir, f"frame_{idx:05d}.png")
-        frame_files.append(frame_path)
+        # Create dynamic output paths based on the rollout horizon
+        output_gif = os.path.join(
+            base_output_dir, f"adforce_6panel_PREDICTION_{rollout_type_str}.gif"
+        )
+        output_video = os.path.join(
+            base_output_dir, f"adforce_6panel_PREDICTION_{rollout_type_str}.mp4"
+        )
+        frame_dir = os.path.join(base_output_dir, f"animation_frames_{rollout_type_str}")
 
-        prediction_for_this_frame = all_predictions[idx]
+        print(f"Animation frames will be in: {frame_dir}")
 
-        plot_single_frame(
-            idx,
-            total_frames,
+        # Clean up *frame dir* for this specific rollout
+        shutil.rmtree(frame_dir, ignore_errors=True)
+        os.makedirs(frame_dir, exist_ok=True)
+
+
+        # --- 9b. PERFORM ROLLOUT ---
+        all_predictions = perform_rollout(
+            lightning_model,
             dataset,
-            x_coords,
-            y_coords,
-            dem,
-            climits,
-            frame_path,
-            prediction_state=prediction_for_this_frame,
-            features_cfg=features_cfg,
-            plot_idx_map=plot_idx_map,
-            scaling_stats=scaling_stats,  # <-- Pass stats
+            device,
+            features_cfg,
+            scaling_stats,  # <-- Pass stats
+            rollout_horizon=rollout_horizon, # <-- Pass the *current* horizon
         )
 
-    # --- 10. COMPILE & CLEANUP ---
-    images = []
-    if output_gif or output_video:
-        for frame_file in tqdm(frame_files, desc="Reading frames into memory"):
-            images.append(iio.imread(frame_file))
+        if len(all_predictions) != total_frames:
+            print(
+                f"Error: Rollout returned {len(all_predictions)} frames, expected {total_frames}"
+            )
+            continue # Skip to the next horizon
 
-    if output_gif:
-        compile_gif_from_frames(frame_dir, output_gif, anim_fps, images)
+        # --- 9c. RENDER FRAMES ---
+        print(f"Rendering {total_frames} predicted frames for '{rollout_type_str}'...")
+        frame_files = []
 
-    if output_video:
-        compile_video_from_frames(frame_dir, output_video, anim_fps, images)
+        # Iterate and render one frame at a time
+        for idx in tqdm(range(total_frames), desc=f"Rendering frames ({rollout_type_str})"):
+            # Use the dynamic frame_dir path
+            frame_path = os.path.join(frame_dir, f"frame_{idx:05d}.png")
+            frame_files.append(frame_path)
 
-    # Clean up temporary frame directory
-    # shutil.rmtree(frame_dir, ignore_errors=True)
-    print(f"Temporary frames saved in {os.path.abspath(frame_dir)}")
+            prediction_for_this_frame = all_predictions[idx]
 
-    print(f"\nPrediction animation complete.")
+            plot_single_frame(
+                idx,
+                total_frames,
+                dataset,
+                x_coords,
+                y_coords,
+                dem,
+                climits,
+                frame_path, # Pass the unique frame path
+                prediction_state=prediction_for_this_frame,
+                features_cfg=features_cfg,
+                plot_idx_map=plot_idx_map,
+                scaling_stats=scaling_stats,  # <-- Pass stats
+            )
 
-    if output_gif:
-        print(f"GIF saved to {os.path.abspath(output_gif)}")
-    if output_video:
-        print(f"Video saved to {os.path.abspath(output_video)}")
+        # --- 9d. COMPILE & CLEANUP ---
+        images = []
+        if output_gif or output_video:
+            # Read all saved frames from the unique frame_dir
+            for frame_file in tqdm(frame_files, desc=f"Reading frames ({rollout_type_str})"):
+                images.append(iio.imread(frame_file))
+
+        if output_gif:
+            # Save to the unique .gif path
+            compile_gif_from_frames(frame_dir, output_gif, anim_fps, images)
+
+        if output_video:
+            # Save to the unique .mp4 path
+            compile_video_from_frames(frame_dir, output_video, anim_fps, images)
+
+        # We keep the frames for inspection, just print the path
+        print(f"Temporary frames saved in {os.path.abspath(frame_dir)}")
+
+        print(f"\nPrediction animation for '{rollout_type_str}' complete.")
+        if output_gif:
+            print(f"GIF saved to {os.path.abspath(output_gif)}")
+        if output_video:
+            print(f"Video saved to {os.path.abspath(output_video)}")
+        
+        # === FINISHED ROLLOUT FOR HORIZON: {rollout_horizon} ===
+
+    print("\nAll requested rollouts are complete.")

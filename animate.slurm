@@ -52,7 +52,7 @@ python -m mswegnn.utils.adforce_predict_animate \
      -ckpt /home/users/sithom/my_results/${SLURM_JOB_NAME}/checkpoints/${CHECKPOINT_NAME} \
      -nc /home/users/sithom/swegnn_5sec/152_KATRINA_2005.nc \
      -s /home/users/sithom/my_results/${SLURM_JOB_NAME}/processed/scaling_stats.yaml \
-     -r -1 \
+     -r -1 12 24 \
      -o $OUTPUT_DIR
 
 echo "Job completed."
