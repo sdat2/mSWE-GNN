@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- SLURM Directives (GPU Job for ORCHID) ---
-#SBATCH --job-name=SWEGNN-K3-P1-128-bias
+#SBATCH --job-name=MonolithicMLP-P1-128-bias
 #SBATCH --account=orchid             # Use ORCHID account
 #SBATCH --partition=orchid           # Use ORCHID partition
 #SBATCH --qos=orchid                 # Use ORCHID QoS
@@ -61,11 +61,11 @@ python -m adforce_main \
     machine.accelerator=gpu \
     machine.devices=1 \
     machine.num_workers=8 \
-    model_params.model_type=GNN \
+    model_params.model_type=MonolithicMLP \
     model_params.previous_t=1 \
-    models.type_gnn=SWEGNN \
+    models.type_gnn=GAT \
     models.hid_features=128 \
-    models.K=3 \
+    models.K=6 \
     +models.bias=True \
     models.normalize=True \
     models.with_gradient=True \
