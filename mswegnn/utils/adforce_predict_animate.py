@@ -752,6 +752,9 @@ if __name__ == "__main__":
         required=True,
         help="UNIQUE base directory to save all outputs (cache, frames, video).",
     )
+    parser.add_argument("-s", "--scaling_stats_path", type=str, help="Path to scaling stats.",
+                        default=None)  # Optional; read from config if not provided
+
     # --predict_root is now derived from -o
     parser.add_argument(
         "-r",
@@ -801,7 +804,8 @@ if __name__ == "__main__":
     if not os.path.exists(args.netcdf_file):
         print(f"Error: NetCDF file not found at {args.netcdf_file}")
         exit()
-    if not os.path.exists(cfg.data_params.scaling_stats_path):
+    scaling_stats_path = args.scaling_stats_path if args.scaling_stats_path is not None else cfg.data_params.scaling_stats_path
+    if not os.path.exists(scaling_stats_path):
         print(
             f"Error: Scaling stats file not found at {cfg.data_params.scaling_stats_path}"
         )

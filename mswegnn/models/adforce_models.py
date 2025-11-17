@@ -72,7 +72,7 @@ class MonolithicMLPModel(nn.Module):
         num_output_features: int,
         hid_features: int,
         mlp_layers: int,
-        mlp_activation: str,
+        mlp_activation: str = "prelu",
         **kwargs,  # Catch unused args
     ):
         super().__init__()
