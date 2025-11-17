@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- SLURM Directives (GPU Job for ORCHID) ---
-#SBATCH --job-name=SWEGNN-K3-P1-128-bias
+#SBATCH --job-name=GCN-GNN-P1-128-bias
 #SBATCH --account=orchid             # Use ORCHID account
 #SBATCH --partition=orchid           # Use ORCHID partition
 #SBATCH --qos=orchid                 # Use ORCHID QoS
@@ -40,13 +40,16 @@ mkdir -p $OUTPUT_DIR
 # --- 3. Run Executable (UPDATED) ---
 echo "Animating..."
 
+# CHECKPOINT_NAME="GNN-epoch=96-val_loss=0.5524.ckpt"
+CHECKPOINT_NAME="GNN-epoch=65-val_loss=0.5557.ckpt"
+
 # Use the config/checkpoint for K=3
 # Added the new required -o argument
 python -m mswegnn.utils.adforce_predict_animate \
-     -c /home/users/sithom/my_results/SWEGNN-K3-P1-128-bias/checkpoints/config.yaml \
-     -ckpt /home/users/sithom/my_results/SWEGNN-K3-P1-128-bias/checkpoints/GNN-epoch=86-val_loss=0.4457.ckpt \
+     -c /home/users/sithom/my_results/${SLURM_JOB_NAME}/checkpoints/config.yaml \
+     -ckpt /home/users/sithom/my_results/${SLURM_JOB_NAME}/checkpoints/${CHECKPOINT_NAME} \
      -nc /home/users/sithom/swegnn_5sec/152_KATRINA_2005.nc \
-     -s /home/users/sithom/my_results/SWEGNN-K3-P1-128-bias/processed/scaling_stats.yaml \
+     -s /home/users/sithom/my_results/${SLURM_JOB_NAME}/processed/scaling_stats.yaml \
      -r -1 \
      -o $OUTPUT_DIR
 

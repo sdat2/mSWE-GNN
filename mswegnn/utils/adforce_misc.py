@@ -109,8 +109,12 @@ def _create_model(
             **model_cfg_dict,
         )
     elif model_type == "MonolithicMLP":
+        # if num_nodes_fixed is None:
+        #     raise ValueError("num_nodes_fixed must be provided for MonolithicMLPModel.")
         if num_nodes_fixed is None:
-            raise ValueError("num_nodes_fixed must be provided for MonolithicMLPModel.")
+            num_nodes_fixed = 58_369
+            print("num_nodes_fixed not provided, using default value of 58,369.")
+
         print(f"Found fixed n_nodes from dataset: {num_nodes_fixed}")
         model = MonolithicMLPModel(
             n_nodes=num_nodes_fixed,
