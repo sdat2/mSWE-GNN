@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # --- SLURM Directives (GPU Job for ORCHID) ---
-#SBATCH --job-name=GCN-GNN-P1-128-bias
+#SBATCH --job-name=SWEGNN-128hid-9K-SSH_derived
+# GCN-GNN-P1-128-bias
 #SBATCH --account=orchid             # Use ORCHID account
 #SBATCH --partition=orchid           # Use ORCHID partition
 #SBATCH --qos=orchid                 # Use ORCHID QoS
@@ -40,8 +41,9 @@ mkdir -p $OUTPUT_DIR
 # --- 3. Run Executable (UPDATED) ---
 echo "Animating..."
 
-# CHECKPOINT_NAME="GNN-epoch=96-val_loss=0.5524.ckpt"
-CHECKPOINT_NAME="GNN-epoch=65-val_loss=0.5557.ckpt"
+# CHECKPOINT_NAME="GNN-epoch=96-val_loss=0.5524.ckpt" # GAT
+# CHECKPOINT_NAME="GNN-epoch=65-val_loss=0.5557.ckpt" # GCN
+CHECKPOINT_NAME="GNN-epoch=81-val_loss=0.4048.ckpt"
 
 # Use the config/checkpoint for K=3
 # Added the new required -o argument
