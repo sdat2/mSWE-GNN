@@ -17,6 +17,11 @@ This version supports two rollout modes via ROLLOUT_HORIZON:
 This script can run multiple rollouts at once by passing a list
 of horizons to the -r flag.
 
+*** NEW ***
+This script now ALSO saves the raw numerical predictions for each
+rollout horizon into a NetCDF file (e.g., 'adforce_PREDICTION_full.nc'),
+including all coordinates (time, x, y, DEM) for easy analysis.
+
 Example Usage:
 # Create a unique output directory
 export RUN_ID=my_katrina_run_01
@@ -203,7 +208,7 @@ def perform_rollout(
     # --- BRANCH 1: FULL, FREE-RUNNING ROLLOUT ---
     if rollout_horizon == -1:
         print("Starting full, free-running rollout (predicting deltas)...")
-
+        
         # --- 1. Get the *initial state* from frame 0 ---
         current_batch = dataset.get(0).to(device)
 
@@ -218,7 +223,7 @@ def perform_rollout(
             current_batch.x[:, state_base_start_idx:state_base_end_idx].clone()
             * y_std[:num_state_features]
         ) + y_mean[:num_state_features]
-
+        
         # --- AUTOREGRESSIVE LOOP: SCALING & DERIVED FEATURES ---
         # The core logic here maintains two states:
         # 1. `current_y_t_raw`: The UNCALED base state (e.g., [WD, VX, VY]).
@@ -277,14 +282,14 @@ def perform_rollout(
                 arg_data = []
                 for arg_name in derived_spec["args"]:
                     if arg_name in y_t_dict_gpu:
-                        arg_data.append(y_t_dict_gpu[arg_name])  # (UNSCALED)
+                        arg_data.append(y_t_dict_gpu[arg_name]) # (UNSCALED)
                     elif arg_name == "DEM":  # HACK: hard-coding static features
-                        arg_data.append(dem_gpu)  # (UNSCALED)
+                        arg_data.append(dem_gpu) # (UNSCALED)
                     else:
                         raise ValueError(
                             f"Rollout: Unknown arg '{arg_name}' for derived feature '{derived_spec['name']}'"
                         )
-
+                
                 # Perform operation in UNCALED space
                 if derived_spec["op"] == "add":
                     derived_feat = arg_data[0] + arg_data[1]
@@ -308,9 +313,9 @@ def perform_rollout(
             # 4. Scale the *full raw state* to be the next input
             # Note: y_mean/y_std must have shape (num_state + num_derived)
             current_full_state_scaled = (full_state_tensor_raw - y_mean) / y_std
-
+            
             # 5. Update the raw state for the *next* loop's delta calculation
-            current_y_t_raw = next_y_t_raw
+            current_y_t_raw = next_y_t_raw  
 
             # --- End derived feature logic ---
 
@@ -336,7 +341,7 @@ def perform_rollout(
             current_full_state_scaled = gt_batch_start.x[
                 :, state_block_start_idx:state_block_end_idx
             ].clone()
-
+            
             # This is the UNCALED base state [WD, VX, VY]
             current_y_t_raw = (
                 gt_batch_start.x[:, state_base_start_idx:state_base_end_idx].clone()
@@ -350,7 +355,7 @@ def perform_rollout(
                 forcing_batch_idx = start_idx + k
 
                 if forcing_batch_idx >= len(dataset):
-                    break  # Should not happen if logic is correct, but safe_guard
+                    break # Should not happen if logic is correct, but safe_guard
 
                 gt_forcing_batch = dataset.get(forcing_batch_idx).to(device)
 
@@ -394,7 +399,7 @@ def perform_rollout(
                     else:
                         raise ValueError(f"Rollout: Unknown op '{derived_spec['op']}'")
                     derived_state_features_list.append(derived_feat.unsqueeze(1))
-
+                
                 # 5. Build new full UNCALED state
                 if derived_state_features_list:
                     full_state_tensor_raw = torch.cat(
@@ -402,7 +407,7 @@ def perform_rollout(
                     )
                 else:
                     full_state_tensor_raw = next_y_t_raw
-
+                
                 # 6. Re-scale full state for next model input
                 current_full_state_scaled = (full_state_tensor_raw - y_mean) / y_std
                 # 7. Update unscaled base state for next delta
@@ -446,7 +451,7 @@ def get_frame_data(
     # Get the ground-truth data batch, which contains the *forcing* we need
     data = dataset.get(idx)
     p_t = dataset.previous_t
-    x_data = data.x.cpu()  # x_data is SCALED
+    x_data = data.x.cpu() # x_data is SCALED
 
     # --- 1. Extract and Un-scale Inputs (P, WX, WY) ---
     num_static = len(features_cfg.static) + 1  # +1 for node_type
@@ -464,9 +469,10 @@ def get_frame_data(
     try:
         # Load stats to CPU (as data is on CPU)
         x_dyn_mean = torch.tensor(scaling_stats["x_dynamic_mean"], dtype=torch.float32)
-        x_dyn_std = torch.tensor(
-            scaling_stats["x_dynamic_std"], dtype=torch.float32
-        ).clamp(min=1e-6)
+        x_dyn_std = (
+            torch.tensor(scaling_stats["x_dynamic_std"], dtype=torch.float32)
+            .clamp(min=1e-6)
+        )
     except (KeyError, TypeError) as e:
         print(f"Error: Scaling stats dict missing x_dynamic keys: {e}")
         raise e
@@ -485,7 +491,7 @@ def get_frame_data(
 
     # --- 2. Extract Outputs (WD, VX, VY) from the prediction ---
     outputs = prediction_state  # Use the passed-in UNCALED state from the rollout
-
+    
     # Find WD, VX, VY dynamically
     idx_map_state = plot_idx_map["state"]
     wd_data = outputs[:, idx_map_state["WD"]]
@@ -582,9 +588,10 @@ def calculate_global_climits(
     # --- Load scaling stats from dict ---
     try:
         x_dyn_mean = torch.tensor(scaling_stats["x_dynamic_mean"], dtype=torch.float32)
-        x_dyn_std = torch.tensor(
-            scaling_stats["x_dynamic_std"], dtype=torch.float32
-        ).clamp(min=1e-6)
+        x_dyn_std = (
+            torch.tensor(scaling_stats["x_dynamic_std"], dtype=torch.float32)
+            .clamp(min=1e-6)
+        )
     except (KeyError, TypeError) as e:
         print(f"Error: Scaling stats dict missing x_dynamic keys: {e}")
         raise e
@@ -603,7 +610,7 @@ def calculate_global_climits(
         wd_gt = outputs_gt[:, idx_map_state["WD"]]
         vx_gt = outputs_gt[:, idx_map_state["VX"]]
         vy_gt = outputs_gt[:, idx_map_state["VY"]]
-        ssh_gt = wd_gt + dem  # (UNSCALED + UNCALED)
+        ssh_gt = wd_gt + dem # (UNSCALED + UNCALED)
 
         # Get input data (SCALED)
         x_data = data_gt.x.cpu()
@@ -635,7 +642,7 @@ def calculate_global_climits(
     # Calculate global limits from all stored percentiles
     climits = {}
     for key in plot_order:
-        if not p2_vals[key]:  # Handle empty data
+        if not p2_vals[key]: # Handle empty data
             climits[key] = (0.0, 1.0)
             continue
 
@@ -698,7 +705,7 @@ def plot_single_frame(
         dataset,
         idx,
         dem,
-        prediction_state,  # This is the UNCALED predicted state
+        prediction_state, # This is the UNCALED predicted state
         features_cfg,
         plot_idx_map,
         scaling_stats,  # <-- Pass stats
@@ -738,8 +745,8 @@ def plot_single_frame(
         for j in range(3):
             ax = axs[i, j]
             key = keys[i][j]
-            data = data_dict[key]  # Use UNCALED data
-            vmin, vmax = climits[key]  # Use global UNCALED limits
+            data = data_dict[key] # Use UNCALED data
+            vmin, vmax = climits[key] # Use global UNCALED limits
 
             scat = ax.scatter(
                 x_coords,
@@ -767,7 +774,7 @@ def plot_single_frame(
     fig.suptitle(title, y=0.92)
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     label_subplots(axs)
-
+    
     # 4. Save figure
     fig.savefig(frame_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -877,7 +884,7 @@ if __name__ == "__main__":
     rollout_horizons_list = args.rollout_horizon
     anim_fps = 10
     base_output_dir = args.output_dir
-
+    
     # Dataset cache path is shared for all rollouts, defined once
     predict_root = os.path.join(base_output_dir, "dataset_cache")
     # --- END MODIFIED ---
@@ -929,7 +936,7 @@ if __name__ == "__main__":
     print(f"Dataset cache will be in: {predict_root}")
 
     previous_t = cfg.model_params.previous_t
-
+    
     # --- NEW: Clean up *dataset cache* once ---
     shutil.rmtree(predict_root, ignore_errors=True)
     # AdforceLazyDataset will create the predict_root
@@ -939,7 +946,7 @@ if __name__ == "__main__":
             root=predict_root,  # <-- Use the new cache path
             nc_files=[args.netcdf_file],
             previous_t=previous_t,
-            scaling_stats_path=scaling_stats_path,  # <-- Pass the determined path
+            scaling_stats_path=scaling_stats_path, # <-- Pass the determined path
             features_cfg=features_cfg,
         )
     except Exception as e:
@@ -975,26 +982,40 @@ if __name__ == "__main__":
     climits = calculate_global_climits(
         dataset, dem, features_cfg, scaling_stats
     )  # <-- Pass stats
-
+        
     # --- Create the dynamic plot variable index maps (Run Once) ---
     plot_idx_map = _create_plot_index_map(features_cfg)
-
+    
+    # --- NEW: Load time coordinates (Run Once) ---
+    # We need this to save in the output NetCDF
+    print(f"Loading time coordinates from {args.netcdf_file}...")
+    try:
+        with xr.open_dataset(args.netcdf_file) as ds:
+            # The predictions start at frame `previous_t` and go for `total_frames`
+            time_slice = slice(previous_t, previous_t + total_frames)
+            time_coords = ds['time'].isel(time=time_slice).values
+        
+        if len(time_coords) != total_frames:
+             print(f"Warning: Time coordinate length ({len(time_coords)}) does not match total frames ({total_frames}). Using simple index.")
+             time_coords = np.arange(total_frames)
+    except Exception as e:
+        print(f"Warning: Could not load time coordinates. Using simple index. Error: {e}")
+        time_coords = np.arange(total_frames)
+    # --- END NEW ---
+    
+    
     # --- 9. START MAIN ROLLOUT LOOP ---
     # This loop will run once for each horizon provided (e.g., -r -1 12 24)
-    print(
-        f"\nFound {len(rollout_horizons_list)} rollout(s) to run: {rollout_horizons_list}"
-    )
-
+    print(f"\nFound {len(rollout_horizons_list)} rollout(s) to run: {rollout_horizons_list}")
+    
     for rollout_horizon in rollout_horizons_list:
-
+        
         # === STARTING ROLLOUT FOR HORIZON: {rollout_horizon} ===
-
+        
         # --- 9a. Define unique names for this horizon ---
         # This creates names like "full" or "12step"
         rollout_type_str = "full" if rollout_horizon == -1 else f"{rollout_horizon}step"
-        print(
-            f"\n--- Starting Rollout: {rollout_type_str} (Horizon={rollout_horizon}) ---"
-        )
+        print(f"\n--- Starting Rollout: {rollout_type_str} (Horizon={rollout_horizon}) ---")
 
         # Create dynamic output paths based on the rollout horizon
         output_gif = os.path.join(
@@ -1003,15 +1024,14 @@ if __name__ == "__main__":
         output_video = os.path.join(
             base_output_dir, f"adforce_6panel_PREDICTION_{rollout_type_str}.mp4"
         )
-        frame_dir = os.path.join(
-            base_output_dir, f"animation_frames_{rollout_type_str}"
-        )
+        frame_dir = os.path.join(base_output_dir, f"animation_frames_{rollout_type_str}")
 
         print(f"Animation frames will be in: {frame_dir}")
 
         # Clean up *frame dir* for this specific rollout
         shutil.rmtree(frame_dir, ignore_errors=True)
         os.makedirs(frame_dir, exist_ok=True)
+
 
         # --- 9b. PERFORM ROLLOUT ---
         all_predictions = perform_rollout(
@@ -1020,23 +1040,66 @@ if __name__ == "__main__":
             device,
             features_cfg,
             scaling_stats,  # <-- Pass stats
-            rollout_horizon=rollout_horizon,  # <-- Pass the *current* horizon
+            rollout_horizon=rollout_horizon, # <-- Pass the *current* horizon
         )
 
         if len(all_predictions) != total_frames:
             print(
                 f"Error: Rollout returned {len(all_predictions)} frames, expected {total_frames}"
             )
-            continue  # Skip to the next horizon
+            continue # Skip to the next horizon
 
-        # --- 9c. RENDER FRAMES ---
+        # --- 9c. NEW: SAVE PREDICTIONS TO NETCDF ---
+        print(f"Saving raw predictions to NetCDF for '{rollout_type_str}'...")
+        
+        # Define the path for the prediction .nc file
+        output_pred_nc = os.path.join(
+            base_output_dir, f"adforce_PREDICTION_{rollout_type_str}.nc"
+        )
+        
+        try:
+            # Stack the list of arrays into one big array
+            # Shape becomes: (total_frames, num_nodes, num_state_features)
+            pred_data_np = np.stack(all_predictions, axis=0)
+            
+            # Get the names of the predicted variables (e.g., ['WD', 'VX', 'VY'])
+            var_coords = list(features_cfg.state)
+            
+            # Create a dictionary for the xarray.Dataset
+            # This maps variable names to their data, with correct dims
+            data_vars = {
+                var_coords[i]: (('time', 'num_nodes'), pred_data_np[:, :, i])
+                for i in range(len(var_coords))
+            }
+            
+            # Create the Dataset
+            pred_ds = xr.Dataset(
+                data_vars=data_vars,
+                coords={
+                    'time': time_coords, # Use the loaded time coordinates
+                    'num_nodes': np.arange(pred_data_np.shape[1]),
+                    'x': ('num_nodes', x_coords), # Add static coords
+                    'y': ('num_nodes', y_coords),
+                    'DEM': ('num_nodes', dem)
+                }
+            )
+            
+            # Save to file
+            pred_ds.to_netcdf(output_pred_nc)
+            print(f"Prediction data saved to {os.path.abspath(output_pred_nc)}")
+        
+        except Exception as e:
+            print(f"--- WARNING: Failed to save prediction NetCDF ---")
+            print(f"Error: {e}")
+        # --- END NEW SECTION ---
+
+
+        # --- 9d. RENDER FRAMES ---
         print(f"Rendering {total_frames} predicted frames for '{rollout_type_str}'...")
         frame_files = []
 
         # Iterate and render one frame at a time
-        for idx in tqdm(
-            range(total_frames), desc=f"Rendering frames ({rollout_type_str})"
-        ):
+        for idx in tqdm(range(total_frames), desc=f"Rendering frames ({rollout_type_str})"):
             # Use the dynamic frame_dir path
             frame_path = os.path.join(frame_dir, f"frame_{idx:05d}.png")
             frame_files.append(frame_path)
@@ -1051,20 +1114,18 @@ if __name__ == "__main__":
                 y_coords,
                 dem,
                 climits,
-                frame_path,  # Pass the unique frame path
+                frame_path, # Pass the unique frame path
                 prediction_state=prediction_for_this_frame,
                 features_cfg=features_cfg,
                 plot_idx_map=plot_idx_map,
                 scaling_stats=scaling_stats,  # <-- Pass stats
             )
 
-        # --- 9d. COMPILE & CLEANUP ---
+        # --- 9e. COMPILE & CLEANUP ---
         images = []
         if output_gif or output_video:
             # Read all saved frames from the unique frame_dir
-            for frame_file in tqdm(
-                frame_files, desc=f"Reading frames ({rollout_type_str})"
-            ):
+            for frame_file in tqdm(frame_files, desc=f"Reading frames ({rollout_type_str})"):
                 images.append(iio.imread(frame_file))
 
         if output_gif:
@@ -1083,7 +1144,7 @@ if __name__ == "__main__":
             print(f"GIF saved to {os.path.abspath(output_gif)}")
         if output_video:
             print(f"Video saved to {os.path.abspath(output_video)}")
-
+        
         # === FINISHED ROLLOUT FOR HORIZON: {rollout_horizon} ===
 
     print("\nAll requested rollouts are complete.")
