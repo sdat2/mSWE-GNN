@@ -130,8 +130,8 @@ python -m adforce_main model_params.model_type=MLP
 | SWE-GNN-K3-P1-H128 | 1.96 | 2.03 | 2.20 |
 | GCN-GNN-P1-H128 | 2.93 | 2.67 | 2.87 |
 | GAT-GNN-P1-H128 | 2.94 | 2.68 | 2.88 |
-| MLP-P1-H128 | 3.08 | 2.74 | 3.03 |
-| MonolithicMLP-P1-H128 | 3.14 | 3.05 | 3.43 |
+| PointWiseMLP-P1-H128 | 3.08 | 2.74 | 3.03 |
+| WholeMeshMLP-P1-H128 | 3.14 | 3.05 | 3.43 |
 
 
 # Old README content:
