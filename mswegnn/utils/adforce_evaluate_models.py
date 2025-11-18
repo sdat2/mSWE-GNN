@@ -28,6 +28,9 @@ import pandas as pd
 from omegaconf import OmegaConf
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
+
+# Import your project utilities
+# Assumes these files are accessible via PYTHONPATH
 from mswegnn.utils.adforce_misc import model_from_cfg_and_checkpoint
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 
@@ -51,7 +54,7 @@ def find_best_checkpoint(checkpoint_dir: str) -> str:
         return None
 
     # Regex finds 'val_loss=0.1234' in filenames like 'GNN-epoch=99-val_loss=0.3644.ckpt'
-    # FIX: Use [0-9]+\.[0-9]+ to avoid capturing the trailing dot of .ckpt
+    # FIX: Use [0-9]+\.[0-9]+ to strictly match float numbers and ignore trailing dots
     best_ckpt = None
     min_loss = float("inf")
 
@@ -64,6 +67,7 @@ def find_best_checkpoint(checkpoint_dir: str) -> str:
                     min_loss = loss
                     best_ckpt = ckpt
             except ValueError:
+                # Skip files where loss extraction failed
                 continue
 
     return best_ckpt
@@ -140,19 +144,25 @@ def get_ssh_delta_rmse(
     """
     Computes the unscaled Root Mean Squared Error (RMSE) for the SSH delta.
 
+    Optimized: Accumulates statistics entirely on the GPU to avoid costly
+    CPU-GPU data transfer (synchronization) inside the loop.
+
     Args:
         model (torch.nn.Module): The loaded PyTorch model (or LightningModule).
         loader (DataLoader): A PyG DataLoader containing the dataset.
         device (torch.device): The device to run evaluation on (CPU or GPU).
-        target_idx (int): The index of the target variable (e.g., WD/SSH) in the output vector.
+        target_idx (int): The index of the target variable (0 for WD) in the output vector.
 
     Returns:
         float: The RMSE in physical units (meters). Returns NaN if loader is empty.
     """
     model.eval()
-    squared_errors = []
 
-    # Extract unscaling parameters for the target variable
+    # Initialize accumulators on device to keep computation on GPU
+    total_squared_error = torch.tensor(0.0, device=device)
+    total_samples = 0
+
+    # Extract unscaling parameters (scalars)
     ds = loader.dataset
     y_delta_mean = ds.y_delta_mean[target_idx].to(device)
     y_delta_std = ds.y_delta_std[target_idx].to(device)
@@ -161,31 +171,35 @@ def get_ssh_delta_rmse(
         for batch in tqdm(loader, desc="Evaluating", leave=False):
             batch = batch.to(device)
 
-            # --- FIX: Access the internal PyTorch model ---
-            # LightningModules often wrap the core model in .model or require
-            # manual forward implementation.
+            # FIX: Access the internal PyTorch model, bypassing the LightningModule's missing forward()
             if hasattr(model, "model"):
                 out_scaled = model.model(batch)
             else:
                 out_scaled = model(batch)
 
-            # Unscale Prediction
+            # Unscale Prediction (on GPU)
             pred_delta_scaled = out_scaled[:, target_idx]
             pred_delta_raw = (pred_delta_scaled * y_delta_std) + y_delta_mean
 
-            # Unscale Ground Truth
+            # Unscale Ground Truth (on GPU)
             true_delta_scaled = batch.y[:, target_idx]
             true_delta_raw = (true_delta_scaled * y_delta_std) + y_delta_mean
 
-            # Error
+            # Calculate Squared Error (vectorized on GPU)
             se = (pred_delta_raw - true_delta_raw) ** 2
-            squared_errors.append(se.cpu().numpy())
 
-    if not squared_errors:
+            # Accumulate sum and count (still on GPU)
+            total_squared_error += se.sum()
+            total_samples += se.numel()
+
+    if total_samples == 0:
         return float("nan")
 
-    rmse = np.sqrt(np.mean(np.concatenate(squared_errors)))
-    return float(rmse)
+    # Final Calculation (Only now do we move a single scalar to CPU)
+    mse = total_squared_error / total_samples
+    rmse = torch.sqrt(mse).item()
+
+    return rmse
 
 
 def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) -> dict:
@@ -199,14 +213,13 @@ def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) 
         conf_dir (str): Path to the directory containing split YAML files.
 
     Returns:
-        dict: A dictionary of results, including RMSE for each split. Returns None if
-              model loading fails or configuration is invalid.
+        dict: A dictionary of results, including RMSE for each split.
     """
 
     # Load Config
     cfg = OmegaConf.load(run_paths["config"])
 
-    # Check if model predicts WD (SSH)
+    # Check if model predicts WD (index 0), which equals Delta SSH
     try:
         wd_idx = list(cfg.features.targets).index("WD")
     except ValueError:
@@ -226,7 +239,6 @@ def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) 
         "Checkpoint": os.path.basename(run_paths["ckpt"]),
     }
 
-    # Define splits using the provided conf_dir
     split_files = {
         "train": os.path.join(conf_dir, "train.yaml"),
         "val": os.path.join(conf_dir, "val.yaml"),
@@ -237,8 +249,7 @@ def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) 
         try:
             nc_files = load_file_list(list_file, data_root)
 
-            # Initialize Dataset with the RUN-SPECIFIC stats file
-            # We use a cache folder inside data_root to avoid clutter
+            # Cache directory
             cache_dir = os.path.join(data_root, f"processed_{split}_cache")
             os.makedirs(cache_dir, exist_ok=True)
 
@@ -247,11 +258,18 @@ def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) 
                 nc_files=nc_files,
                 previous_t=cfg.model_params.previous_t,
                 features_cfg=cfg.features,
-                scaling_stats_path=run_paths["stats"],  # <--- CRITICAL: Local path
+                scaling_stats_path=run_paths["stats"],
             )
 
-            # Use larger batch size for inference if possible
-            loader = DataLoader(ds, batch_size=16, shuffle=False, num_workers=0)
+            # OPTIMIZATION: Use multiple workers and pinned memory
+            loader = DataLoader(
+                ds,
+                batch_size=32,  # Increased batch size for GPU saturation
+                shuffle=False,
+                num_workers=8,  # Parallel data loading
+                pin_memory=True,  # Faster CPU->GPU transfer
+                persistent_workers=True if len(nc_files) > 8 else False,
+            )
 
             print(f"[{run_name}] {split.capitalize()} set... ", end="", flush=True)
             rmse = get_ssh_delta_rmse(model, loader, device, wd_idx)
@@ -269,7 +287,6 @@ def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) 
 
 
 if __name__ == "__main__":
-    # --- ARGUMENT PARSING ---
     parser = argparse.ArgumentParser(
         description="Evaluate mSWE-GNN models (SSH Delta RMSE) across multiple runs."
     )
@@ -278,37 +295,35 @@ if __name__ == "__main__":
         "--results_dir",
         type=str,
         required=True,
-        help="Path to the base directory containing model run subfolders (e.g., /path/to/my_results)",
+        help="Path to the base directory containing model run subfolders",
     )
     parser.add_argument(
         "-d",
         "--data_dir",
         type=str,
         required=True,
-        help="Path to the directory containing raw .nc files (e.g., /path/to/swegnn_5sec)",
+        help="Path to the directory containing raw .nc files",
     )
     parser.add_argument(
         "-c",
         "--conf_dir",
         type=str,
         default="conf",
-        help="Path to directory containing train.yaml, val.yaml, test.yaml (default: 'conf')",
+        help="Path to directory containing train.yaml, val.yaml, test.yaml",
     )
     parser.add_argument(
         "-o",
         "--output",
         type=str,
         default="ssh_rmse_results",
-        help="Base filename for output tables (default: 'ssh_rmse_results')",
+        help="Base filename for output tables",
     )
 
     args = parser.parse_args()
 
-    # Validate inputs
     if not os.path.exists(args.results_dir):
         print(f"Error: Results directory not found: {args.results_dir}")
         exit(1)
-    # Note: data_dir is checked inside load_file_list implicitly, but explicit check is good
     if not os.path.exists(args.data_dir):
         print(f"Error: Data directory not found: {args.data_dir}")
         exit(1)
@@ -326,39 +341,33 @@ if __name__ == "__main__":
             continue
 
         run_name = os.path.basename(run_dir)
-
-        # 1. Validate directory structure
         paths = get_run_paths(run_dir)
         if not paths:
-            # Silently skip invalid folders (e.g., logs, empty dirs)
             continue
 
-        # 2. Evaluate
         print(f"=== Evaluating: {run_name} ===")
         print(f"  Ckpt: {os.path.basename(paths['ckpt'])}")
 
         res = evaluate_run(run_name, paths, args.data_dir, args.conf_dir)
         if res:
             all_results.append(res)
-            print("")  # Newline spacing
+            print("")
 
     if not all_results:
         print("No valid results found.")
         exit(0)
 
-    # Output Formatting
     df = pd.DataFrame(all_results)
 
-    # Sort by Validation RMSE if available
+    # Sort by Validation RMSE
     sort_col = "Val RMSE" if "Val RMSE" in df.columns else df.columns[-1]
     df = df.sort_values(sort_col)
 
-    # --- Robust Output (No tabulate required) ---
+    # --- Output to console (using pandas built-in string format) ---
     print("\n### Results Summary")
-    # Use pandas builtin string formatting instead of to_markdown for console safety
     print(df.to_string(index=False, float_format="%.4f"))
 
-    # Save LaTeX (Built-in to pandas)
+    # Save LaTeX (using pandas built-in to_latex)
     latex = df.to_latex(
         index=False,
         float_format="%.4f",
@@ -366,7 +375,7 @@ if __name__ == "__main__":
         label="tab:ssh_results",
         escape=False,
     )
-    # Format Latex for academic papers (booktabs style)
+    # Apply user-requested booktabs styling
     latex = (
         latex.replace("\\toprule", "\\topline")
         .replace("\\midrule", "\\midline")
@@ -378,7 +387,7 @@ if __name__ == "__main__":
         f.write(latex)
     print(f"\nLaTeX table saved to {tex_file}")
 
-    # Save Markdown (Optional, handles missing tabulate)
+    # Save Markdown (Attempt to use to_markdown, fallback to string if tabulate is missing)
     md_file = f"{args.output}.md"
     with open(md_file, "w") as f:
         try:
