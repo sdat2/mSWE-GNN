@@ -102,7 +102,9 @@ def loss_function(
     if diff.shape[0] == 0:
         return torch.tensor(0.0, device=diff.device, requires_grad=True)
 
-    loss = get_mean_error(diff, type_loss, nodes_dim=0) # get scaled rmse or mae over nodes
+    loss = get_mean_error(
+        diff, type_loss, nodes_dim=0
+    )  # get scaled rmse or mae over nodes
 
     # --- MODIFICATION: Pass the device from `diff` ---
     # This ensures loss_scaler is created on the same device as loss (e.g., cuda:0)
@@ -118,7 +120,7 @@ def loss_function(
     loss = torch.dot(loss, loss_scaler) / loss_scaler.sum()
 
     if conservation != 0:
-        WD_index = 2 
+        WD_index = 2
         input_WD = data.x[:, -WD_index::WD_index]
         pred_WD = preds[:, 0::WD_index]
 

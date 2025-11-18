@@ -154,7 +154,7 @@ class SWEGNN(nn.Module):
         mlp_kwargs["n_layers"] = n_layers
         mlp_kwargs.pop("edge_mlp", None)
         self.bias = mlp_kwargs.get("bias", False)
-        mlp_kwargs['bias'] = self.bias
+        mlp_kwargs["bias"] = self.bias
 
         self.edge_mlp = make_mlp(
             self.edge_input_size,
