@@ -94,7 +94,7 @@ We created extreme test data from the simulations of the Potential Height of Tro
 
 ![Miami Test Data](test_miami.gif)
 
-This test data is also published on Hugging Face as:
+This test data is also published on HuggingFace as:
 
 ```bibtex
 @misc{Thomas2025SurgeNetTest,
@@ -112,6 +112,7 @@ This test data is also published on Hugging Face as:
 To run the training pipeline, you must first specify the directories for the different datasets in the configuration file located at `conf/config.yaml`, or add them at run time using `hydra`. You can then run the following command:
 
 ```bash
+
 python -m adforce_main
 
 python -m adforce_main model_params.model_type=MonolithicMLP
