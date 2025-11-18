@@ -1,10 +1,20 @@
 """
-python -m mswegnn.utils.adforce_evaluate_models \
-    --results_dir /home/users/sithom/my_results \
-    --data_dir /home/users/sithom/swegnn_5sec \
-    --conf_dir /home/users/sithom/mSWE-GNN/conf \
-    --output comparison
+Evaluation script for mSWE-GNN Adforce models.
 
+This script iterates through a directory of model run results, identifies the
+best checkpoint for each run (based on validation loss), and evaluates the
+model's performance on Train, Validation, and Test splits.
+
+It computes the Root Mean Squared Error (RMSE) specifically for the Sea Surface
+Height (SSH) delta prediction, ensuring that scaling and unscaling are handled
+correctly using the run-specific statistics.
+
+Usage:
+    python -m mswegnn.utils.adforce_evaluate_models \
+        --results_dir /home/users/sithom/my_results \
+        --data_dir /home/users/sithom/swegnn_5sec \
+        --conf_dir /home/users/sithom/mSWE-GNN/conf \
+        --output comparison
 """
 
 import os
@@ -23,7 +33,16 @@ from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 
 
 def find_best_checkpoint(checkpoint_dir: str) -> str:
-    """Finds the .ckpt file with the lowest validation loss."""
+    """
+    Finds the checkpoint file with the lowest validation loss in a directory.
+
+    Args:
+        checkpoint_dir (str): Path to the checkpoints directory.
+
+    Returns:
+        str: Full path to the best checkpoint file, or None if no valid
+             checkpoints are found.
+    """
     if not os.path.isdir(checkpoint_dir):
         return None
 
@@ -32,24 +51,34 @@ def find_best_checkpoint(checkpoint_dir: str) -> str:
         return None
 
     # Regex finds 'val_loss=0.1234' in filenames like 'GNN-epoch=99-val_loss=0.3644.ckpt'
+    # FIX: Use [0-9]+\.[0-9]+ to avoid capturing the trailing dot of .ckpt
     best_ckpt = None
     min_loss = float("inf")
 
     for ckpt in ckpt_files:
         match = re.search(r"val_loss=([0-9]+\.[0-9]+)", ckpt)
         if match:
-            loss = float(match.group(1))
-            if loss < min_loss:
-                min_loss = loss
-                best_ckpt = ckpt
+            try:
+                loss = float(match.group(1))
+                if loss < min_loss:
+                    min_loss = loss
+                    best_ckpt = ckpt
+            except ValueError:
+                continue
 
     return best_ckpt
 
 
 def get_run_paths(run_dir: str) -> dict:
     """
-    Validates a run directory and returns paths to critical files.
-    Returns None if the run is incomplete or invalid.
+    Validates a model run directory and retrieves paths to critical files.
+
+    Args:
+        run_dir (str): Path to the specific model run directory.
+
+    Returns:
+        dict: A dictionary containing paths for 'ckpt', 'config', and 'stats'.
+              Returns None if any required file is missing.
     """
     paths = {}
 
@@ -84,7 +113,19 @@ def get_run_paths(run_dir: str) -> dict:
 
 
 def load_file_list(list_path: str, data_root: str) -> list[str]:
-    """Loads list of .nc filenames and prepends the local data root."""
+    """
+    Loads a list of NetCDF filenames from a YAML file and prepends the data root.
+
+    Args:
+        list_path (str): Path to the YAML file containing the file list.
+        data_root (str): The base directory where the NetCDF files are stored.
+
+    Returns:
+        list[str]: A list of full file paths.
+
+    Raises:
+        FileNotFoundError: If the list_path does not exist.
+    """
     if not os.path.exists(list_path):
         raise FileNotFoundError(f"Could not find split file: {list_path}")
 
@@ -96,7 +137,18 @@ def load_file_list(list_path: str, data_root: str) -> list[str]:
 def get_ssh_delta_rmse(
     model: torch.nn.Module, loader: DataLoader, device: torch.device, target_idx: int
 ) -> float:
-    """Calculates unscaled RMSE for a specific target index (SSH)."""
+    """
+    Computes the unscaled Root Mean Squared Error (RMSE) for the SSH delta.
+
+    Args:
+        model (torch.nn.Module): The loaded PyTorch model (or LightningModule).
+        loader (DataLoader): A PyG DataLoader containing the dataset.
+        device (torch.device): The device to run evaluation on (CPU or GPU).
+        target_idx (int): The index of the target variable (e.g., WD/SSH) in the output vector.
+
+    Returns:
+        float: The RMSE in physical units (meters). Returns NaN if loader is empty.
+    """
     model.eval()
     squared_errors = []
 
@@ -109,8 +161,13 @@ def get_ssh_delta_rmse(
         for batch in tqdm(loader, desc="Evaluating", leave=False):
             batch = batch.to(device)
 
-            # Predict
-            out_scaled = model(batch)
+            # --- FIX: Access the internal PyTorch model ---
+            # LightningModules often wrap the core model in .model or require
+            # manual forward implementation.
+            if hasattr(model, "model"):
+                out_scaled = model.model(batch)
+            else:
+                out_scaled = model(batch)
 
             # Unscale Prediction
             pred_delta_scaled = out_scaled[:, target_idx]
@@ -132,7 +189,19 @@ def get_ssh_delta_rmse(
 
 
 def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) -> dict:
-    """Loads model and evaluates on all splits."""
+    """
+    Loads a model and evaluates it on Train, Validation, and Test splits.
+
+    Args:
+        run_name (str): The name of the model run (for reporting).
+        run_paths (dict): Dictionary containing paths to 'ckpt', 'config', and 'stats'.
+        data_root (str): Path to the directory containing raw NetCDF files.
+        conf_dir (str): Path to the directory containing split YAML files.
+
+    Returns:
+        dict: A dictionary of results, including RMSE for each split. Returns None if
+              model loading fails or configuration is invalid.
+    """
 
     # Load Config
     cfg = OmegaConf.load(run_paths["config"])
@@ -239,6 +308,7 @@ if __name__ == "__main__":
     if not os.path.exists(args.results_dir):
         print(f"Error: Results directory not found: {args.results_dir}")
         exit(1)
+    # Note: data_dir is checked inside load_file_list implicitly, but explicit check is good
     if not os.path.exists(args.data_dir):
         print(f"Error: Data directory not found: {args.data_dir}")
         exit(1)
@@ -283,10 +353,12 @@ if __name__ == "__main__":
     sort_col = "Val RMSE" if "Val RMSE" in df.columns else df.columns[-1]
     df = df.sort_values(sort_col)
 
+    # --- Robust Output (No tabulate required) ---
     print("\n### Results Summary")
-    print(df.to_markdown(index=False, floatfmt=".4f"))
+    # Use pandas builtin string formatting instead of to_markdown for console safety
+    print(df.to_string(index=False, float_format="%.4f"))
 
-    # Save LaTeX
+    # Save LaTeX (Built-in to pandas)
     latex = df.to_latex(
         index=False,
         float_format="%.4f",
@@ -306,8 +378,14 @@ if __name__ == "__main__":
         f.write(latex)
     print(f"\nLaTeX table saved to {tex_file}")
 
-    # Save Markdown
+    # Save Markdown (Optional, handles missing tabulate)
     md_file = f"{args.output}.md"
     with open(md_file, "w") as f:
-        f.write(df.to_markdown(index=False, floatfmt=".4f"))
-    print(f"Markdown table saved to {md_file}")
+        try:
+            f.write(df.to_markdown(index=False, floatfmt=".4f"))
+            print(f"Markdown table saved to {md_file}")
+        except ImportError:
+            f.write(df.to_string(index=False, float_format="%.4f"))
+            print(
+                f"Markdown table saved to {md_file} (using text format due to missing tabulate)"
+            )
