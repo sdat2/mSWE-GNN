@@ -121,6 +121,19 @@ python -m adforce_main model_params.model_type=MLP
 
 ```
 
+## Results
+
+| Model | Train RMSE (cm) | Val RMSE (cm) | Test RMSE (cm) |
+| :--- | :---: | :---: | :---: |
+| SWE-GNN-9K-H128 | 1.65 | 1.84 | 1.99 |
+| SWE-GNN-K6-P1-H128 | 1.67 | 1.86 | 2.00 |
+| SWE-GNN-K3-P1-H128 | 1.96 | 2.03 | 2.20 |
+| GCN-GNN-P1-H128 | 2.93 | 2.67 | 2.87 |
+| GAT-GNN-P1-H128 | 2.94 | 2.68 | 2.88 |
+| MLP-P1-H128 | 3.08 | 2.74 | 3.03 |
+| MonolithicMLP-P1-H128 | 3.14 | 3.05 | 3.43 |
+
+
 # Old README content:
 # mSWE-GNN (Repository for paper "Multi-scale hydraulic graph neural networks for flood modelling")
 (Version 1.1 - Nov. 28th, 2024)
