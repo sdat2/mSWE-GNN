@@ -59,7 +59,7 @@ pip install -e .
         - `adforce_animate.py`: animate adforce inputs and outputs using dataloader (for training and test data).
         - `adforce_predict_animate.py`: predict and animate from a saved model checkpoint (and config.yaml file).
         - `adforce_predict_timeseries.py`: predict timeseries from a saved model checkpoint (and config.yaml file).
-        - `adforce-misc.py`: load model from checkpoint, etc.
+        - `adforce_misc.py`: load model from checkpoint, etc.
 - `jasmin.slurm`: SLURM job script for running on the JASMIN supercomputer.
 - `jasmin_gpu.slurm`: SLURM job script for running on JASMIN GPU (orchid A100) nodes.
 - `env_jas_gpu.yml`: Micromamba environment file for JASMIN GPU nodes.
@@ -154,4 +154,4 @@ Also contains the output of the hydrodynamic simulations (**raw_datasets**: for 
 
 ## Environment setup
 
-The required libraries are in requirements.txt.
+The required libraries are in `requirements.txt.`
