@@ -282,7 +282,6 @@ def plot_delta_frame(
     """Renders the 4x3 grid."""
     x_coords, y_coords = coords
     
-    # --- CORRECTED FIGSIZE ---
     # Width = 6 * 1.2 = 7.2
     # Height = (4 * 1.2) * 2 = 9.6
     fig, axs = plt.subplots(4, 3, figsize=(7.2, 9.6), sharex=True, sharey=True)
@@ -325,7 +324,7 @@ def plot_delta_frame(
             scat = ax.scatter(
                 x_coords, y_coords, 
                 c=data_dict[key], 
-                s=0.5, # Reduced size for smaller canvas
+                s=0.5,
                 cmap=cmaps[i][j], 
                 vmin=vmin, vmax=vmax, marker="."
             )
@@ -338,17 +337,20 @@ def plot_delta_frame(
             # cbar.ax.tick_params(labelsize=8)
 
             if i == 3:
-                ax.set_xlabel("Longitude")
+                ax.set_xlabel("Longitude [$^{\circ}$E]")
             if j == 0:
-                ax.set_ylabel("Latitude")
+                ax.set_ylabel("Latitude [$^{\circ}$N]")
 
-    fig.suptitle(timestamp, y=0.95, fontsize=12)
+    # Lower the title position slightly to sit closer to the subplots
+    fig.suptitle(timestamp, y=0.92, fontsize=12)
+    
     label_subplots(axs)
     
-    # Adjust layout
+    # Use tight_layout with bbox_inches='tight' in savefig to control whitespace
     plt.tight_layout(rect=[0, 0.02, 1, 0.95])
     
-    fig.savefig(save_path, dpi=150)
+    # bbox_inches="tight" removes excess whitespace
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
