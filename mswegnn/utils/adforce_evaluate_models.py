@@ -30,7 +30,6 @@ from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
 # Import your project utilities
-# Assumes these files are accessible via PYTHONPATH
 from mswegnn.utils.adforce_misc import model_from_cfg_and_checkpoint
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 
@@ -54,11 +53,11 @@ def find_best_checkpoint(checkpoint_dir: str) -> str:
         return None
 
     # Regex finds 'val_loss=0.1234' in filenames like 'GNN-epoch=99-val_loss=0.3644.ckpt'
-    # FIX: Use [0-9]+\.[0-9]+ to strictly match float numbers and ignore trailing dots
     best_ckpt = None
     min_loss = float("inf")
 
     for ckpt in ckpt_files:
+        # Strict regex to avoid capturing trailing dots or other artifacts
         match = re.search(r"val_loss=([0-9]+\.[0-9]+)", ckpt)
         if match:
             try:
@@ -171,7 +170,7 @@ def get_ssh_delta_rmse(
         for batch in tqdm(loader, desc="Evaluating", leave=False):
             batch = batch.to(device)
 
-            # FIX: Access the internal PyTorch model, bypassing the LightningModule's missing forward()
+            # Access the internal PyTorch model, bypassing the LightningModule's missing forward()
             if hasattr(model, "model"):
                 out_scaled = model.model(batch)
             else:
@@ -239,6 +238,20 @@ def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) 
         "Checkpoint": os.path.basename(run_paths["ckpt"]),
     }
 
+    # --- DYNAMIC BATCH SIZE SELECTION ---
+    # Default to a large size for speed, as GAT/GCN/MLP handled it
+    batch_size = 32
+
+    # Check the specific GNN type
+    if cfg.model_params.model_type == "GNN" and cfg.models.type_gnn == "SWEGNN":
+        # SWEGNN is the known memory hog. Revert to the safer batch size from training (usually 4)
+        batch_size = cfg.trainer_options.get("batch_size", 8)
+        print(
+            f"  Note: Using conservative batch size {batch_size} for memory-intensive SWEGNN."
+        )
+    # For MLP/GAT/GCN, we stick to the faster default of 32.
+    # ------------------------------------
+
     split_files = {
         "train": os.path.join(conf_dir, "train.yaml"),
         "val": os.path.join(conf_dir, "val.yaml"),
@@ -261,13 +274,13 @@ def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) 
                 scaling_stats_path=run_paths["stats"],
             )
 
-            # OPTIMIZATION: Use multiple workers and pinned memory
+            # DataLoader uses the dynamically set batch size
             loader = DataLoader(
                 ds,
-                batch_size=32,  # Increased batch size for GPU saturation
+                batch_size=batch_size,
                 shuffle=False,
-                num_workers=8,  # Parallel data loading
-                pin_memory=True,  # Faster CPU->GPU transfer
+                num_workers=8,
+                pin_memory=True,
                 persistent_workers=True if len(nc_files) > 8 else False,
             )
 
@@ -280,6 +293,13 @@ def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) 
             print(f"\nWarning: Could not find file list for {split} at {list_file}")
             results[f"{split.capitalize()} RMSE"] = np.nan
         except Exception as e:
+            # Re-raise error if it's OOM and we are using the smallest safe batch size
+            if isinstance(e, torch.cuda.OutOfMemoryError) and batch_size <= 4:
+                print(
+                    f"\nFATAL ERROR: OOM occurred even with conservative batch size {batch_size}. Cannot continue."
+                )
+                raise e
+
             print(f"\nError evaluating {split} for {run_name}: {e}")
             results[f"{split.capitalize()} RMSE"] = np.nan
 
@@ -348,10 +368,17 @@ if __name__ == "__main__":
         print(f"=== Evaluating: {run_name} ===")
         print(f"  Ckpt: {os.path.basename(paths['ckpt'])}")
 
-        res = evaluate_run(run_name, paths, args.data_dir, args.conf_dir)
-        if res:
-            all_results.append(res)
-            print("")
+        try:
+            res = evaluate_run(run_name, paths, args.data_dir, args.conf_dir)
+            if res:
+                all_results.append(res)
+                print("")
+        except torch.cuda.OutOfMemoryError as e:
+            print(
+                f"\nSkipping remaining evaluations due to persistent OOM error in {run_name}."
+            )
+            print(f"Error details: {e}")
+            break
 
     if not all_results:
         print("No valid results found.")
@@ -374,12 +401,6 @@ if __name__ == "__main__":
         caption="RMSE of SSH Delta predictions (meters) across splits.",
         label="tab:ssh_results",
         escape=False,
-    )
-    # Apply user-requested booktabs styling
-    latex = (
-        latex.replace("\\toprule", "\\topline")
-        .replace("\\midrule", "\\midline")
-        .replace("\\bottomrule", "\\bottomline")
     )
 
     tex_file = f"{args.output}.tex"

@@ -9,7 +9,7 @@
 #SBATCH --exclude=gpuhost007         # Exclude problematic host (it seems to have some cuda issue)
 #SBATCH -o log/%j.out                # Standard output log
 #SBATCH -e log/%j.err                # Standard error log
-#SBATCH --time=01:00:00              # Set to 1 hour max walltime
+#SBATCH --time=04:00:00              # Set to 4 hour max walltime
 #SBATCH --ntasks-per-node=8          # Number of CPU tasks per node
 #SBATCH --mem=40000                  # Memory request in MB (for data loaders)
 
