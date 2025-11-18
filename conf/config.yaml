@@ -81,25 +81,26 @@ features:
       args:
         - WD
         - DEM
+  # convergence and divergence of velocity field.
 
 
 # --- 5. Model Parameters ---
 model_params:
-  previous_t: 1
-  model_type: GNN
+  previous_t: 1 # just one previous time step
+  model_type: GNN # options: GNN, MLP
 
 
 # --- 6. Model Architecture ---
 models:
-  seed: 42
-  type_gnn: SWEGNN
-  hid_features: 64
-  mlp_layers: 2
-  K: 3
-  normalize: true
+  seed: 42 # random seed for reproducibility
+  type_gnn: SWEGNN # options: GNN, GAT, SWEGNN
+  hid_features: 64 # hidden features
+  mlp_layers: 2 # MLP layers
+  K: 3  # K hops
+  normalize: true # normalize inputs
   gnn_activation: tanh
-  edge_mlp: true
-  with_gradient: true
+  edge_mlp: true # use edge MLP
+  with_gradient: true # use gradient info
 
 
 # --- 7. Training Parameters ---
@@ -114,11 +115,11 @@ trainer_options:
 
 # --- 8. Learning Rate & Optimizer ---
 lr_info:
-  learning_rate: 0.001
-  weight_decay: 0.0001
-  use_lr_scheduler: true
-  step_size: 20
-  gamma: 0.5
+  learning_rate: 0.001 # initial learning rate
+  weight_decay: 0.0001 # weight decay for regularization
+  use_lr_scheduler: true # whether to use LR scheduler
+  step_size: 20 # LR step size
+  gamma: 0.5 # LR decay factor
 
 
 # --- 9. Logging (Weights & Biases) ---
