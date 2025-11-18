@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # --- SLURM Directives (GPU Job for ORCHID) ---
-#SBATCH --job-name=GAT-GNN-P1-128-bias
+#SBATCH --job-name=SWEGNN-K6-P1-128-bias
+# GAT-GNN-P1-128-bias
 # GCN-GNN-P1-128-bias
 # GAT-GNN-P1-128-bias
 # SWEGNN-K3-P1-128-bias
@@ -49,7 +50,8 @@ mkdir -p $OUTPUT_DIR
 # --- 3. Run Executable (UPDATED) ---
 echo "Animating..."
 
-CHECKPOINT_NAME="GNN-epoch=96-val_loss=0.5524.ckpt"
+CHECKPOINT_NAME="GNN-epoch=70-val_loss=0.4151.ckpt"
+# CHECKPOINT_NAME="GNN-epoch=96-val_loss=0.5524.ckpt"
 # CHECKPOINT_NAME="GNN-epoch=65-val_loss=0.5557.ckpt"
 # CHECKPOINT_NAME="GNN-epoch=96-val_loss=0.5524.ckpt"
 # CHECKPOINT_NAME="GNN-epoch=86-val_loss=0.4457.ckpt"
