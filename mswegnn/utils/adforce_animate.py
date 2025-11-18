@@ -11,7 +11,7 @@ determine how to load or derive variables (e.g., SSH).
 Example usage:
 python mswegnn/utils/adforce_animate.py \
     -c conf/config.yaml \
-    -f ../SurgeNetTestPH/galveston_2015_1.nc \
+    -f ../SurgeNetTestPH/miami_2015_1.nc \
     -v P WX WY SSH VX VY \
     -u "m" "m s$^{-1}$" "m s$^{-1}$" "m" "m s$^{-1}$" "m s$^{-1}$" \
     --diverging-vars WX WY VX VY SSH \
@@ -402,11 +402,11 @@ def create_animation_from_frames(
         compile_video_from_frames(output_video_path, fps, images)
 
     # 10. Clean up
-    try:
-        shutil.rmtree(frame_dir)
-        print(f"Cleaned up temporary directory: {frame_dir}")
-    except Exception as e:
-        print(f"Warning: Failed to clean up {frame_dir}. Error: {e}")
+    # try:
+    #     shutil.rmtree(frame_dir)
+    #     print(f"Cleaned up temporary directory: {frame_dir}")
+    # except Exception as e:
+    #     print(f"Warning: Failed to clean up {frame_dir}. Error: {e}")
 
     ds.close()
 
