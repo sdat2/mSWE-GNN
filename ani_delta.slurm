@@ -64,10 +64,27 @@ CHECKPOINT_NAME="GNN-epoch=70-val_loss=0.4151.ckpt"
 
 # Use the config/checkpoint for K=3
 # Added the new required -o argument
+
 python -m mswegnn.utils.adforce_delta_animate \
      -c /home/users/sithom/my_results/${SLURM_JOB_NAME}/checkpoints/config.yaml \
      -ckpt /home/users/sithom/my_results/${SLURM_JOB_NAME}/checkpoints/${CHECKPOINT_NAME} \
      -nc /home/users/sithom/swegnn_5sec/152_KATRINA_2005.nc \
+     -s /home/users/sithom/my_results/${SLURM_JOB_NAME}/processed/scaling_stats.yaml \
+     -o $OUTPUT_DIR
+
+echo "Job completed."
+echo "Output saved to: $OUTPUT_DIR"
+
+
+OUTPUT_DIR="/home/users/sithom/mSWE-GNN/animation_runs_extreme/$SLURM_JOB_NAME"
+echo "Creating output directory: $OUTPUT_DIR"
+mkdir -p $OUTPUT_DIR
+echo "Animating extreme test case."
+
+python -m mswegnn.utils.adforce_delta_animate \
+     -c /home/users/sithom/my_results/${SLURM_JOB_NAME}/checkpoints/config.yaml \
+     -ckpt /home/users/sithom/my_results/${SLURM_JOB_NAME}/checkpoints/${CHECKPOINT_NAME} \
+     -nc /home/users/sithom/SurgeNetTestPH/miami_2015_1.nc \
      -s /home/users/sithom/my_results/${SLURM_JOB_NAME}/processed/scaling_stats.yaml \
      -o $OUTPUT_DIR
 

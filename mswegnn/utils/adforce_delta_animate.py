@@ -339,6 +339,9 @@ def plot_delta_frame(
             )
 
             ax.set_aspect("equal")
+
+            ax.set_xlim(np.min(x_coords), np.max(x_coords))
+            ax.set_ylim(np.min(y_coords), np.max(y_coords))
             ax.set_title(titles[i][j])
 
             # Add colorbar
