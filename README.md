@@ -132,15 +132,16 @@ python -m adforce_main model_params.model_type=MLP
 
 ## Results
 
-| Model | Train RMSE (cm) | Val RMSE (cm) | Test RMSE (cm) |
-| :--- | :---: | :---: | :---: |
-| SWE-GNN-9K-H128 | 1.65 | 1.84 | 1.99 |
-| SWE-GNN-K6-P1-H128 | 1.67 | 1.86 | 2.00 |
-| SWE-GNN-K3-P1-H128 | 1.96 | 2.03 | 2.20 |
-| GCN-GNN-P1-H128 | 2.93 | 2.67 | 2.87 |
-| GAT-GNN-P1-H128 | 2.94 | 2.68 | 2.88 |
-| PointWiseMLP-P1-H128 | 3.08 | 2.74 | 3.03 |
-| WholeMeshMLP-P1-H128 | 3.14 | 3.05 | 3.43 |
+| Model | Train RMSE (cm) | Val RMSE (cm) | Test RMSE (cm) | Extreme RMSE (cm) |
+| :--- | :---: | :---: | :---: | :---: |
+| SWE-GNN-K9-H128 | 1.65 | 1.84 | 1.99 | 7.21 |
+| SWE-GNN-K6-P1-H128 | 1.67 | 1.86 | 2.00 | 7.29 |
+| SWE-GNN-K3-P1-H128-ReLU | 1.99 | 2.01 | 2.16 | 7.63 |
+| SWE-GNN-K3-P1-H128 | 1.96 | 2.03 | 2.20 | 7.25 |
+| GCN-GNN-P1-H128 | 2.93 | 2.67 | 2.87 | 6.94 |
+| GAT-GNN-P1-H128 | 2.94 | 2.68 | 2.88 | 6.96 |
+| PointWise-MLP-P1-H128 | 3.08 | 2.74 | 3.03 | 6.80 |
+| WholeMesh-MLP-P1-H128 | 3.14 | 3.05 | 3.43 | 29.66 |
 
 
 # Old README content:
