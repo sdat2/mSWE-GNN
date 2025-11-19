@@ -9,7 +9,8 @@ import os
 from huggingface_hub import snapshot_download
 
 if __name__ == "__main__":
-    # python -m mswegnn.hug.download
+    # https://huggingface.co/datasets/sdat2/surgenet-train
+    # python -m mswegnn.hug.download_train
     # Define the repository you want to download
     REPO_ID = "sdat2/surgenet-train"
     REPO_TYPE = "dataset"

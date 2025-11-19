@@ -85,7 +85,7 @@ The training data is published on Hugging Face as:
 You can download the training data using the `huggingface_hub` package, which is included in the `env.yml` file. A script to download the data is provided in `mswegnn/hug/download.py`, although the local path to save the data may need to be adjusted. Once this is done, run the following command:
 
 ```bash
-python -m mswegnn.hug.download
+python -m mswegnn.hug.download_train
 ```
 
 ## Extreme test data
@@ -105,6 +105,12 @@ This test data is also published on HuggingFace as:
     doi          = { 10.57967/hf/7006 },
     publisher    = { Hugging Face }
 }
+```
+
+To download the test data, use the script in `mswegnn/hug/download_test.py`, adjusting the local path as needed. Then run the following command:
+
+```bash
+python -m mswegnn.hug.download_test
 ```
 
 ## Run instructions
