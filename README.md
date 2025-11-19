@@ -93,7 +93,7 @@ python -m mswegnn.hug.download_train
 
 ## Extreme test data
 
-We created extreme test data from the simulations of the Potential Height of Tropical Cyclone Storm Surges from 2015 and 2100, for New Orleans, Miami and Galverston. The numerical settings in ADCIRC are all the same as the training data, as is the mesh. 
+We created extreme test data from the simulations of the Potential Height of Tropical Cyclone Storm Surges from 2015 and 2100, for New Orleans, Miami and Galveston. The numerical settings in ADCIRC are all the same as the training data, as is the mesh. 
 
 ![Miami Test Data](test_miami.gif)
 
