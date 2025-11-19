@@ -146,6 +146,7 @@ The following table summarizes the one step ahead SSH performance of various mod
 | WholeMesh-MLP-P1-H128 | 3.14 | 3.05 | 3.43 | 29.66 |
 
 
+
 # Old README content:
 # mSWE-GNN (Repository for paper "Multi-scale hydraulic graph neural networks for flood modelling")
 (Version 1.1 - Nov. 28th, 2024)
