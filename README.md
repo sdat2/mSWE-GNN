@@ -43,7 +43,8 @@ pip install -e .
 - `mswegnn/`: All the main code turned into a python package for easier management.
     - `database/`: Data handling and preprocessing modules. (not used).
     - `hug/`: Scripts for downloading and uploading datasets to Hugging Face.
-        - `download.py`: download the training data from Hugging Face.
+        - `download_train.py`: download the training data from Hugging Face.
+        - `download_test.py`: download the extreme test data from Hugging Face.
         - `upload.py`: upload the training data to Hugging Face. (ignore)
     - `models/`: Model definitions and architectures.
         - `adforce_processors.py`: graph neural network processor layers.
@@ -56,6 +57,8 @@ pip install -e .
     - `utils/`: Utility functions for various tasks.
         - `adforce_dataset.py`: dataset loading and batching.
         - `adforce_scaling.py`: data normalization and scaling.
+        - `adforce_evaluate_models.py`: model evaluation metrics.
+        - `adforce_delta_animate.py`: animate delta predictions, and inputs and outputs using dataloader.
         - `adforce_animate.py`: animate adforce inputs and outputs using dataloader (for training and test data).
         - `adforce_predict_animate.py`: predict and animate from a saved model checkpoint (and config.yaml file).
         - `adforce_predict_timeseries.py`: predict timeseries from a saved model checkpoint (and config.yaml file).

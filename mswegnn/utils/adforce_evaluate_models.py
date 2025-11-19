@@ -244,7 +244,8 @@ def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) 
 
     # Check the specific GNN type
     if cfg.model_params.model_type == "GNN" and cfg.models.type_gnn == "SWEGNN":
-        # SWEGNN is the known memory hog. Revert to the safer batch size from training (usually 4)
+        # SWEGNN is the known memory hog. Revert to the safer batch size from training (usually 4, but I've upped it to 8 here as we're not training).
+        # At K=12 and K=15, training needed batch size of 2 to avoid OOM, so we should probably take K as a param, so that we can reduce the batch size. 
         batch_size = cfg.trainer_options.get("batch_size", 8)
         print(
             f"  Note: Using conservative batch size {batch_size} for memory-intensive SWEGNN."
@@ -307,6 +308,7 @@ def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) 
 
 
 if __name__ == "__main__":
+    # python -m mswegnn.utils.adforce_evaluate_models
     parser = argparse.ArgumentParser(
         description="Evaluate mSWE-GNN models (SSH Delta RMSE) across multiple runs."
     )
