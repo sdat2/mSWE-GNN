@@ -6,8 +6,8 @@ best checkpoint for each run (based on validation loss), and evaluates the
 model's performance on Train, Validation, Test, and optional Extreme splits.
 
 It employs an efficient "Online Accumulator" pattern to calculate multiple
-metrics (e.g., SSH RMSE, Velocity Vector RMSE) in a single pass through the
-dataloader, minimizing expensive I/O and GPU transfer overhead.
+metrics (e.g., SSH RMSE, Velocity Vector RMSE, and Target Standard Deviations)
+in a single pass through the dataloader, minimizing expensive I/O and GPU overhead.
 
 Usage:
     python -m mswegnn.utils.adforce_evaluate_models \
@@ -69,7 +69,7 @@ class OnlineMetric:
         """
         raise NotImplementedError
 
-    def compute(self):
+    def compute(self) -> float:
         """
         Computes the final metric value based on accumulated statistics.
 
@@ -178,6 +178,74 @@ class VectorMagnitudeRMSEMetric(OnlineMetric):
         return torch.sqrt(mse).item()
 
 
+class TargetStdMetric(OnlineMetric):
+    """
+    Computes the Standard Deviation of the target variable (ground truth deltas).
+
+    This provides a baseline for 'difficulty': if the std of the deltas is high,
+    higher RMSE is expected.
+
+    - For scalars (e.g., SSH), computes standard deviation of the values.
+    - For vectors (e.g., Velocity), computes standard deviation of the vector *magnitudes*.
+
+    Uses 64-bit precision for accumulators to prevent catastrophic cancellation.
+    Formula: Std = sqrt( E[x^2] - (E[x])^2 )
+
+    Args:
+        name (str): Metric name (e.g. "Target_SD").
+        device (torch.device): Computation device.
+
+    Example:
+        >>> import torch
+        >>> m = TargetStdMetric("SD", torch.device("cpu"))
+        >>> # Batch 1: values [2, 6]. Mean=4, Std (pop)=2.
+        >>> # E[x] = 4, E[x^2] = (4+36)/2 = 20. Var = 20 - 16 = 4. Std = 2.
+        >>> m.update(None, torch.tensor([2.0, 6.0]))
+        >>> abs(m.compute() - 2.0) < 1e-5
+        True
+    """
+
+    def __init__(self, name: str, device: torch.device):
+        super().__init__(name, device)
+        # Use float64 for numerical stability in variance calculation
+        self.sum_x = torch.tensor(0.0, device=device, dtype=torch.float64)
+        self.sum_sq_x = torch.tensor(0.0, device=device, dtype=torch.float64)
+        self.count = torch.tensor(0, device=device, dtype=torch.float64)
+
+    def update(self, preds: torch.Tensor, targets: torch.Tensor):
+        """
+        Updates stats based on targets only (preds are ignored).
+        """
+        # If Vector [Batch, Components], compute magnitude first
+        if targets.dim() > 1 and targets.shape[1] > 1:
+            vals = torch.linalg.norm(targets, dim=1)
+        else:
+            # Scalar [Batch] or [Batch, 1]
+            vals = targets.flatten()
+
+        # Cast to float64 for accumulation
+        vals_64 = vals.to(dtype=torch.float64)
+
+        self.sum_x += torch.sum(vals_64)
+        self.sum_sq_x += torch.sum(vals_64**2)
+        self.count += vals.numel()
+
+    def compute(self) -> float:
+        """Returns the standard deviation."""
+        if self.count == 0:
+            return float("nan")
+
+        mean = self.sum_x / self.count
+        # Variance = E[X^2] - (E[X])^2
+        variance = (self.sum_sq_x / self.count) - (mean**2)
+
+        # Clip negative values due to float precision errors
+        if variance < 0:
+            variance = torch.tensor(0.0, device=self.device, dtype=torch.float64)
+
+        return torch.sqrt(variance).item()
+
+
 # -----------------------------------------------------------------------------
 # Evaluator Engine
 # -----------------------------------------------------------------------------
@@ -212,24 +280,33 @@ class ModelEvaluator:
         self.metrics = []
         self.target_map = self._build_target_map()
 
-        # --- Configure Metrics Dynamically ---
+        # --- Configure Metrics Dynamically based on Config ---
 
-        # 1. SSH RMSE (Target: WD)
+        # 1. SSH (Target: WD)
         if "WD" in self.target_map:
+            idx = [self.target_map["WD"]]
+            # Performance Metric
             self.metrics.append(
-                {
-                    "metric": RMSEMetric("SSH_RMSE", device),
-                    "indices": [self.target_map["WD"]],
-                }
+                {"metric": RMSEMetric("SSH_RMSE", device), "indices": idx}
+            )
+            # Baseline Stat (Std Dev of ground truth deltas)
+            self.metrics.append(
+                {"metric": TargetStdMetric("SSH_SD", device), "indices": idx}
             )
 
-        # 2. Velocity Vector RMSE (Targets: VX, VY)
+        # 2. Velocity (Targets: VX, VY)
         if "VX" in self.target_map and "VY" in self.target_map:
+            idx = [self.target_map["VX"], self.target_map["VY"]]
+            # Performance Metric (Vector Error)
             self.metrics.append(
                 {
                     "metric": VectorMagnitudeRMSEMetric("Vel_RMSE", device),
-                    "indices": [self.target_map["VX"], self.target_map["VY"]],
+                    "indices": idx,
                 }
+            )
+            # Baseline Stat (Std Dev of ground truth velocity magnitude deltas)
+            self.metrics.append(
+                {"metric": TargetStdMetric("Vel_SD", device), "indices": idx}
             )
 
     def _build_target_map(self) -> dict:
@@ -276,13 +353,13 @@ class ModelEvaluator:
                     out_scaled = self.model(batch)
 
                 # 2. Unscale Everything Once (Vectorized on GPU)
-                # Predicted Raw Delta
+                # Predicted Raw Delta = (ScaledOutput * Std) + Mean
                 pred_delta_raw = (out_scaled * y_std) + y_mean
 
-                # True Raw Delta (Ground Truth)
+                # True Raw Delta (Ground Truth) = (ScaledTarget * Std) + Mean
                 true_delta_raw = (batch.y * y_std) + y_mean
 
-                # 3. Update All Metrics
+                # 3. Update All Metrics ("Piggybacking")
                 for item in self.metrics:
                     metric = item["metric"]
                     indices = item["indices"]
@@ -437,13 +514,14 @@ def evaluate_run(
 
     # --- DYNAMIC BATCH SIZE SELECTION ---
     batch_size = 32
+    # SWEGNN is memory intensive, so we use a safer batch size if detected
     if cfg.model_params.model_type == "GNN" and cfg.models.type_gnn == "SWEGNN":
         batch_size = cfg.trainer_options.get("batch_size", 8)
         print(
             f"  Note: Using conservative batch size {batch_size} for memory-intensive SWEGNN."
         )
 
-    # Define tasks
+    # Define evaluation tasks (Train/Val/Test + optional Extreme)
     eval_tasks = []
     for split in ["train", "val", "test"]:
         eval_tasks.append(
@@ -470,11 +548,11 @@ def evaluate_run(
                     glob.glob(os.path.join(task["path"], "**", "*.nc"), recursive=True)
                 )
                 if not nc_files:
-                    print(f"Warning: No .nc files found in {task['path']}")
-                    # Fill NaNs
+                    # If dir is empty, fill NaNs
                     results[f"{split_name} SSH_RMSE"] = np.nan
                     continue
 
+            # Create cache dir for pre-processed files
             cache_dir = os.path.join(task["root"], f"processed_{task['name']}_cache")
             os.makedirs(cache_dir, exist_ok=True)
 
@@ -501,21 +579,30 @@ def evaluate_run(
                 flush=True,
             )
 
-            # --- USE NEW EVALUATOR ENGINE ---
+            # --- USE EVALUATOR ENGINE ---
             evaluator = ModelEvaluator(model, loader, device, cfg)
             metrics_results = evaluator.run()
 
-            # Flatten results: e.g. "Train SSH_RMSE", "Train Vel_RMSE"
+            # Flatten results into the main dict
+            # e.g., "Train SSH_RMSE" = 0.123, "Train SSH_SD" = 0.500
             for metric_name, val in metrics_results.items():
                 results[f"{split_name} {metric_name}"] = val
 
-            # Summary String
-            summary = ", ".join([f"{k}: {v:.4f}" for k, v in metrics_results.items()])
-            print(f"Done. [{summary}]")
+            # Create a nice summary string for the console
+            # (We skip printing SDs here to keep the line length manageable,
+            # but they are saved in the results dict)
+            summary_parts = []
+            for k, v in metrics_results.items():
+                if "SD" in k:
+                    continue
+                summary_parts.append(f"{k}: {v:.4f}")
+
+            print(f"Done. [{', '.join(summary_parts)}]")
 
         except FileNotFoundError:
             print(f"\nWarning: Could not find file list/dir for {task['name']}")
         except Exception as e:
+            # Re-raise OOM if we are already at minimum batch size
             if isinstance(e, torch.cuda.OutOfMemoryError) and batch_size <= 4:
                 print(f"\nFATAL ERROR: OOM occurred. Cannot continue.")
                 raise e
@@ -526,6 +613,11 @@ def evaluate_run(
 
 if __name__ == "__main__":
     # python -m mswegnn.utils.adforce_evaluate_models
+    # Run doctests if module is executed directly
+    import doctest
+
+    doctest.testmod()
+
     parser = argparse.ArgumentParser(
         description="Evaluate mSWE-GNN models (SSH & Velocity RMSE)."
     )
@@ -585,7 +677,7 @@ if __name__ == "__main__":
             if res:
                 all_results.append(res)
                 print("")
-        except torch.cuda.OutOfMemoryError as e:
+        except torch.cuda.OutOfMemoryError:
             print(f"\nSkipping remaining evaluations due to persistent OOM error.")
             break
 
@@ -602,18 +694,47 @@ if __name__ == "__main__":
     print("\n### Results Summary")
     print(df.to_string(index=False, float_format="%.4f"))
 
-    # LaTeX
+    # --- Generate Description for Caption ---
+    # Extract SDs from the first row (since datasets are identical across runs)
+    # This provides context on how "hard" the prediction task is.
+    caption_notes = []
+    if not df.empty:
+        first_row = df.iloc[0]
+        for split in ["Train", "Val", "Test", "Extreme"]:
+            col_ssh = f"{split} SSH_SD"
+            col_vel = f"{split} Vel_SD"
+
+            notes = []
+            if col_ssh in first_row:
+                val = first_row[col_ssh]
+                if not pd.isna(val):
+                    notes.append(f"SSH $\\sigma={val:.3f}$m")
+            if col_vel in first_row:
+                val = first_row[col_vel]
+                if not pd.isna(val):
+                    notes.append(f"Vel $\\sigma={val:.3f}$m/s")
+
+            if notes:
+                caption_notes.append(f"{split} ({', '.join(notes)})")
+
+    caption_str = (
+        "RMSE of predictions. Dataset Delta Standard Deviations: "
+        + "; ".join(caption_notes)
+        + "."
+    )
+
+    # Save LaTeX
     latex = df.to_latex(
         index=False,
         float_format="%.4f",
-        caption="RMSE of predictions across splits.",
+        caption=caption_str,
         label="tab:results",
         escape=False,
     )
     with open(f"{args.output}.tex", "w") as f:
         f.write(latex)
 
-    # Markdown
+    # Save Markdown
     with open(f"{args.output}.md", "w") as f:
         try:
             f.write(df.to_markdown(index=False, floatfmt=".4f"))
