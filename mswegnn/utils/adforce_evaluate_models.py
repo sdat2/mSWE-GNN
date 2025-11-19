@@ -5,9 +5,9 @@ This script iterates through a directory of model run results, identifies the
 best checkpoint for each run (based on validation loss), and evaluates the
 model's performance on Train, Validation, Test, and optional Extreme splits.
 
-It computes the Root Mean Squared Error (RMSE) specifically for the Sea Surface
-Height (SSH) delta prediction, ensuring that scaling and unscaling are handled
-correctly using the run-specific statistics.
+It employs an efficient "Online Accumulator" pattern to calculate multiple
+metrics (e.g., SSH RMSE, Velocity Vector RMSE) in a single pass through the
+dataloader, minimizing expensive I/O and GPU transfer overhead.
 
 Usage:
     python -m mswegnn.utils.adforce_evaluate_models \
@@ -26,37 +26,311 @@ import argparse
 import torch
 import numpy as np
 import pandas as pd
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, DictConfig
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 from mswegnn.utils.adforce_misc import model_from_cfg_and_checkpoint
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 
 
-def find_best_checkpoint(checkpoint_dir: str) -> str:
+# -----------------------------------------------------------------------------
+# Metric Classes
+# -----------------------------------------------------------------------------
+
+
+class OnlineMetric:
     """
-    Finds the checkpoint file with the lowest validation loss in a directory.
+    Base class for online metric calculation (running statistics).
+
+    This class defines the interface for metrics that accumulate statistics
+    batch-by-batch to compute a final result without storing all predictions.
 
     Args:
-        checkpoint_dir (str): Path to the checkpoints directory.
+        name (str): The name of the metric (e.g., "SSH_RMSE").
+        device (torch.device): The device (CPU/GPU) where tensors are stored.
+    """
+
+    def __init__(self, name: str, device: torch.device):
+        self.name = name
+        self.device = device
+        self.reset()
+
+    def reset(self):
+        """Resets the internal accumulators to zero."""
+        pass
+
+    def update(self, preds: torch.Tensor, targets: torch.Tensor):
+        """
+        Updates the metric with a new batch of predictions and targets.
+
+        Args:
+            preds (torch.Tensor): Unscaled predictions in physical units.
+            targets (torch.Tensor): Unscaled ground truth in physical units.
+        """
+        raise NotImplementedError
+
+    def compute(self):
+        """
+        Computes the final metric value based on accumulated statistics.
+
+        Returns:
+            float: The computed metric value.
+        """
+        raise NotImplementedError
+
+
+class RMSEMetric(OnlineMetric):
+    """
+    Computes the Root Mean Squared Error (RMSE) for scalar variables.
+
+    Args:
+        name (str): The name of the metric.
+        device (torch.device): The device to use for tensor operations.
+
+    Example:
+        >>> import torch
+        >>> metric = RMSEMetric("TestRMSE", torch.device("cpu"))
+        >>> # Batch 1: Preds=[2, 2], True=[0, 0] -> Diff=[2, 2], Sq=[4, 4]
+        >>> metric.update(torch.tensor([2.0, 2.0]), torch.tensor([0.0, 0.0]))
+        >>> # Batch 2: Preds=[3], True=[3] -> Diff=[0], Sq=[0]
+        >>> metric.update(torch.tensor([3.0]), torch.tensor([3.0]))
+        >>> # Total Sq=8, Count=3, MSE=8/3=2.666..., RMSE=1.63299
+        >>> val = metric.compute()
+        >>> abs(val - 1.63299) < 1e-4
+        True
+    """
+
+    def __init__(self, name: str, device: torch.device):
+        super().__init__(name, device)
+        self.sum_squared_error = torch.tensor(0.0, device=device)
+        self.count = torch.tensor(0, device=device)
+
+    def update(self, preds: torch.Tensor, targets: torch.Tensor):
+        """Updates the running sum of squared errors."""
+        # preds/targets shape: [Batch] or [Batch, 1]
+        diff = preds - targets
+        self.sum_squared_error += torch.sum(diff**2)
+        self.count += diff.numel()
+
+    def compute(self) -> float:
+        """Returns the scalar RMSE."""
+        if self.count == 0:
+            return float("nan")
+        mse = self.sum_squared_error / self.count
+        return torch.sqrt(mse).item()
+
+
+class VectorMagnitudeRMSEMetric(OnlineMetric):
+    """
+    Computes the RMSE of the Euclidean distance vector between prediction and truth.
+
+    This is used for vector quantities like velocity. It computes:
+    RMSE = sqrt( mean( ||v_pred - v_true||^2 ) )
+         = sqrt( mean( (vx_p - vx_t)^2 + (vy_p - vy_t)^2 ) )
+
+    Args:
+        name (str): The name of the metric.
+        device (torch.device): The device to use for tensor operations.
+
+    Example:
+        >>> import torch
+        >>> metric = VectorMagnitudeRMSEMetric("VelRMSE", torch.device("cpu"))
+        >>> # Batch 1: 2 vectors.
+        >>> # Vec1: Pred=[1, 1], True=[0, 0]. ErrVec=[1, 1]. SqErr = 1^2+1^2 = 2.
+        >>> # Vec2: Pred=[2, 0], True=[2, 2]. ErrVec=[0, -2]. SqErr = 0^2+(-2)^2 = 4.
+        >>> preds = torch.tensor([[1.0, 1.0], [2.0, 0.0]])
+        >>> targets = torch.tensor([[0.0, 0.0], [2.0, 2.0]])
+        >>> metric.update(preds, targets)
+        >>> # Total Sq Error = 2 + 4 = 6. Total Samples = 2.
+        >>> # MSE = 6 / 2 = 3. RMSE = sqrt(3) ~= 1.732
+        >>> val = metric.compute()
+        >>> abs(val - 1.73205) < 1e-4
+        True
+    """
+
+    def __init__(self, name: str, device: torch.device):
+        super().__init__(name, device)
+        self.sum_squared_error = torch.tensor(0.0, device=device)
+        self.count = torch.tensor(0, device=device)
+
+    def update(self, preds_vec: torch.Tensor, targets_vec: torch.Tensor):
+        """
+        Updates the metric using vector inputs.
+
+        Args:
+            preds_vec (torch.Tensor): Shape [Batch, Components].
+            targets_vec (torch.Tensor): Shape [Batch, Components].
+        """
+        diff = preds_vec - targets_vec  # [Batch, Components]
+
+        # Squared Euclidean magnitude of the error vector per sample
+        # Sum over component dim (dim=1)
+        squared_error_per_node = torch.sum(diff**2, dim=1)  # [Batch]
+
+        self.sum_squared_error += torch.sum(squared_error_per_node)
+        self.count += squared_error_per_node.numel()
+
+    def compute(self) -> float:
+        """Returns the vector RMSE."""
+        if self.count == 0:
+            return float("nan")
+        mse = self.sum_squared_error / self.count
+        return torch.sqrt(mse).item()
+
+
+# -----------------------------------------------------------------------------
+# Evaluator Engine
+# -----------------------------------------------------------------------------
+
+
+class ModelEvaluator:
+    """
+    Orchestrates the evaluation loop for a single model.
+
+    This class handles data loading, unscaling, and distributing data to
+    various metrics in a single pass. It is robust to feature permutations
+    in the configuration file.
+
+    Args:
+        model (torch.nn.Module): The loaded PyTorch model.
+        loader (DataLoader): The PyG DataLoader for the dataset.
+        device (torch.device): The computing device (CPU or GPU).
+        cfg (DictConfig): The model configuration object.
+    """
+
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        loader: DataLoader,
+        device: torch.device,
+        cfg: DictConfig,
+    ):
+        self.model = model
+        self.loader = loader
+        self.device = device
+        self.cfg = cfg
+        self.metrics = []
+        self.target_map = self._build_target_map()
+
+        # --- Configure Metrics Dynamically ---
+
+        # 1. SSH RMSE (Target: WD)
+        if "WD" in self.target_map:
+            self.metrics.append(
+                {
+                    "metric": RMSEMetric("SSH_RMSE", device),
+                    "indices": [self.target_map["WD"]],
+                }
+            )
+
+        # 2. Velocity Vector RMSE (Targets: VX, VY)
+        if "VX" in self.target_map and "VY" in self.target_map:
+            self.metrics.append(
+                {
+                    "metric": VectorMagnitudeRMSEMetric("Vel_RMSE", device),
+                    "indices": [self.target_map["VX"], self.target_map["VY"]],
+                }
+            )
+
+    def _build_target_map(self) -> dict:
+        """
+        Creates a dictionary mapping target names to their indices in the output.
+
+        Returns:
+            dict: Mapping of target name to index (e.g., {'WD': 0, 'VX': 1}).
+        """
+        # Cast omegaconf list to standard list to be safe
+        targets = list(self.cfg.features.targets)
+        return {name: i for i, name in enumerate(targets)}
+
+    def run(self) -> dict:
+        """
+        Executes the evaluation loop over the DataLoader.
+
+        Returns:
+            dict: A dictionary of computed results (e.g., {"SSH_RMSE": 0.12}).
+        """
+        self.model.eval()
+
+        # Pre-fetch Unscaling params to device
+        ds = self.loader.dataset
+
+        # Handle cases where scaling might be disabled or different
+        if hasattr(ds, "y_delta_mean"):
+            y_mean = ds.y_delta_mean.to(self.device)
+            y_std = ds.y_delta_std.to(self.device)
+        else:
+            # Fallback if dataset doesn't have stats loaded
+            num_targets = len(self.cfg.features.targets)
+            y_mean = torch.zeros(num_targets, device=self.device)
+            y_std = torch.ones(num_targets, device=self.device)
+
+        with torch.no_grad():
+            for batch in tqdm(self.loader, desc="Evaluating", leave=False):
+                batch = batch.to(self.device)
+
+                # 1. Forward Pass
+                if hasattr(self.model, "model"):
+                    out_scaled = self.model.model(batch)
+                else:
+                    out_scaled = self.model(batch)
+
+                # 2. Unscale Everything Once (Vectorized on GPU)
+                # Predicted Raw Delta
+                pred_delta_raw = (out_scaled * y_std) + y_mean
+
+                # True Raw Delta (Ground Truth)
+                true_delta_raw = (batch.y * y_std) + y_mean
+
+                # 3. Update All Metrics
+                for item in self.metrics:
+                    metric = item["metric"]
+                    indices = item["indices"]
+
+                    # Slice specific features based on config indices
+                    # shape: [Batch, len(indices)]
+                    p_slice = pred_delta_raw[:, indices]
+                    t_slice = true_delta_raw[:, indices]
+
+                    # If single dimension metric (RMSE), squeeze to [Batch]
+                    if len(indices) == 1:
+                        p_slice = p_slice.squeeze(-1)
+                        t_slice = t_slice.squeeze(-1)
+
+                    metric.update(p_slice, t_slice)
+
+        # 4. Compute Final Results
+        results = {}
+        for item in self.metrics:
+            metric = item["metric"]
+            results[metric.name] = metric.compute()
+
+        return results
+
+
+# -----------------------------------------------------------------------------
+# Helper Functions
+# -----------------------------------------------------------------------------
+
+
+def find_best_checkpoint(checkpoint_dir: str) -> str:
+    """
+    Finds the checkpoint file with the lowest validation loss.
+
+    Args:
+        checkpoint_dir (str): Path to the directory containing .ckpt files.
 
     Returns:
-        str: Full path to the best checkpoint file, or None if no valid
-             checkpoints are found.
+        str: Full path to the best checkpoint, or None if not found.
     """
     if not os.path.isdir(checkpoint_dir):
         return None
-
     ckpt_files = glob.glob(os.path.join(checkpoint_dir, "*.ckpt"))
     if not ckpt_files:
         return None
-
-    # Regex finds 'val_loss=0.1234' in filenames like 'GNN-epoch=99-val_loss=0.3644.ckpt'
     best_ckpt = None
     min_loss = float("inf")
-
     for ckpt in ckpt_files:
-        # Strict regex to avoid capturing trailing dots or other artifacts
         match = re.search(r"val_loss=([0-9]+\.[0-9]+)", ckpt)
         if match:
             try:
@@ -65,33 +339,26 @@ def find_best_checkpoint(checkpoint_dir: str) -> str:
                     min_loss = loss
                     best_ckpt = ckpt
             except ValueError:
-                # Skip files where loss extraction failed
                 continue
-
     return best_ckpt
 
 
 def get_run_paths(run_dir: str) -> dict:
     """
-    Validates a model run directory and retrieves paths to critical files.
+    Retrieves paths for checkpoint, config, and stats for a given run.
 
     Args:
-        run_dir (str): Path to the specific model run directory.
+        run_dir (str): The root directory of the model run.
 
     Returns:
-        dict: A dictionary containing paths for 'ckpt', 'config', and 'stats'.
-              Returns None if any required file is missing.
+        dict: Keys 'ckpt', 'config', 'stats' with file paths, or None if invalid.
     """
     paths = {}
-
-    # 1. Checkpoints
     ckpt_dir = os.path.join(run_dir, "checkpoints")
     paths["ckpt"] = find_best_checkpoint(ckpt_dir)
 
-    # 2. Config (try checkpoints dir first, then root)
     cfg_path_ckpt = os.path.join(ckpt_dir, "config.yaml")
     cfg_path_root = os.path.join(run_dir, "config.yaml")
-
     if os.path.exists(cfg_path_ckpt):
         paths["config"] = cfg_path_ckpt
     elif os.path.exists(cfg_path_root):
@@ -99,105 +366,37 @@ def get_run_paths(run_dir: str) -> dict:
     else:
         paths["config"] = None
 
-    # 3. Scaling Stats (The Robust Fix)
-    # We look for it in run_dir/processed/scaling_stats.yaml
     stats_path = os.path.join(run_dir, "processed", "scaling_stats.yaml")
     if os.path.exists(stats_path):
         paths["stats"] = stats_path
     else:
         paths["stats"] = None
 
-    # Validation: Do we have everything?
     if all(paths.values()):
         return paths
     else:
         return None
 
 
-def load_file_list(list_path: str, data_root: str) -> list[str]:
+def load_file_list(list_path: str, data_root: str) -> list:
     """
-    Loads a list of NetCDF filenames from a YAML file and prepends the data root.
+    Loads a list of filenames from a YAML file and prepends the data root.
 
     Args:
-        list_path (str): Path to the YAML file containing the file list.
-        data_root (str): The base directory where the NetCDF files are stored.
+        list_path (str): Path to the YAML file with the list.
+        data_root (str): Directory to prepend to filenames.
 
     Returns:
-        list[str]: A list of full file paths.
+        list: List of full file paths.
 
     Raises:
-        FileNotFoundError: If the list_path does not exist.
+        FileNotFoundError: If list_path does not exist.
     """
     if not os.path.exists(list_path):
         raise FileNotFoundError(f"Could not find split file: {list_path}")
-
     with open(list_path, "r") as f:
         filenames = yaml.safe_load(f)
     return [os.path.join(data_root, fname) for fname in filenames]
-
-
-def get_ssh_delta_rmse(
-    model: torch.nn.Module, loader: DataLoader, device: torch.device, target_idx: int
-) -> float:
-    """
-    Computes the unscaled Root Mean Squared Error (RMSE) for the SSH delta.
-
-    Optimized: Accumulates statistics entirely on the GPU to avoid costly
-    CPU-GPU data transfer (synchronization) inside the loop.
-
-    Args:
-        model (torch.nn.Module): The loaded PyTorch model (or LightningModule).
-        loader (DataLoader): A PyG DataLoader containing the dataset.
-        device (torch.device): The device to run evaluation on (CPU or GPU).
-        target_idx (int): The index of the target variable (0 for WD) in the output vector.
-
-    Returns:
-        float: The RMSE in physical units (meters). Returns NaN if loader is empty.
-    """
-    model.eval()
-
-    # Initialize accumulators on device to keep computation on GPU
-    total_squared_error = torch.tensor(0.0, device=device)
-    total_samples = 0
-
-    # Extract unscaling parameters (scalars)
-    ds = loader.dataset
-    y_delta_mean = ds.y_delta_mean[target_idx].to(device)
-    y_delta_std = ds.y_delta_std[target_idx].to(device)
-
-    with torch.no_grad():
-        for batch in tqdm(loader, desc="Evaluating", leave=False):
-            batch = batch.to(device)
-
-            # Access the internal PyTorch model, bypassing the LightningModule's missing forward()
-            if hasattr(model, "model"):
-                out_scaled = model.model(batch)
-            else:
-                out_scaled = model(batch)
-
-            # Unscale Prediction (on GPU)
-            pred_delta_scaled = out_scaled[:, target_idx]
-            pred_delta_raw = (pred_delta_scaled * y_delta_std) + y_delta_mean
-
-            # Unscale Ground Truth (on GPU)
-            true_delta_scaled = batch.y[:, target_idx]
-            true_delta_raw = (true_delta_scaled * y_delta_std) + y_delta_mean
-
-            # Calculate Squared Error (vectorized on GPU)
-            se = (pred_delta_raw - true_delta_raw) ** 2
-
-            # Accumulate sum and count (still on GPU)
-            total_squared_error += se.sum()
-            total_samples += se.numel()
-
-    if total_samples == 0:
-        return float("nan")
-
-    # Final Calculation (Only now do we move a single scalar to CPU)
-    mse = total_squared_error / total_samples
-    rmse = torch.sqrt(mse).item()
-
-    return rmse
 
 
 def evaluate_run(
@@ -208,28 +407,21 @@ def evaluate_run(
     extreme_dir: str = None,
 ) -> dict:
     """
-    Loads a model and evaluates it on Train, Validation, Test, and optional Extreme splits.
+    Evaluates a single model run across multiple data splits.
 
     Args:
-        run_name (str): The name of the model run (for reporting).
-        run_paths (dict): Dictionary containing paths to 'ckpt', 'config', and 'stats'.
-        data_root (str): Path to the directory containing raw NetCDF files.
-        conf_dir (str): Path to the directory containing split YAML files.
-        extreme_dir (str, optional): Path to the extreme test set directory.
+        run_name (str): Identifier for the run.
+        run_paths (dict): Paths to ckpt, config, and stats.
+        data_root (str): Base directory for raw .nc files.
+        conf_dir (str): Directory containing split YAMLs (train.yaml, etc.).
+        extreme_dir (str, optional): Path to extreme test set directory.
 
     Returns:
-        dict: A dictionary of results, including RMSE for each split.
+        dict: Dictionary of evaluation results (RMSEs) for the run.
     """
 
     # Load Config
     cfg = OmegaConf.load(run_paths["config"])
-
-    # Check if model predicts WD (index 0), which equals Delta SSH
-    try:
-        wd_idx = list(cfg.features.targets).index("WD")
-    except ValueError:
-        print(f"Skipping {run_name}: Target 'WD' not found in config.")
-        return None
 
     # Load Model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -244,22 +436,15 @@ def evaluate_run(
     }
 
     # --- DYNAMIC BATCH SIZE SELECTION ---
-    # Default to a large size for speed, as GAT/GCN/MLP handled it
     batch_size = 32
-
-    # Check the specific GNN type
     if cfg.model_params.model_type == "GNN" and cfg.models.type_gnn == "SWEGNN":
-        # SWEGNN is the known memory hog. Revert to the safer batch size from training
         batch_size = cfg.trainer_options.get("batch_size", 8)
         print(
             f"  Note: Using conservative batch size {batch_size} for memory-intensive SWEGNN."
         )
-    # ------------------------------------
 
-    # Define the tasks: List of dicts describing each split
+    # Define tasks
     eval_tasks = []
-
-    # 1. Standard Splits (YAML based)
     for split in ["train", "val", "test"]:
         eval_tasks.append(
             {
@@ -270,7 +455,6 @@ def evaluate_run(
             }
         )
 
-    # 2. Extreme Split (Directory based)
     if extreme_dir:
         eval_tasks.append(
             {"name": "extreme", "type": "dir", "path": extreme_dir, "root": extreme_dir}
@@ -279,20 +463,18 @@ def evaluate_run(
     for task in eval_tasks:
         split_name = task["name"].capitalize()
         try:
-            # Determine file list based on task type
             if task["type"] == "yaml":
                 nc_files = load_file_list(task["path"], task["root"])
             elif task["type"] == "dir":
-                # Recursively find all .nc files in the directory
                 nc_files = sorted(
                     glob.glob(os.path.join(task["path"], "**", "*.nc"), recursive=True)
                 )
                 if not nc_files:
                     print(f"Warning: No .nc files found in {task['path']}")
-                    results[f"{split_name} RMSE"] = np.nan
+                    # Fill NaNs
+                    results[f"{split_name} SSH_RMSE"] = np.nan
                     continue
 
-            # Cache directory (unique per split and root)
             cache_dir = os.path.join(task["root"], f"processed_{task['name']}_cache")
             os.makedirs(cache_dir, exist_ok=True)
 
@@ -304,7 +486,6 @@ def evaluate_run(
                 scaling_stats_path=run_paths["stats"],
             )
 
-            # DataLoader uses the dynamically set batch size
             loader = DataLoader(
                 ds,
                 batch_size=batch_size,
@@ -319,31 +500,26 @@ def evaluate_run(
                 end="",
                 flush=True,
             )
-            rmse = get_ssh_delta_rmse(model, loader, device, wd_idx)
-            print(f"RMSE: {rmse:.4f}")
-            results[f"{split_name} RMSE"] = rmse
+
+            # --- USE NEW EVALUATOR ENGINE ---
+            evaluator = ModelEvaluator(model, loader, device, cfg)
+            metrics_results = evaluator.run()
+
+            # Flatten results: e.g. "Train SSH_RMSE", "Train Vel_RMSE"
+            for metric_name, val in metrics_results.items():
+                results[f"{split_name} {metric_name}"] = val
+
+            # Summary String
+            summary = ", ".join([f"{k}: {v:.4f}" for k, v in metrics_results.items()])
+            print(f"Done. [{summary}]")
 
         except FileNotFoundError:
-            if task["type"] == "yaml":
-                print(
-                    f"\nWarning: Could not find file list for {task['name']} at {task['path']}"
-                )
-            else:
-                print(
-                    f"\nWarning: Directory not found for {task['name']}: {task['path']}"
-                )
-            results[f"{split_name} RMSE"] = np.nan
-
+            print(f"\nWarning: Could not find file list/dir for {task['name']}")
         except Exception as e:
-            # Re-raise error if it's OOM and we are using the smallest safe batch size
             if isinstance(e, torch.cuda.OutOfMemoryError) and batch_size <= 4:
-                print(
-                    f"\nFATAL ERROR: OOM occurred even with conservative batch size {batch_size}. Cannot continue."
-                )
+                print(f"\nFATAL ERROR: OOM occurred. Cannot continue.")
                 raise e
-
             print(f"\nError evaluating {task['name']} for {run_name}: {e}")
-            results[f"{split_name} RMSE"] = np.nan
 
     return results
 
@@ -351,42 +527,34 @@ def evaluate_run(
 if __name__ == "__main__":
     # python -m mswegnn.utils.adforce_evaluate_models
     parser = argparse.ArgumentParser(
-        description="Evaluate mSWE-GNN models (SSH Delta RMSE) across multiple runs."
+        description="Evaluate mSWE-GNN models (SSH & Velocity RMSE)."
     )
     parser.add_argument(
         "-r",
         "--results_dir",
         type=str,
         required=True,
-        help="Path to the base directory containing model run subfolders",
+        help="Path to results/models dir",
     )
     parser.add_argument(
-        "-d",
-        "--data_dir",
-        type=str,
-        required=True,
-        help="Path to the directory containing raw .nc files for standard splits",
+        "-d", "--data_dir", type=str, required=True, help="Path to raw data dir"
     )
     parser.add_argument(
         "-c",
         "--conf_dir",
         type=str,
         default="conf",
-        help="Path to directory containing train.yaml, val.yaml, test.yaml",
+        help="Path to conf dir (train.yaml etc)",
     )
     parser.add_argument(
-        "-e",
-        "--extreme_dir",
-        type=str,
-        default=None,
-        help="Optional: Path to the extreme test set directory (e.g. ../SurgeNetTestPH)",
+        "-e", "--extreme_dir", type=str, default=None, help="Optional extreme test dir"
     )
     parser.add_argument(
         "-o",
         "--output",
         type=str,
-        default="ssh_rmse_results",
-        help="Base filename for output tables",
+        default="evaluation_results",
+        help="Output filename base",
     )
 
     args = parser.parse_args()
@@ -394,14 +562,6 @@ if __name__ == "__main__":
     if not os.path.exists(args.results_dir):
         print(f"Error: Results directory not found: {args.results_dir}")
         exit(1)
-    if not os.path.exists(args.data_dir):
-        print(f"Error: Data directory not found: {args.data_dir}")
-        exit(1)
-    if not os.path.exists(args.conf_dir):
-        print(f"Error: Configuration directory not found: {args.conf_dir}")
-        exit(1)
-    if args.extreme_dir and not os.path.exists(args.extreme_dir):
-        print(f"Warning: Extreme directory specified but not found: {args.extreme_dir}")
 
     run_dirs = sorted(glob.glob(os.path.join(args.results_dir, "*")))
     all_results = []
@@ -418,8 +578,6 @@ if __name__ == "__main__":
             continue
 
         print(f"=== Evaluating: {run_name} ===")
-        print(f"  Ckpt: {os.path.basename(paths['ckpt'])}")
-
         try:
             res = evaluate_run(
                 run_name, paths, args.data_dir, args.conf_dir, args.extreme_dir
@@ -428,10 +586,7 @@ if __name__ == "__main__":
                 all_results.append(res)
                 print("")
         except torch.cuda.OutOfMemoryError as e:
-            print(
-                f"\nSkipping remaining evaluations due to persistent OOM error in {run_name}."
-            )
-            print(f"Error details: {e}")
+            print(f"\nSkipping remaining evaluations due to persistent OOM error.")
             break
 
     if not all_results:
@@ -440,36 +595,29 @@ if __name__ == "__main__":
 
     df = pd.DataFrame(all_results)
 
-    # Sort by Validation RMSE
-    sort_col = "Val RMSE" if "Val RMSE" in df.columns else df.columns[-1]
+    # Sort by Validation SSH RMSE if available
+    sort_col = "Val SSH_RMSE" if "Val SSH_RMSE" in df.columns else df.columns[-1]
     df = df.sort_values(sort_col)
 
-    # --- Output to console (using pandas built-in string format) ---
     print("\n### Results Summary")
     print(df.to_string(index=False, float_format="%.4f"))
 
-    # Save LaTeX (using pandas built-in to_latex)
+    # LaTeX
     latex = df.to_latex(
         index=False,
         float_format="%.4f",
-        caption="RMSE of SSH Delta predictions (meters) across splits.",
-        label="tab:ssh_results",
+        caption="RMSE of predictions across splits.",
+        label="tab:results",
         escape=False,
     )
-
-    tex_file = f"{args.output}.tex"
-    with open(tex_file, "w") as f:
+    with open(f"{args.output}.tex", "w") as f:
         f.write(latex)
-    print(f"\nLaTeX table saved to {tex_file}")
 
-    # Save Markdown
-    md_file = f"{args.output}.md"
-    with open(md_file, "w") as f:
+    # Markdown
+    with open(f"{args.output}.md", "w") as f:
         try:
             f.write(df.to_markdown(index=False, floatfmt=".4f"))
-            print(f"Markdown table saved to {md_file}")
         except ImportError:
             f.write(df.to_string(index=False, float_format="%.4f"))
-            print(
-                f"Markdown table saved to {md_file} (using text format due to missing tabulate)"
-            )
+
+    print(f"\nSaved results to {args.output}.tex and {args.output}.md")

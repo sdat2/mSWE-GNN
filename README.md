@@ -134,7 +134,7 @@ python -m adforce_main model_params.model_type=MLP
 
 | Model | Train RMSE (cm) | Val RMSE (cm) | Test RMSE (cm) | Extreme RMSE (cm) |
 | :--- | :---: | :---: | :---: | :---: |
-| SWE-GNN-K9-H128 | 1.65 | 1.84 | 1.99 | 7.21 |
+| SWE-GNN-K9-P1-H128 | 1.65 | 1.84 | 1.99 | 7.21 |
 | SWE-GNN-K6-P1-H128 | 1.67 | 1.86 | 2.00 | 7.29 |
 | SWE-GNN-K3-P1-H128-ReLU | 1.99 | 2.01 | 2.16 | 7.63 |
 | SWE-GNN-K3-P1-H128 | 1.96 | 2.03 | 2.20 | 7.25 |
