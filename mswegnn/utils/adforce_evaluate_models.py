@@ -3,7 +3,7 @@ Evaluation script for mSWE-GNN Adforce models.
 
 This script iterates through a directory of model run results, identifies the
 best checkpoint for each run (based on validation loss), and evaluates the
-model's performance on Train, Validation, and Test splits.
+model's performance on Train, Validation, Test, and optional Extreme splits.
 
 It computes the Root Mean Squared Error (RMSE) specifically for the Sea Surface
 Height (SSH) delta prediction, ensuring that scaling and unscaling are handled
@@ -14,6 +14,7 @@ Usage:
         --results_dir /home/users/sithom/my_results \
         --data_dir /home/users/sithom/swegnn_5sec \
         --conf_dir /home/users/sithom/mSWE-GNN/conf \
+        --extreme_dir /home/users/sithom/SurgeNetTestPH \
         --output comparison
 """
 
@@ -28,8 +29,6 @@ import pandas as pd
 from omegaconf import OmegaConf
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
-
-# Import your project utilities
 from mswegnn.utils.adforce_misc import model_from_cfg_and_checkpoint
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 
@@ -201,15 +200,22 @@ def get_ssh_delta_rmse(
     return rmse
 
 
-def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) -> dict:
+def evaluate_run(
+    run_name: str,
+    run_paths: dict,
+    data_root: str,
+    conf_dir: str,
+    extreme_dir: str = None,
+) -> dict:
     """
-    Loads a model and evaluates it on Train, Validation, and Test splits.
+    Loads a model and evaluates it on Train, Validation, Test, and optional Extreme splits.
 
     Args:
         run_name (str): The name of the model run (for reporting).
         run_paths (dict): Dictionary containing paths to 'ckpt', 'config', and 'stats'.
         data_root (str): Path to the directory containing raw NetCDF files.
         conf_dir (str): Path to the directory containing split YAML files.
+        extreme_dir (str, optional): Path to the extreme test set directory.
 
     Returns:
         dict: A dictionary of results, including RMSE for each split.
@@ -235,7 +241,6 @@ def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) 
 
     results = {
         "Model": run_name,
-        "Checkpoint": os.path.basename(run_paths["ckpt"]),
     }
 
     # --- DYNAMIC BATCH SIZE SELECTION ---
@@ -244,27 +249,51 @@ def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) 
 
     # Check the specific GNN type
     if cfg.model_params.model_type == "GNN" and cfg.models.type_gnn == "SWEGNN":
-        # SWEGNN is the known memory hog. Revert to the safer batch size from training (usually 4, but I've upped it to 8 here as we're not training).
-        # At K=12 and K=15, training needed batch size of 2 to avoid OOM, so we should probably take K as a param, so that we can reduce the batch size. 
+        # SWEGNN is the known memory hog. Revert to the safer batch size from training
         batch_size = cfg.trainer_options.get("batch_size", 8)
         print(
             f"  Note: Using conservative batch size {batch_size} for memory-intensive SWEGNN."
         )
-    # For MLP/GAT/GCN, we stick to the faster default of 32.
     # ------------------------------------
 
-    split_files = {
-        "train": os.path.join(conf_dir, "train.yaml"),
-        "val": os.path.join(conf_dir, "val.yaml"),
-        "test": os.path.join(conf_dir, "test.yaml"),
-    }
+    # Define the tasks: List of dicts describing each split
+    eval_tasks = []
 
-    for split, list_file in split_files.items():
+    # 1. Standard Splits (YAML based)
+    for split in ["train", "val", "test"]:
+        eval_tasks.append(
+            {
+                "name": split,
+                "type": "yaml",
+                "path": os.path.join(conf_dir, f"{split}.yaml"),
+                "root": data_root,
+            }
+        )
+
+    # 2. Extreme Split (Directory based)
+    if extreme_dir:
+        eval_tasks.append(
+            {"name": "extreme", "type": "dir", "path": extreme_dir, "root": extreme_dir}
+        )
+
+    for task in eval_tasks:
+        split_name = task["name"].capitalize()
         try:
-            nc_files = load_file_list(list_file, data_root)
+            # Determine file list based on task type
+            if task["type"] == "yaml":
+                nc_files = load_file_list(task["path"], task["root"])
+            elif task["type"] == "dir":
+                # Recursively find all .nc files in the directory
+                nc_files = sorted(
+                    glob.glob(os.path.join(task["path"], "**", "*.nc"), recursive=True)
+                )
+                if not nc_files:
+                    print(f"Warning: No .nc files found in {task['path']}")
+                    results[f"{split_name} RMSE"] = np.nan
+                    continue
 
-            # Cache directory
-            cache_dir = os.path.join(data_root, f"processed_{split}_cache")
+            # Cache directory (unique per split and root)
+            cache_dir = os.path.join(task["root"], f"processed_{task['name']}_cache")
             os.makedirs(cache_dir, exist_ok=True)
 
             ds = AdforceLazyDataset(
@@ -285,14 +314,26 @@ def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) 
                 persistent_workers=True if len(nc_files) > 8 else False,
             )
 
-            print(f"[{run_name}] {split.capitalize()} set... ", end="", flush=True)
+            print(
+                f"[{run_name}] {split_name} set ({len(nc_files)} files)... ",
+                end="",
+                flush=True,
+            )
             rmse = get_ssh_delta_rmse(model, loader, device, wd_idx)
             print(f"RMSE: {rmse:.4f}")
-            results[f"{split.capitalize()} RMSE"] = rmse
+            results[f"{split_name} RMSE"] = rmse
 
         except FileNotFoundError:
-            print(f"\nWarning: Could not find file list for {split} at {list_file}")
-            results[f"{split.capitalize()} RMSE"] = np.nan
+            if task["type"] == "yaml":
+                print(
+                    f"\nWarning: Could not find file list for {task['name']} at {task['path']}"
+                )
+            else:
+                print(
+                    f"\nWarning: Directory not found for {task['name']}: {task['path']}"
+                )
+            results[f"{split_name} RMSE"] = np.nan
+
         except Exception as e:
             # Re-raise error if it's OOM and we are using the smallest safe batch size
             if isinstance(e, torch.cuda.OutOfMemoryError) and batch_size <= 4:
@@ -301,8 +342,8 @@ def evaluate_run(run_name: str, run_paths: dict, data_root: str, conf_dir: str) 
                 )
                 raise e
 
-            print(f"\nError evaluating {split} for {run_name}: {e}")
-            results[f"{split.capitalize()} RMSE"] = np.nan
+            print(f"\nError evaluating {task['name']} for {run_name}: {e}")
+            results[f"{split_name} RMSE"] = np.nan
 
     return results
 
@@ -324,7 +365,7 @@ if __name__ == "__main__":
         "--data_dir",
         type=str,
         required=True,
-        help="Path to the directory containing raw .nc files",
+        help="Path to the directory containing raw .nc files for standard splits",
     )
     parser.add_argument(
         "-c",
@@ -332,6 +373,13 @@ if __name__ == "__main__":
         type=str,
         default="conf",
         help="Path to directory containing train.yaml, val.yaml, test.yaml",
+    )
+    parser.add_argument(
+        "-e",
+        "--extreme_dir",
+        type=str,
+        default=None,
+        help="Optional: Path to the extreme test set directory (e.g. ../SurgeNetTestPH)",
     )
     parser.add_argument(
         "-o",
@@ -352,6 +400,8 @@ if __name__ == "__main__":
     if not os.path.exists(args.conf_dir):
         print(f"Error: Configuration directory not found: {args.conf_dir}")
         exit(1)
+    if args.extreme_dir and not os.path.exists(args.extreme_dir):
+        print(f"Warning: Extreme directory specified but not found: {args.extreme_dir}")
 
     run_dirs = sorted(glob.glob(os.path.join(args.results_dir, "*")))
     all_results = []
@@ -371,7 +421,9 @@ if __name__ == "__main__":
         print(f"  Ckpt: {os.path.basename(paths['ckpt'])}")
 
         try:
-            res = evaluate_run(run_name, paths, args.data_dir, args.conf_dir)
+            res = evaluate_run(
+                run_name, paths, args.data_dir, args.conf_dir, args.extreme_dir
+            )
             if res:
                 all_results.append(res)
                 print("")
@@ -410,7 +462,7 @@ if __name__ == "__main__":
         f.write(latex)
     print(f"\nLaTeX table saved to {tex_file}")
 
-    # Save Markdown (Attempt to use to_markdown, fallback to string if tabulate is missing)
+    # Save Markdown
     md_file = f"{args.output}.md"
     with open(md_file, "w") as f:
         try:
