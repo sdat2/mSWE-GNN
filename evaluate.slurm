@@ -36,9 +36,9 @@ python -m mswegnn.utils.adforce_evaluate_models \
     --data_dir /home/users/sithom/swegnn_5sec \
     --conf_dir /home/users/sithom/mSWE-GNN/conf \
     --extreme_dir /home/users/sithom/SurgeNetTestPH \
-    --output comparison
+    --output comparison_results
 
 
 echo "Job completed."
-echo "Output saved to: comparison"
+echo "Output saved to: comparison_results"
 echo "Done."

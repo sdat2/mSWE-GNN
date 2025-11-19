@@ -6,8 +6,12 @@ best checkpoint for each run (based on validation loss), and evaluates the
 model's performance on Train, Validation, Test, and optional Extreme splits.
 
 It employs an efficient "Online Accumulator" pattern to calculate multiple
-metrics (e.g., SSH RMSE, Velocity Vector RMSE, and Target Standard Deviations)
+metrics (e.g., SSH RMSE, Velocity Vector RMSE, Bias, NSE, MaxError)
 in a single pass through the dataloader, minimizing expensive I/O and GPU overhead.
+
+The output is organized into a directory containing separate tables (.tex and .md)
+for each metric type, allowing for specific comparisons (e.g., "Which model has
+the best tail behavior?" vs "Which model has the best average accuracy?").
 
 Usage:
     python -m mswegnn.utils.adforce_evaluate_models \
@@ -15,7 +19,7 @@ Usage:
         --data_dir /home/users/sithom/swegnn_5sec \
         --conf_dir /home/users/sithom/mSWE-GNN/conf \
         --extreme_dir /home/users/sithom/SurgeNetTestPH \
-        --output comparison
+        --output results_tables_v1
 """
 
 import os
@@ -45,12 +49,19 @@ class OnlineMetric:
     This class defines the interface for metrics that accumulate statistics
     batch-by-batch to compute a final result without storing all predictions.
 
-    Args:
+    Attributes:
         name (str): The name of the metric (e.g., "SSH_RMSE").
         device (torch.device): The device (CPU/GPU) where tensors are stored.
     """
 
     def __init__(self, name: str, device: torch.device):
+        """
+        Initializes the OnlineMetric.
+
+        Args:
+            name (str): The identifier for the metric.
+            device (torch.device): The device to store accumulators on.
+        """
         self.name = name
         self.device = device
         self.reset()
@@ -83,10 +94,6 @@ class RMSEMetric(OnlineMetric):
     """
     Computes the Root Mean Squared Error (RMSE) for scalar variables.
 
-    Args:
-        name (str): The name of the metric.
-        device (torch.device): The device to use for tensor operations.
-
     Example:
         >>> import torch
         >>> metric = RMSEMetric("TestRMSE", torch.device("cpu"))
@@ -107,7 +114,6 @@ class RMSEMetric(OnlineMetric):
 
     def update(self, preds: torch.Tensor, targets: torch.Tensor):
         """Updates the running sum of squared errors."""
-        # preds/targets shape: [Batch] or [Batch, 1]
         diff = preds - targets
         self.sum_squared_error += torch.sum(diff**2)
         self.count += diff.numel()
@@ -126,23 +132,17 @@ class VectorMagnitudeRMSEMetric(OnlineMetric):
 
     This is used for vector quantities like velocity. It computes:
     RMSE = sqrt( mean( ||v_pred - v_true||^2 ) )
-         = sqrt( mean( (vx_p - vx_t)^2 + (vy_p - vy_t)^2 ) )
-
-    Args:
-        name (str): The name of the metric.
-        device (torch.device): The device to use for tensor operations.
 
     Example:
         >>> import torch
         >>> metric = VectorMagnitudeRMSEMetric("VelRMSE", torch.device("cpu"))
         >>> # Batch 1: 2 vectors.
-        >>> # Vec1: Pred=[1, 1], True=[0, 0]. ErrVec=[1, 1]. SqErr = 1^2+1^2 = 2.
-        >>> # Vec2: Pred=[2, 0], True=[2, 2]. ErrVec=[0, -2]. SqErr = 0^2+(-2)^2 = 4.
+        >>> # Vec1: Pred=[1, 1], True=[0, 0]. ErrVec=[1, 1]. SqErr = 2.
+        >>> # Vec2: Pred=[2, 0], True=[2, 2]. ErrVec=[0, -2]. SqErr = 4.
         >>> preds = torch.tensor([[1.0, 1.0], [2.0, 0.0]])
         >>> targets = torch.tensor([[0.0, 0.0], [2.0, 2.0]])
         >>> metric.update(preds, targets)
-        >>> # Total Sq Error = 2 + 4 = 6. Total Samples = 2.
-        >>> # MSE = 6 / 2 = 3. RMSE = sqrt(3) ~= 1.732
+        >>> # Total Sq Error = 6. Total Samples = 2. RMSE = sqrt(3) ~= 1.732
         >>> val = metric.compute()
         >>> abs(val - 1.73205) < 1e-4
         True
@@ -161,14 +161,11 @@ class VectorMagnitudeRMSEMetric(OnlineMetric):
             preds_vec (torch.Tensor): Shape [Batch, Components].
             targets_vec (torch.Tensor): Shape [Batch, Components].
         """
-        diff = preds_vec - targets_vec  # [Batch, Components]
-
+        diff = preds_vec - targets_vec
         # Squared Euclidean magnitude of the error vector per sample
-        # Sum over component dim (dim=1)
-        squared_error_per_node = torch.sum(diff**2, dim=1)  # [Batch]
-
-        self.sum_squared_error += torch.sum(squared_error_per_node)
-        self.count += squared_error_per_node.numel()
+        # Sum over component dim (dim=1), then sum over batch
+        self.sum_squared_error += torch.sum(torch.sum(diff**2, dim=1))
+        self.count += diff.shape[0]
 
     def compute(self) -> float:
         """Returns the vector RMSE."""
@@ -178,54 +175,186 @@ class VectorMagnitudeRMSEMetric(OnlineMetric):
         return torch.sqrt(mse).item()
 
 
-class TargetStdMetric(OnlineMetric):
+class BiasMetric(OnlineMetric):
     """
-    Computes the Standard Deviation of the target variable (ground truth deltas).
+    Computes Mean Signed Error (Bias) for scalar variables.
 
-    This provides a baseline for 'difficulty': if the std of the deltas is high,
-    higher RMSE is expected.
-
-    - For scalars (e.g., SSH), computes standard deviation of the values.
-    - For vectors (e.g., Velocity), computes standard deviation of the vector *magnitudes*.
-
-    Uses 64-bit precision for accumulators to prevent catastrophic cancellation.
-    Formula: Std = sqrt( E[x^2] - (E[x])^2 )
-
-    Args:
-        name (str): Metric name (e.g. "Target_SD").
-        device (torch.device): Computation device.
+    Negative values indicate systematic under-prediction (damping).
+    Positive values indicate systematic over-prediction.
 
     Example:
         >>> import torch
-        >>> m = TargetStdMetric("SD", torch.device("cpu"))
-        >>> # Batch 1: values [2, 6]. Mean=4, Std (pop)=2.
-        >>> # E[x] = 4, E[x^2] = (4+36)/2 = 20. Var = 20 - 16 = 4. Std = 2.
-        >>> m.update(None, torch.tensor([2.0, 6.0]))
-        >>> abs(m.compute() - 2.0) < 1e-5
-        True
+        >>> m = BiasMetric("Bias", torch.device("cpu"))
+        >>> m.update(torch.tensor([1.0]), torch.tensor([2.0])) # Error -1
+        >>> m.compute()
+        -1.0
     """
 
     def __init__(self, name: str, device: torch.device):
         super().__init__(name, device)
-        # Use float64 for numerical stability in variance calculation
+        self.sum_error = torch.tensor(0.0, device=device)
+        self.count = torch.tensor(0, device=device)
+
+    def update(self, preds: torch.Tensor, targets: torch.Tensor):
+        """Updates the running sum of signed errors."""
+        diff = preds - targets
+        self.sum_error += torch.sum(diff)
+        self.count += diff.numel()
+
+    def compute(self) -> float:
+        """Returns the Mean Signed Error."""
+        if self.count == 0:
+            return float("nan")
+        return (self.sum_error / self.count).item()
+
+
+class VectorMagnitudeBiasMetric(OnlineMetric):
+    """
+    Computes the Bias of the Magnitude (Speed Bias).
+
+    This metric determines if the model generally predicts faster or slower
+    water than reality, regardless of direction.
+
+    Formula: Bias = Mean( ||pred|| - ||target|| )
+    """
+
+    def __init__(self, name: str, device: torch.device):
+        super().__init__(name, device)
+        self.sum_error = torch.tensor(0.0, device=device)
+        self.count = torch.tensor(0, device=device)
+
+    def update(self, preds_vec: torch.Tensor, targets_vec: torch.Tensor):
+        """
+        Updates bias based on vector norms.
+
+        Args:
+            preds_vec (torch.Tensor): [Batch, Components]
+            targets_vec (torch.Tensor): [Batch, Components]
+        """
+        norm_p = torch.norm(preds_vec, dim=1)
+        norm_t = torch.norm(targets_vec, dim=1)
+        self.sum_error += torch.sum(norm_p - norm_t)
+        self.count += norm_p.numel()
+
+    def compute(self) -> float:
+        """Returns the Speed Bias."""
+        if self.count == 0:
+            return float("nan")
+        return (self.sum_error / self.count).item()
+
+
+class MaxErrorMetric(OnlineMetric):
+    """
+    Tracks the single largest absolute error (or vector error magnitude)
+    observed in the entire dataset.
+
+    This is crucial for identifying catastrophic failures or instabilities
+    that might be masked by a low average RMSE.
+    """
+
+    def __init__(self, name: str, device: torch.device):
+        super().__init__(name, device)
+        self.max_error = torch.tensor(0.0, device=device)
+
+    def update(self, preds: torch.Tensor, targets: torch.Tensor):
+        """Updates the max error seen so far."""
+        if preds.dim() > 1 and preds.shape[1] > 1:
+            # Vector magnitude error
+            error = torch.norm(preds - targets, dim=1)
+        else:
+            error = torch.abs(preds - targets).flatten()
+
+        batch_max = torch.max(error)
+        if batch_max > self.max_error:
+            self.max_error = batch_max
+
+    def compute(self) -> float:
+        """Returns the maximum error encountered."""
+        return self.max_error.item()
+
+
+class NSEMetric(OnlineMetric):
+    """
+    Nash-Sutcliffe Efficiency (NSE).
+
+    Formula: NSE = 1 - (MSE / Variance)
+
+    Interpretation:
+        * NSE = 1: Perfect model.
+        * NSE = 0: Predictive power equal to the mean of the target.
+        * NSE < 0: Worse than the mean.
+
+    Uses float64 precision for internal accumulators to prevent numerical instability.
+    """
+
+    def __init__(self, name: str, device: torch.device):
+        super().__init__(name, device)
+        # Numerator: Sum of Squared Errors
+        self.sum_sq_error = torch.tensor(0.0, device=device, dtype=torch.float64)
+        # Denominator: Target Statistics for Variance
+        self.sum_target = torch.tensor(0.0, device=device, dtype=torch.float64)
+        self.sum_sq_target = torch.tensor(0.0, device=device, dtype=torch.float64)
+        self.count = torch.tensor(0, device=device, dtype=torch.float64)
+
+    def update(self, preds: torch.Tensor, targets: torch.Tensor):
+        """Updates accumulators for MSE and Target Variance."""
+        if preds.dim() > 1 and preds.shape[1] > 1:
+            # Vector: Sum of squared errors of components
+            diff = preds - targets
+            self.sum_sq_error += torch.sum(diff**2)
+            # Target Variance is calculated over all components flattened
+            t_flat = targets.flatten().to(dtype=torch.float64)
+        else:
+            # Scalar
+            diff = preds - targets
+            self.sum_sq_error += torch.sum(diff**2)
+            t_flat = targets.flatten().to(dtype=torch.float64)
+
+        self.sum_target += torch.sum(t_flat)
+        self.sum_sq_target += torch.sum(t_flat**2)
+        self.count += t_flat.numel()
+
+    def compute(self) -> float:
+        """Returns the NSE value."""
+        if self.count == 0:
+            return float("nan")
+
+        # Variance = E[x^2] - (E[x])^2
+        variance = (self.sum_sq_target / self.count) - (
+            self.sum_target / self.count
+        ) ** 2
+        mse = self.sum_sq_error / self.count
+
+        if variance <= 1e-9:
+            # Target is a flat line; any error is infinite penalty relative to variance
+            return float("-inf")
+
+        return (1.0 - (mse / variance)).item()
+
+
+class TargetStdMetric(OnlineMetric):
+    """
+    Computes the Standard Deviation of the target variable (ground truth).
+
+    This provides a baseline for the 'difficulty' of the dataset. High standard
+    deviation in the target deltas implies a more volatile system.
+    """
+
+    def __init__(self, name: str, device: torch.device):
+        super().__init__(name, device)
         self.sum_x = torch.tensor(0.0, device=device, dtype=torch.float64)
         self.sum_sq_x = torch.tensor(0.0, device=device, dtype=torch.float64)
         self.count = torch.tensor(0, device=device, dtype=torch.float64)
 
     def update(self, preds: torch.Tensor, targets: torch.Tensor):
-        """
-        Updates stats based on targets only (preds are ignored).
-        """
-        # If Vector [Batch, Components], compute magnitude first
+        """Updates stats based on targets only (preds are ignored)."""
         if targets.dim() > 1 and targets.shape[1] > 1:
+            # For vectors, compute std of magnitudes
             vals = torch.linalg.norm(targets, dim=1)
         else:
-            # Scalar [Batch] or [Batch, 1]
             vals = targets.flatten()
 
-        # Cast to float64 for accumulation
         vals_64 = vals.to(dtype=torch.float64)
-
         self.sum_x += torch.sum(vals_64)
         self.sum_sq_x += torch.sum(vals_64**2)
         self.count += vals.numel()
@@ -236,7 +365,6 @@ class TargetStdMetric(OnlineMetric):
             return float("nan")
 
         mean = self.sum_x / self.count
-        # Variance = E[X^2] - (E[X])^2
         variance = (self.sum_sq_x / self.count) - (mean**2)
 
         # Clip negative values due to float precision errors
@@ -257,13 +385,14 @@ class ModelEvaluator:
 
     This class handles data loading, unscaling, and distributing data to
     various metrics in a single pass. It is robust to feature permutations
-    in the configuration file.
+    in the configuration file by using a dynamic target map.
 
-    Args:
+    Attributes:
         model (torch.nn.Module): The loaded PyTorch model.
         loader (DataLoader): The PyG DataLoader for the dataset.
         device (torch.device): The computing device (CPU or GPU).
         cfg (DictConfig): The model configuration object.
+        metrics (list): A list of dictionaries containing metric objects and indices.
     """
 
     def __init__(
@@ -273,6 +402,15 @@ class ModelEvaluator:
         device: torch.device,
         cfg: DictConfig,
     ):
+        """
+        Initializes the ModelEvaluator.
+
+        Args:
+            model (torch.nn.Module): The loaded PyTorch model.
+            loader (DataLoader): The PyG DataLoader for the dataset.
+            device (torch.device): The computing device (CPU or GPU).
+            cfg (DictConfig): The model configuration object.
+        """
         self.model = model
         self.loader = loader
         self.device = device
@@ -280,33 +418,36 @@ class ModelEvaluator:
         self.metrics = []
         self.target_map = self._build_target_map()
 
-        # --- Configure Metrics Dynamically based on Config ---
-
-        # 1. SSH (Target: WD)
+        # --- 1. SSH Metrics (Target: WD) ---
         if "WD" in self.target_map:
             idx = [self.target_map["WD"]]
-            # Performance Metric
-            self.metrics.append(
-                {"metric": RMSEMetric("SSH_RMSE", device), "indices": idx}
-            )
-            # Baseline Stat (Std Dev of ground truth deltas)
-            self.metrics.append(
-                {"metric": TargetStdMetric("SSH_SD", device), "indices": idx}
+            self.metrics.extend(
+                [
+                    {"metric": RMSEMetric("SSH_RMSE", device), "indices": idx},
+                    {"metric": BiasMetric("SSH_Bias", device), "indices": idx},
+                    {"metric": MaxErrorMetric("SSH_MaxErr", device), "indices": idx},
+                    {"metric": NSEMetric("SSH_NSE", device), "indices": idx},
+                    {"metric": TargetStdMetric("SSH_SD", device), "indices": idx},
+                ]
             )
 
-        # 2. Velocity (Targets: VX, VY)
+        # --- 2. Velocity Metrics (Targets: VX, VY) ---
         if "VX" in self.target_map and "VY" in self.target_map:
             idx = [self.target_map["VX"], self.target_map["VY"]]
-            # Performance Metric (Vector Error)
-            self.metrics.append(
-                {
-                    "metric": VectorMagnitudeRMSEMetric("Vel_RMSE", device),
-                    "indices": idx,
-                }
-            )
-            # Baseline Stat (Std Dev of ground truth velocity magnitude deltas)
-            self.metrics.append(
-                {"metric": TargetStdMetric("Vel_SD", device), "indices": idx}
+            self.metrics.extend(
+                [
+                    {
+                        "metric": VectorMagnitudeRMSEMetric("Vel_RMSE", device),
+                        "indices": idx,
+                    },
+                    {
+                        "metric": VectorMagnitudeBiasMetric("Vel_Bias", device),
+                        "indices": idx,
+                    },
+                    {"metric": MaxErrorMetric("Vel_MaxErr", device), "indices": idx},
+                    {"metric": NSEMetric("Vel_NSE", device), "indices": idx},
+                    {"metric": TargetStdMetric("Vel_SD", device), "indices": idx},
+                ]
             )
 
     def _build_target_map(self) -> dict:
@@ -316,28 +457,24 @@ class ModelEvaluator:
         Returns:
             dict: Mapping of target name to index (e.g., {'WD': 0, 'VX': 1}).
         """
-        # Cast omegaconf list to standard list to be safe
         targets = list(self.cfg.features.targets)
         return {name: i for i, name in enumerate(targets)}
 
     def run(self) -> dict:
         """
-        Executes the evaluation loop over the DataLoader.
+        Executes the evaluation loop.
 
         Returns:
             dict: A dictionary of computed results (e.g., {"SSH_RMSE": 0.12}).
         """
         self.model.eval()
-
-        # Pre-fetch Unscaling params to device
         ds = self.loader.dataset
 
-        # Handle cases where scaling might be disabled or different
+        # Unscaling parameters
         if hasattr(ds, "y_delta_mean"):
             y_mean = ds.y_delta_mean.to(self.device)
             y_std = ds.y_delta_std.to(self.device)
         else:
-            # Fallback if dataset doesn't have stats loaded
             num_targets = len(self.cfg.features.targets)
             y_mean = torch.zeros(num_targets, device=self.device)
             y_std = torch.ones(num_targets, device=self.device)
@@ -346,37 +483,29 @@ class ModelEvaluator:
             for batch in tqdm(self.loader, desc="Evaluating", leave=False):
                 batch = batch.to(self.device)
 
-                # 1. Forward Pass
                 if hasattr(self.model, "model"):
                     out_scaled = self.model.model(batch)
                 else:
                     out_scaled = self.model(batch)
 
-                # 2. Unscale Everything Once (Vectorized on GPU)
-                # Predicted Raw Delta = (ScaledOutput * Std) + Mean
+                # Unscale: Raw Delta = (ScaledOutput * Std) + Mean
                 pred_delta_raw = (out_scaled * y_std) + y_mean
-
-                # True Raw Delta (Ground Truth) = (ScaledTarget * Std) + Mean
                 true_delta_raw = (batch.y * y_std) + y_mean
 
-                # 3. Update All Metrics ("Piggybacking")
+                # Update Metrics ("Piggybacking" on the GPU tensors)
                 for item in self.metrics:
                     metric = item["metric"]
                     indices = item["indices"]
 
-                    # Slice specific features based on config indices
-                    # shape: [Batch, len(indices)]
                     p_slice = pred_delta_raw[:, indices]
                     t_slice = true_delta_raw[:, indices]
 
-                    # If single dimension metric (RMSE), squeeze to [Batch]
                     if len(indices) == 1:
                         p_slice = p_slice.squeeze(-1)
                         t_slice = t_slice.squeeze(-1)
 
                     metric.update(p_slice, t_slice)
 
-        # 4. Compute Final Results
         results = {}
         for item in self.metrics:
             metric = item["metric"]
@@ -386,7 +515,7 @@ class ModelEvaluator:
 
 
 # -----------------------------------------------------------------------------
-# Helper Functions
+# Helper Functions & Main
 # -----------------------------------------------------------------------------
 
 
@@ -436,23 +565,17 @@ def get_run_paths(run_dir: str) -> dict:
 
     cfg_path_ckpt = os.path.join(ckpt_dir, "config.yaml")
     cfg_path_root = os.path.join(run_dir, "config.yaml")
-    if os.path.exists(cfg_path_ckpt):
-        paths["config"] = cfg_path_ckpt
-    elif os.path.exists(cfg_path_root):
-        paths["config"] = cfg_path_root
-    else:
-        paths["config"] = None
+    # Check checkpoint dir first, then root
+    paths["config"] = (
+        cfg_path_ckpt
+        if os.path.exists(cfg_path_ckpt)
+        else (cfg_path_root if os.path.exists(cfg_path_root) else None)
+    )
 
     stats_path = os.path.join(run_dir, "processed", "scaling_stats.yaml")
-    if os.path.exists(stats_path):
-        paths["stats"] = stats_path
-    else:
-        paths["stats"] = None
+    paths["stats"] = stats_path if os.path.exists(stats_path) else None
 
-    if all(paths.values()):
-        return paths
-    else:
-        return None
+    return paths if all(paths.values()) else None
 
 
 def load_file_list(list_path: str, data_root: str) -> list:
@@ -460,8 +583,8 @@ def load_file_list(list_path: str, data_root: str) -> list:
     Loads a list of filenames from a YAML file and prepends the data root.
 
     Args:
-        list_path (str): Path to the YAML file with the list.
-        data_root (str): Directory to prepend to filenames.
+        list_path (str): Path to the YAML file.
+        data_root (str): Root directory to prepend.
 
     Returns:
         list: List of full file paths.
@@ -470,58 +593,46 @@ def load_file_list(list_path: str, data_root: str) -> list:
         FileNotFoundError: If list_path does not exist.
     """
     if not os.path.exists(list_path):
-        raise FileNotFoundError(f"Could not find split file: {list_path}")
+        raise FileNotFoundError(f"Missing: {list_path}")
     with open(list_path, "r") as f:
         filenames = yaml.safe_load(f)
     return [os.path.join(data_root, fname) for fname in filenames]
 
 
 def evaluate_run(
-    run_name: str,
-    run_paths: dict,
-    data_root: str,
-    conf_dir: str,
-    extreme_dir: str = None,
+    run_name: str, run_paths: dict, data_root: str, conf_dir: str, extreme_dir: str
 ) -> dict:
     """
-    Evaluates a single model run across multiple data splits.
+    Evaluates a single model run across all defined splits.
 
     Args:
-        run_name (str): Identifier for the run.
-        run_paths (dict): Paths to ckpt, config, and stats.
-        data_root (str): Base directory for raw .nc files.
-        conf_dir (str): Directory containing split YAMLs (train.yaml, etc.).
-        extreme_dir (str, optional): Path to extreme test set directory.
+        run_name (str): The name of the run.
+        run_paths (dict): Dictionary of paths (ckpt, config, stats).
+        data_root (str): Path to raw data directory.
+        conf_dir (str): Path to configuration directory.
+        extreme_dir (str): Path to extreme test directory.
 
     Returns:
-        dict: Dictionary of evaluation results (RMSEs) for the run.
+        dict: A dictionary containing evaluation metrics for all splits.
     """
-
-    # Load Config
     cfg = OmegaConf.load(run_paths["config"])
-
-    # Load Model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     try:
         model = model_from_cfg_and_checkpoint(cfg, run_paths["ckpt"]).to(device)
     except Exception as e:
-        print(f"Failed to load model {run_name}: {e}")
+        print(f"Failed load {run_name}: {e}")
         return None
 
-    results = {
-        "Model": run_name,
-    }
+    results = {"Model": run_name}
 
-    # --- DYNAMIC BATCH SIZE SELECTION ---
+    # Adjust batch size for memory-intensive models
     batch_size = 32
-    # SWEGNN is memory intensive, so we use a safer batch size if detected
     if cfg.model_params.model_type == "GNN" and cfg.models.type_gnn == "SWEGNN":
         batch_size = cfg.trainer_options.get("batch_size", 8)
-        print(
-            f"  Note: Using conservative batch size {batch_size} for memory-intensive SWEGNN."
-        )
+        print(f"  Note: Using conservative batch size {batch_size} for SWEGNN.")
 
-    # Define evaluation tasks (Train/Val/Test + optional Extreme)
+    # Define Evaluation Tasks
     eval_tasks = []
     for split in ["train", "val", "test"]:
         eval_tasks.append(
@@ -532,15 +643,20 @@ def evaluate_run(
                 "root": data_root,
             }
         )
-
     if extreme_dir:
         eval_tasks.append(
-            {"name": "extreme", "type": "dir", "path": extreme_dir, "root": extreme_dir}
+            {
+                "name": "extreme",
+                "type": "dir",
+                "path": extreme_dir,
+                "root": extreme_dir,
+            }
         )
 
     for task in eval_tasks:
         split_name = task["name"].capitalize()
         try:
+            # Determine file list
             if task["type"] == "yaml":
                 nc_files = load_file_list(task["path"], task["root"])
             elif task["type"] == "dir":
@@ -548,11 +664,9 @@ def evaluate_run(
                     glob.glob(os.path.join(task["path"], "**", "*.nc"), recursive=True)
                 )
                 if not nc_files:
-                    # If dir is empty, fill NaNs
-                    results[f"{split_name} SSH_RMSE"] = np.nan
                     continue
 
-            # Create cache dir for pre-processed files
+            # Setup caching and dataset
             cache_dir = os.path.join(task["root"], f"processed_{task['name']}_cache")
             os.makedirs(cache_dir, exist_ok=True)
 
@@ -570,90 +684,138 @@ def evaluate_run(
                 shuffle=False,
                 num_workers=8,
                 pin_memory=True,
-                persistent_workers=True if len(nc_files) > 8 else False,
+                persistent_workers=(len(nc_files) > 8),
             )
 
             print(
-                f"[{run_name}] {split_name} set ({len(nc_files)} files)... ",
+                f"[{run_name}] {split_name} ({len(nc_files)} files)... ",
                 end="",
                 flush=True,
             )
 
-            # --- USE EVALUATOR ENGINE ---
+            # Run One-Pass Evaluator
             evaluator = ModelEvaluator(model, loader, device, cfg)
             metrics_results = evaluator.run()
 
-            # Flatten results into the main dict
-            # e.g., "Train SSH_RMSE" = 0.123, "Train SSH_SD" = 0.500
-            for metric_name, val in metrics_results.items():
-                results[f"{split_name} {metric_name}"] = val
-
-            # Create a nice summary string for the console
-            # (We skip printing SDs here to keep the line length manageable,
-            # but they are saved in the results dict)
-            summary_parts = []
+            # Flatten results: e.g., "Train SSH_RMSE": 0.02
             for k, v in metrics_results.items():
-                if "SD" in k:
-                    continue
-                summary_parts.append(f"{k}: {v:.4f}")
+                results[f"{split_name} {k}"] = v
 
-            print(f"Done. [{', '.join(summary_parts)}]")
+            # Concise summary for console
+            summary = []
+            for k, v in metrics_results.items():
+                if "RMSE" in k:
+                    summary.append(f"{k}: {v:.4f}")
+            print(f"Done. [{', '.join(summary)}]")
 
-        except FileNotFoundError:
-            print(f"\nWarning: Could not find file list/dir for {task['name']}")
         except Exception as e:
-            # Re-raise OOM if we are already at minimum batch size
             if isinstance(e, torch.cuda.OutOfMemoryError) and batch_size <= 4:
-                print(f"\nFATAL ERROR: OOM occurred. Cannot continue.")
                 raise e
-            print(f"\nError evaluating {task['name']} for {run_name}: {e}")
+            print(f"\nError {task['name']}: {e}")
 
     return results
 
 
+def save_metric_tables(df: pd.DataFrame, output_dir: str):
+    """
+    Pivots the master dataframe to create separate tables for each metric type,
+    saving them as both .tex and .md files in the output directory.
+
+    Args:
+        df (pd.DataFrame): The master results dataframe containing all metrics.
+        output_dir (str): Directory where tables will be saved.
+    """
+    # Identify all unique metrics (e.g., 'SSH_RMSE', 'Vel_Bias')
+    # Suffix extraction: "Train SSH_RMSE" -> "SSH_RMSE"
+    metric_types = set()
+    splits = ["Train", "Val", "Test", "Extreme"]
+
+    for col in df.columns:
+        if col == "Model":
+            continue
+        for split in splits:
+            if col.startswith(split + " "):
+                metric_name = col[len(split) + 1 :]
+                metric_types.add(metric_name)
+
+    print(f"\nGenerating tables for {len(metric_types)} metrics in '{output_dir}'...")
+
+    for metric in sorted(metric_types):
+        # Create a sub-dataframe for this metric
+        table_data = {"Model": df["Model"]}
+        valid_splits = []
+
+        for split in splits:
+            col_name = f"{split} {metric}"
+            if col_name in df.columns:
+                table_data[split] = df[col_name]
+                valid_splits.append(split)
+
+        sub_df = pd.DataFrame(table_data)
+        if sub_df.shape[1] <= 1:
+            continue  # Skip if no data cols found
+
+        # Sort by Validation Score if possible
+        # Descending for NSE (higher is better), Ascending for Errors
+        sort_split = "Val" if "Val" in valid_splits else valid_splits[-1]
+        ascending = True
+        if "NSE" in metric:
+            ascending = False
+
+        sub_df = sub_df.sort_values(sort_split, ascending=ascending)
+
+        # Save files
+        base_name = os.path.join(output_dir, metric)
+
+        # Markdown
+        with open(f"{base_name}.md", "w") as f:
+            try:
+                f.write(sub_df.to_markdown(index=False, floatfmt=".4f"))
+            except ImportError:
+                f.write(sub_df.to_string(index=False, float_format="%.4f"))
+
+        # LaTeX
+        caption = f"{metric.replace('_', ' ')} comparison across splits."
+        with open(f"{base_name}.tex", "w") as f:
+            f.write(
+                sub_df.to_latex(
+                    index=False,
+                    float_format="%.4f",
+                    caption=caption,
+                    label=f"tab:{metric.lower()}",
+                    escape=False,
+                )
+            )
+
+
 if __name__ == "__main__":
-    # python -m mswegnn.utils.adforce_evaluate_models
-    # Run doctests if module is executed directly
+    # To run doctests: python -m mswegnn.utils.adforce_evaluate_models
     import doctest
 
     doctest.testmod()
 
-    parser = argparse.ArgumentParser(
-        description="Evaluate mSWE-GNN models (SSH & Velocity RMSE)."
+    parser = argparse.ArgumentParser(description="Evaluate mSWE-GNN models.")
+    parser.add_argument(
+        "-r", "--results_dir", required=True, help="Directory containing model runs"
     )
     parser.add_argument(
-        "-r",
-        "--results_dir",
-        type=str,
-        required=True,
-        help="Path to results/models dir",
+        "-d", "--data_dir", required=True, help="Directory containing raw data"
     )
     parser.add_argument(
-        "-d", "--data_dir", type=str, required=True, help="Path to raw data dir"
+        "-c", "--conf_dir", default="conf", help="Directory with split YAMLs"
     )
     parser.add_argument(
-        "-c",
-        "--conf_dir",
-        type=str,
-        default="conf",
-        help="Path to conf dir (train.yaml etc)",
-    )
-    parser.add_argument(
-        "-e", "--extreme_dir", type=str, default=None, help="Optional extreme test dir"
+        "-e", "--extreme_dir", default=None, help="Directory for extreme test set"
     )
     parser.add_argument(
         "-o",
         "--output",
-        type=str,
         default="evaluation_results",
-        help="Output filename base",
+        help="Directory for output tables",
     )
-
     args = parser.parse_args()
 
-    if not os.path.exists(args.results_dir):
-        print(f"Error: Results directory not found: {args.results_dir}")
-        exit(1)
+    os.makedirs(args.output, exist_ok=True)
 
     run_dirs = sorted(glob.glob(os.path.join(args.results_dir, "*")))
     all_results = []
@@ -663,7 +825,6 @@ if __name__ == "__main__":
     for run_dir in run_dirs:
         if not os.path.isdir(run_dir):
             continue
-
         run_name = os.path.basename(run_dir)
         paths = get_run_paths(run_dir)
         if not paths:
@@ -678,7 +839,7 @@ if __name__ == "__main__":
                 all_results.append(res)
                 print("")
         except torch.cuda.OutOfMemoryError:
-            print(f"\nSkipping remaining evaluations due to persistent OOM error.")
+            print(f"Skipping remaining evaluations due to persistent OOM error.")
             break
 
     if not all_results:
@@ -686,59 +847,5 @@ if __name__ == "__main__":
         exit(0)
 
     df = pd.DataFrame(all_results)
-
-    # Sort by Validation SSH RMSE if available
-    sort_col = "Val SSH_RMSE" if "Val SSH_RMSE" in df.columns else df.columns[-1]
-    df = df.sort_values(sort_col)
-
-    print("\n### Results Summary")
-    print(df.to_string(index=False, float_format="%.4f"))
-
-    # --- Generate Description for Caption ---
-    # Extract SDs from the first row (since datasets are identical across runs)
-    # This provides context on how "hard" the prediction task is.
-    caption_notes = []
-    if not df.empty:
-        first_row = df.iloc[0]
-        for split in ["Train", "Val", "Test", "Extreme"]:
-            col_ssh = f"{split} SSH_SD"
-            col_vel = f"{split} Vel_SD"
-
-            notes = []
-            if col_ssh in first_row:
-                val = first_row[col_ssh]
-                if not pd.isna(val):
-                    notes.append(f"SSH $\\sigma={val:.3f}$m")
-            if col_vel in first_row:
-                val = first_row[col_vel]
-                if not pd.isna(val):
-                    notes.append(f"Vel $\\sigma={val:.3f}$m/s")
-
-            if notes:
-                caption_notes.append(f"{split} ({', '.join(notes)})")
-
-    caption_str = (
-        "RMSE of predictions. Dataset Delta Standard Deviations: "
-        + "; ".join(caption_notes)
-        + "."
-    )
-
-    # Save LaTeX
-    latex = df.to_latex(
-        index=False,
-        float_format="%.4f",
-        caption=caption_str,
-        label="tab:results",
-        escape=False,
-    )
-    with open(f"{args.output}.tex", "w") as f:
-        f.write(latex)
-
-    # Save Markdown
-    with open(f"{args.output}.md", "w") as f:
-        try:
-            f.write(df.to_markdown(index=False, floatfmt=".4f"))
-        except ImportError:
-            f.write(df.to_string(index=False, float_format="%.4f"))
-
-    print(f"\nSaved results to {args.output}.tex and {args.output}.md")
+    save_metric_tables(df, args.output)
+    print(f"Done. All metric tables saved to {args.output}/")

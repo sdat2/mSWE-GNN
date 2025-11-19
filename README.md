@@ -132,6 +132,8 @@ python -m adforce_main model_params.model_type=MLP
 
 ## Results
 
+The following table summarizes the one step ahead SSH performance of various models on the training (158 files), validation (23 files), test (47 files), and extreme test (18 files) datasets, measured in Root Mean Square Error (RMSE) in centimeters.
+
 | Model | Train RMSE (cm) | Val RMSE (cm) | Test RMSE (cm) | Extreme RMSE (cm) |
 | :--- | :---: | :---: | :---: | :---: |
 | SWE-GNN-K9-P1-H128 | 1.65 | 1.84 | 1.99 | 7.21 |
