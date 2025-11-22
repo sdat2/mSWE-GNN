@@ -63,6 +63,8 @@ features:
   edge:
     - face_distance
     - edge_slope
+    - face_relative_distance_x
+    - face_relative_distance_y
   forcing:
     - P
     - WX

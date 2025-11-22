@@ -226,13 +226,42 @@ def _load_static_data_from_ds(
 
     # --- Static Edge Features (from config) ---
     edge_attr_list = []
+
     # Cast to list to handle omegaconf.ListConfig
     for var_name in list(static_edge_vars):
-        if var_name not in ds:
+        # Logic to handle virtual split variables
+        if var_name == "face_relative_distance_x":
+            if "face_relative_distance" not in ds:
+                raise ValueError(
+                    "NetCDF missing 'face_relative_distance' for requested '_x' feature."
+                )
+            # Slice index 0
+            val = torch.tensor(
+                ds["face_relative_distance"].values[:, 0], dtype=torch.float
+            )
+        elif var_name == "face_relative_distance_y":
+            if "face_relative_distance" not in ds:
+                raise ValueError(
+                    "NetCDF missing 'face_relative_distance' for requested '_y' feature."
+                )
+            # Slice index 1
+            val = torch.tensor(
+                ds["face_relative_distance"].values[:, 1], dtype=torch.float
+            )
+        elif var_name in ds:
+            # Standard scalar loading
+            val = torch.tensor(ds[var_name].values, dtype=torch.float)
+        else:
             raise ValueError(f"Static edge variable '{var_name}' not found in dataset.")
-        edge_attr_list.append(torch.tensor(ds[var_name].values, dtype=torch.float))
+
+        # Ensure (E, 1) shape for concatenation
+        if val.ndim == 1:
+            val = val.unsqueeze(1)
+
+        edge_attr_list.append(val)
+
     if edge_attr_list:
-        data_dict["static_edge_attr"] = torch.stack(edge_attr_list, dim=1)
+        data_dict["static_edge_attr"] = torch.cat(edge_attr_list, dim=1)
     else:
         num_edges = ds.sizes.get("edge", 0)
         data_dict["static_edge_attr"] = torch.empty((num_edges, 0), dtype=torch.float)
@@ -266,6 +295,7 @@ def _load_static_data_from_ds(
     data_dict["node_BC"] = boundary_face_indices
 
     edge_bc_length = torch.tensor([], dtype=torch.float)  # Default
+
     if "edge_BC_length" in ds:
         edge_bc_length = torch.tensor(ds["edge_BC_length"].values, dtype=torch.float)
     data_dict["edge_BC_length"] = edge_bc_length
@@ -525,6 +555,25 @@ class AdforceLazyDataset(Dataset):
                 print(
                     "Scaling stats loaded, tensors created (on CPU), and shapes validated against config."
                 )
+
+                if "edge_mean" in scaling_stats:
+                    self.edge_mean = torch.tensor(
+                        scaling_stats["edge_mean"], dtype=torch.float32
+                    )
+                    self.edge_std = torch.tensor(
+                        scaling_stats["edge_std"], dtype=torch.float32
+                    ).clamp(min=1e-6)
+
+                    # Apply scaling IMMEDIATELY to the cached static data
+                    # (Edges are static, so we do this once here to save compute later)
+                    raw_edges = self.static_data["static_edge_attr"]
+                    scaled_edges = (raw_edges - self.edge_mean) / self.edge_std
+                    self.static_data["static_edge_attr"] = scaled_edges
+                    print("Edge features scaled and cached.")
+                else:
+                    print(
+                        "WARNING: 'edge_mean' not found in stats file. Edges will be unscaled."
+                    )
 
             except (
                 KeyError,
@@ -953,6 +1002,14 @@ def run_forcing_rollout(
         x_dyn_std_broadcast = x_dyn_std_cpu.repeat(previous_t).to(device)
         x_dyn_mean_single = x_dyn_mean_cpu.to(device)
         x_dyn_std_single = x_dyn_std_cpu.to(device)
+        
+        # --- NEW: Load Edge Stats for Inference ---
+        if "edge_mean" in scaling_stats:
+            edge_mean = torch.tensor(scaling_stats["edge_mean"], dtype=torch.float32).to(device)
+            edge_std = torch.tensor(scaling_stats["edge_std"], dtype=torch.float32).to(device).clamp(min=1e-6)
+            apply_edge_scaling = True
+        else:
+            apply_edge_scaling = False
 
     except (KeyError, TypeError) as e:
         raise ValueError(f"Scaling stats dict is missing keys or invalid: {e}")
@@ -975,6 +1032,12 @@ def run_forcing_rollout(
         static_features_scaled[:, :num_static_cfg] = (
             static_features_scaled[:, :num_static_cfg] - x_static_mean
         ) / x_static_std
+        
+        # --- NEW: Apply Edge Scaling ---
+        if apply_edge_scaling:
+            static_data_gpu["static_edge_attr"] = (
+                static_data_gpu["static_edge_attr"] - edge_mean
+            ) / edge_std
         # --- END NEW ---
 
         num_timesteps = ds.sizes["time"]
