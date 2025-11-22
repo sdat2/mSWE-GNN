@@ -12,6 +12,7 @@ It computes and saves stats for:
 2.  x_dynamic: (features_cfg.forcing)
 3.  y: (features_cfg.state + features_cfg.derived_state)
 4.  y_delta: (deltas of features_cfg.targets)
+5.  edge: (features_cfg.edge) -- NEW: Includes normalization for edges
 
 This version uses a memory-efficient online algorithm (Welford's)
 to calculate stats in a single pass and explicitly handles NaNs
@@ -297,6 +298,9 @@ def compute_and_save_adforce_stats(
     target_vars = list(features_cfg.targets)
     derived_state_specs = list(features_cfg.derived_state)
 
+    # NEW: Edge variables
+    edge_vars = list(features_cfg.edge)
+
     if set(state_vars) != set(target_vars):
         warnings.warn(
             f"Scaling: 'features.state' ({state_vars}) and "
@@ -312,6 +316,7 @@ def compute_and_save_adforce_stats(
         "x_dynamic": StatsAggregator(),
         "y": StatsAggregator(),
         "y_delta": StatsAggregator(),
+        "edge": StatsAggregator(),  # <--- NEW: Edge aggregator
     }
 
     static_data_dict_cpu = {}
@@ -331,6 +336,41 @@ def compute_and_save_adforce_stats(
             # --- END FIX ---
 
             stats_aggs["x_static"].update(static_node_data)
+
+            # --- NEW: Edge Stats Calculation ---
+            # We handle the "virtual" variables _x and _y here by slicing.
+            edge_tensors = []
+            if edge_vars:
+                for var in edge_vars:
+                    if var == "face_relative_distance_x":
+                        if "face_relative_distance" not in ds:
+                            raise ValueError(
+                                "NetCDF missing 'face_relative_distance' for '_x' edge feature."
+                            )
+                        val = ds["face_relative_distance"].values[:, 0]
+                    elif var == "face_relative_distance_y":
+                        if "face_relative_distance" not in ds:
+                            raise ValueError(
+                                "NetCDF missing 'face_relative_distance' for '_y' edge feature."
+                            )
+                        val = ds["face_relative_distance"].values[:, 1]
+                    elif var in ds:
+                        val = ds[var].values
+                    else:
+                        raise ValueError(f"Edge var {var} not found in dataset.")
+
+                    # Convert to tensor and ensure 2D [E, 1]
+                    t = torch.tensor(val, dtype=torch.float32)
+                    if t.ndim == 1:
+                        t = t.unsqueeze(1)
+                    edge_tensors.append(t)
+
+                if edge_tensors:
+                    full_edge_tensor = torch.cat(edge_tensors, dim=1)
+                    # Edges likely don't have NaNs, but good practice:
+                    full_edge_tensor.nan_to_num_(nan=0.0)
+                    stats_aggs["edge"].update(full_edge_tensor)
+            # --- END NEW ---
 
             # Store static features needed for derived calculations
             all_derived_args = set()
@@ -428,6 +468,12 @@ def compute_and_save_adforce_stats(
     final_stats["y_delta_mean"] = mean.tolist()
     final_stats["y_delta_std"] = std.tolist()
 
+    # --- NEW: Finalize Edge Stats ---
+    mean, std = stats_aggs["edge"].finalize()
+    final_stats["edge_mean"] = mean.tolist()
+    final_stats["edge_std"] = std.tolist()
+    # --- END NEW ---
+
     print(f"Saving scaling stats to {save_path}...")
     try:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -458,6 +504,13 @@ def compute_and_save_adforce_stats(
         print(f"y_delta ({len(final_stats['y_delta_mean'])} features):")
         print({k: v for k, v in zip(target_vars, final_stats["y_delta_mean"])})
         print({k: v for k, v in zip(target_vars, final_stats["y_delta_std"])})
+
+        # --- NEW: Edge Summary ---
+        print(f"edge ({len(final_stats['edge_mean'])} features):")
+        print({k: v for k, v in zip(edge_vars, final_stats["edge_mean"])})
+        print({k: v for k, v in zip(edge_vars, final_stats["edge_std"])})
+        # --- END NEW ---
+
         print("-----------------------------\n")
 
     except Exception as e:

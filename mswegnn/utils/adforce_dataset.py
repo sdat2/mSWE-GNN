@@ -1002,11 +1002,17 @@ def run_forcing_rollout(
         x_dyn_std_broadcast = x_dyn_std_cpu.repeat(previous_t).to(device)
         x_dyn_mean_single = x_dyn_mean_cpu.to(device)
         x_dyn_std_single = x_dyn_std_cpu.to(device)
-        
+
         # --- NEW: Load Edge Stats for Inference ---
         if "edge_mean" in scaling_stats:
-            edge_mean = torch.tensor(scaling_stats["edge_mean"], dtype=torch.float32).to(device)
-            edge_std = torch.tensor(scaling_stats["edge_std"], dtype=torch.float32).to(device).clamp(min=1e-6)
+            edge_mean = torch.tensor(
+                scaling_stats["edge_mean"], dtype=torch.float32
+            ).to(device)
+            edge_std = (
+                torch.tensor(scaling_stats["edge_std"], dtype=torch.float32)
+                .to(device)
+                .clamp(min=1e-6)
+            )
             apply_edge_scaling = True
         else:
             apply_edge_scaling = False
@@ -1032,7 +1038,7 @@ def run_forcing_rollout(
         static_features_scaled[:, :num_static_cfg] = (
             static_features_scaled[:, :num_static_cfg] - x_static_mean
         ) / x_static_std
-        
+
         # --- NEW: Apply Edge Scaling ---
         if apply_edge_scaling:
             static_data_gpu["static_edge_attr"] = (
