@@ -662,9 +662,19 @@ class AdforceLazyDataset(Dataset):
             "edge_BC_length",
         ]
 
+        # --- NEW: Handle Virtual Variables in Checks ---
+        # Map 'face_relative_distance_x/y' back to the physical 'face_relative_distance'
+        # so we check for the actual file variable, not the virtual config name.
+        physical_edge_vars = []
+        for var in required_static_edge_vars:
+            if var in ["face_relative_distance_x", "face_relative_distance_y"]:
+                physical_edge_vars.append("face_relative_distance")
+            else:
+                physical_edge_vars.append(var)
+
         all_required_vars = set(
             required_static_node_vars
-            + required_static_edge_vars
+            + physical_edge_vars  # <-- check physical vars, not config vars
             + required_forcing_vars
             + required_target_vars
             + required_base_vars
