@@ -495,7 +495,42 @@ class AdforceLazyDataset(Dataset):
         # This super() call will trigger .process() if needed
         super().__init__(root, transform, pre_transform)
 
-        # --- UPDATED: Load scaling stats from YAML ---
+        # --- Load the index map (as before) ---
+        try:
+            with xr.open_dataset(self.processed_paths[0]) as ds:
+                self.total_nodes = ds.attrs["total_nodes"]
+                file_paths = ds["file_paths"].values
+                time_indices = ds["time_indices"].values
+                self.index_map = list(zip(file_paths, time_indices))
+
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"Processed file not found at {self.processed_paths[0]}. "
+                f"Your 'root' directory is '{self.root}'. "
+                f"Delete this directory and re-run to trigger '.process()'."
+            )
+        except Exception as e:
+            raise IOError(f"Failed to load processed index file: {e}")
+
+        # --- ORDER FIX: Load static data FIRST ---
+        # We must populate self.static_data (including edges) before we attempt to scale them.
+        print(f"Loading single static dataset from: {self.nc_files[0]}...")
+        try:
+            with xr.open_dataset(self.nc_files[0]) as ds:
+                if "num_nodes" not in ds.sizes:
+                    raise IOError(
+                        f"File {self.nc_files[0]} is missing 'num_nodes' dimension."
+                    )
+
+                self.static_data = _load_static_data_from_ds(
+                    ds, self.features_cfg.static, self.features_cfg.edge
+                )
+
+            print(f"Static data loaded and cached on device: cpu")
+        except Exception as e:
+            raise IOError(f"Failed to load static data from {self.nc_files[0]}: {e}")
+
+        # --- Load and Apply Scaling Stats ---
         self.apply_scaling = False
         if scaling_stats_path and os.path.exists(scaling_stats_path):
             print(f"Loading scaling stats from: {scaling_stats_path}")
@@ -556,20 +591,34 @@ class AdforceLazyDataset(Dataset):
                     "Scaling stats loaded, tensors created (on CPU), and shapes validated against config."
                 )
 
+                # --- NEW: Conditional Edge Scaling ---
                 if "edge_mean" in scaling_stats:
-                    self.edge_mean = torch.tensor(
-                        scaling_stats["edge_mean"], dtype=torch.float32
+                    # Check for explicit flag in features config (default False for backwards compatibility)
+                    should_scale_edges = self.features_cfg.get(
+                        "apply_edge_scaling", False
                     )
-                    self.edge_std = torch.tensor(
-                        scaling_stats["edge_std"], dtype=torch.float32
-                    ).clamp(min=1e-6)
 
-                    # Apply scaling IMMEDIATELY to the cached static data
-                    # (Edges are static, so we do this once here to save compute later)
-                    raw_edges = self.static_data["static_edge_attr"]
-                    scaled_edges = (raw_edges - self.edge_mean) / self.edge_std
-                    self.static_data["static_edge_attr"] = scaled_edges
-                    print("Edge features scaled and cached.")
+                    if should_scale_edges:
+                        self.edge_mean = torch.tensor(
+                            scaling_stats["edge_mean"], dtype=torch.float32
+                        )
+                        self.edge_std = torch.tensor(
+                            scaling_stats["edge_std"], dtype=torch.float32
+                        ).clamp(min=1e-6)
+
+                        # Apply scaling IMMEDIATELY to the cached static data
+                        # (Edges are static, so we do this once here to save compute later)
+                        raw_edges = self.static_data["static_edge_attr"]
+                        scaled_edges = (raw_edges - self.edge_mean) / self.edge_std
+                        self.static_data["static_edge_attr"] = scaled_edges
+                        print(
+                            "Edge features scaled and cached (apply_edge_scaling=True)."
+                        )
+                    else:
+                        print(
+                            "WARNING: 'edge_mean' found in stats, but 'features.apply_edge_scaling' "
+                            "is False (or missing). Edge features will remain UNSCALED."
+                        )
                 else:
                     print(
                         "WARNING: 'edge_mean' not found in stats file. Edges will be unscaled."
@@ -591,41 +640,6 @@ class AdforceLazyDataset(Dataset):
             print(
                 f"WARNING: Scaling stats file not found at '{scaling_stats_path}'. Model will run on raw, unscaled data."
             )
-        # --- END UPDATED BLOCK ---
-
-        # --- Load the index map (as before) ---
-        try:
-            with xr.open_dataset(self.processed_paths[0]) as ds:
-                self.total_nodes = ds.attrs["total_nodes"]
-                file_paths = ds["file_paths"].values
-                time_indices = ds["time_indices"].values
-                self.index_map = list(zip(file_paths, time_indices))
-
-        except FileNotFoundError:
-            raise RuntimeError(
-                f"Processed file not found at {self.processed_paths[0]}. "
-                f"Your 'root' directory is '{self.root}'. "
-                f"Delete this directory and re-run to trigger '.process()'."
-            )
-        except Exception as e:
-            raise IOError(f"Failed to load processed index file: {e}")
-
-        # --- REFACTOR: Load static data ONCE using config ---
-        print(f"Loading single static dataset from: {self.nc_files[0]}...")
-        try:
-            with xr.open_dataset(self.nc_files[0]) as ds:
-                if "num_nodes" not in ds.sizes:
-                    raise IOError(
-                        f"File {self.nc_files[0]} is missing 'num_nodes' dimension."
-                    )
-
-                self.static_data = _load_static_data_from_ds(
-                    ds, self.features_cfg.static, self.features_cfg.edge
-                )
-
-            print(f"Static data loaded and cached on device: cpu")
-        except Exception as e:
-            raise IOError(f"Failed to load static data from {self.nc_files[0]}: {e}")
 
         num_static_nodes = self.static_data["node_type"].shape[0]
         if self.total_nodes != num_static_nodes:

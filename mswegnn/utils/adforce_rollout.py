@@ -2,8 +2,9 @@
 Autoregressive Rollout Utility for ADForce GNN Models.
 """
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 import numpy as np
+import xarray as xr
 from tqdm import tqdm
 import torch
 import lightning as L
@@ -41,6 +42,7 @@ def load_static_data(
                 f"'DEM' not found in dataset.static_data. Available keys: {list(dataset.static_data.keys())}"
             )
 
+        # DEM in static_data is typically kept RAW (unscaled) in the dataset class
         dem = dataset.static_data["DEM"].cpu().numpy()
 
     except Exception as e:
@@ -67,6 +69,7 @@ def perform_rollout(
     Performs an autoregressive rollout based on the specified horizon.
 
     This function assumes the model predicts the *SCALED DELTA* (change in state).
+    It automatically handles scaling if the dataset provides raw unscaled data.
 
     Args:
         model (L.LightningModule): The trained Lightning model (on device).
@@ -76,277 +79,233 @@ def perform_rollout(
         scaling_stats (Dict[str, Any]): The loaded scaling_stats.yaml dict.
         rollout_horizon (int, optional): The rollout strategy.
             - (N = -1): "Full Rollout". Runs one long simulation from t=0.
-              predictions_list[k] is the k-step-ahead prediction.
-            - (N > 0): "Fixed Horizon". Runs a new N-step simulation for
-              each frame. predictions_list[k] is the N-step-ahead
-              prediction starting from ground truth at t=(k-N+1).
-              The first N-1 frames are k-step-ahead predictions.
+            - (N > 0): "Fixed Horizon". Runs a new N-step simulation for each frame.
 
     Returns:
-        List[np.ndarray]: A list of unscaled predicted states (matching the
-                          order of features_cfg.state) for each frame.
+        List[np.ndarray]: A list of unscaled predicted states for each frame.
     """
-    model.eval()  # Set model to evaluation mode
+    model.eval()
 
-    # --- Get all necessary scaling stats from the dict ---
+    # 1. Determine if we need to manually scale inputs
+    # If dataset.apply_scaling is False (due to error or config), we must scale manually.
+    manual_scaling_needed = not getattr(dataset, "apply_scaling", False)
+    if manual_scaling_needed:
+        print("WARNING: Dataset is unscaled. Performing MANUAL SCALING inside rollout.")
+
+    # 2. Load ALL scaling stats to device
     try:
+        # State stats
         y_mean = torch.tensor(scaling_stats["y_mean"], dtype=torch.float32).to(device)
-        y_std = (
-            torch.tensor(scaling_stats["y_std"], dtype=torch.float32)
-            .to(device)
-            .clamp(min=1e-6)
-        )
-        y_delta_mean = torch.tensor(
-            scaling_stats["y_delta_mean"], dtype=torch.float32
-        ).to(device)
-        y_delta_std = (
-            torch.tensor(scaling_stats["y_delta_std"], dtype=torch.float32)
-            .to(device)
-            .clamp(min=1e-6)
-        )
+        y_std = torch.tensor(scaling_stats["y_std"], dtype=torch.float32).to(device).clamp(min=1e-6)
+        y_delta_mean = torch.tensor(scaling_stats["y_delta_mean"], dtype=torch.float32).to(device)
+        y_delta_std = torch.tensor(scaling_stats["y_delta_std"], dtype=torch.float32).to(device).clamp(min=1e-6)
+        
+        # Inputs stats (needed if manual_scaling_needed is True)
+        x_static_mean = torch.tensor(scaling_stats["x_static_mean"], dtype=torch.float32).to(device)
+        x_static_std = torch.tensor(scaling_stats["x_static_std"], dtype=torch.float32).to(device).clamp(min=1e-6)
+        x_dyn_mean = torch.tensor(scaling_stats["x_dynamic_mean"], dtype=torch.float32).to(device)
+        x_dyn_std = torch.tensor(scaling_stats["x_dynamic_std"], dtype=torch.float32).to(device).clamp(min=1e-6)
+        
+        # Edge stats
+        if "edge_mean" in scaling_stats:
+            edge_mean = torch.tensor(scaling_stats["edge_mean"], dtype=torch.float32).to(device)
+            edge_std = torch.tensor(scaling_stats["edge_std"], dtype=torch.float32).to(device).clamp(min=1e-6)
+            
+            # Apply edge scaling to dataset IN-PLACE if needed (since edges are static)
+            if manual_scaling_needed and "static_edge_attr" in dataset.static_data:
+                # Check if we already scaled it in a previous call (hacky check)
+                # Ideally, dataset should handle this, but we do it here to save the run.
+                # We assume if manual_scaling_needed is True, edges are raw.
+                raw_edges = dataset.static_data["static_edge_attr"].to(device)
+                dataset.static_data["static_edge_attr"] = (raw_edges - edge_mean) / edge_std
+                # Update the cached CPU version too to avoid re-transfer issues if dataset.get re-reads
+                # (Though dataset.get uses the dict reference, so modifying the dict is enough if shared)
+    
     except (KeyError, TypeError) as e:
         print(f"Error: Scaling stats dict is missing keys or invalid: {e}")
         raise e
 
     # --- HACK: Need DEM on device for derived features ---
-    # A more robust solution would pass all static features needed.
-    dem_gpu = dataset.static_data["DEM"].to(device)
+    if "DEM" in dataset.static_data:
+        dem_gpu = dataset.static_data["DEM"].to(device)
+    else:
+        print("Warning: 'DEM' missing from static data. Derived features using DEM will fail.")
+        dem_gpu = None
 
     predictions_list = []
 
-    # --- Get feature counts from config ---
-    num_static_features = len(features_cfg.static) + 1  # +1 for node type
-    num_forcing_features = len(features_cfg.forcing)
-    num_state_features = len(features_cfg.state)
-    num_derived_features = len(features_cfg.derived_state)
+    # --- Feature Counts & Index Slicing ---
+    num_static = len(features_cfg.static) + 1  # +1 for node_type
+    num_forcing = len(features_cfg.forcing)
+    num_state = len(features_cfg.state)
+    num_derived = len(features_cfg.derived_state)
     p_t = dataset.previous_t
-    num_total_state_features = num_state_features + num_derived_features
+    num_total_state = num_state + num_derived
 
-    # --- FIX: Corrected state index calculation ---
-    # The 'x' tensor is structured: [static, forcing, state (base + derived)]
+    # The 'x' tensor structure: [static | forcing | state]
+    # Indices:
+    static_start, static_end = 0, num_static
+    forcing_start, forcing_end = static_end, static_end + (num_forcing * p_t)
+    state_block_start, state_block_end = forcing_end, forcing_end + num_total_state
+    
+    # Sub-slice for the base state (the part we predict/update)
+    state_base_start = state_block_start
+    state_base_end = state_block_start + num_state
 
-    # Start of the *full* state block (base + derived)
-    state_block_start_idx = num_static_features + (num_forcing_features * p_t)
-    state_block_end_idx = state_block_start_idx + num_total_state_features
+    # --- Helper to ensure a batch is SCALED ---
+    def get_scaled_batch(batch_idx):
+        batch = dataset.get(batch_idx).to(device)
+        
+        if not manual_scaling_needed:
+            return batch # Already scaled by dataset
+        
+        # Perform manual scaling on batch.x
+        x = batch.x.clone()
+        
+        # 1. Scale Static
+        x[:, static_start:static_end] = (x[:, static_start:static_end] - x_static_mean) / x_static_std
+        
+        # 2. Scale Forcing (Broadcast over p_t)
+        # x_dyn_mean/std is shape [F]. We need to tile it p_t times.
+        x_dyn_mean_broadcast = x_dyn_mean.repeat(p_t)
+        x_dyn_std_broadcast = x_dyn_std.repeat(p_t)
+        x[:, forcing_start:forcing_end] = (x[:, forcing_start:forcing_end] - x_dyn_mean_broadcast) / x_dyn_std_broadcast
+        
+        # 3. Scale State
+        x[:, state_block_start:state_block_end] = (x[:, state_block_start:state_block_end] - y_mean) / y_std
+        
+        batch.x = x
+        return batch
 
-    # The slice for the *base state* (which we predict and replace)
-    # is the first num_state_features of this block.
-    state_base_start_idx = state_block_start_idx
-    state_base_end_idx = state_block_start_idx + num_state_features
-    # --- END FIX ---
-
-    # --- BRANCH 1: FULL, FREE-RUNNING ROLLOUT ---
+    # --- BRANCH 1: FULL ROLLOUT ---
     if rollout_horizon == -1:
         print("Starting full, free-running rollout (predicting deltas)...")
 
-        # --- 1. Get the *initial state* from frame 0 ---
-        current_batch = dataset.get(0).to(device)
+        # 1. Get Initial Batch (Scaled)
+        # Note: We use get_scaled_batch to ensure 'current_full_state_scaled' is valid model input.
+        current_batch = get_scaled_batch(0)
 
-        # Get the SCALED *full* state (base + derived) from the initial batch
-        current_full_state_scaled = current_batch.x[
-            :, state_block_start_idx:state_block_end_idx
-        ].clone()
+        # 2. Extract Initial State
+        # a) SCALED full state (for model input)
+        current_full_state_scaled = current_batch.x[:, state_block_start:state_block_end].clone()
 
-        # Get the RAW *base state* for applying deltas
-        # We un-scale just the base state part of the input vector
+        # b) RAW base state (for physics update)
+        # Since we just ensured current_batch is scaled, we MUST unscale it to get raw physics state.
         current_y_t_raw = (
-            current_batch.x[:, state_base_start_idx:state_base_end_idx].clone()
-            * y_std[:num_state_features]
-        ) + y_mean[:num_state_features]
-
-        # --- AUTOREGRESSIVE LOOP: SCALING & DERIVED FEATURES ---
-        # The core logic here maintains two states:
-        # 1. `current_y_t_raw`: The UNCALED base state (e.g., [WD, VX, VY]).
-        #    This is used for physically-correct operations.
-        # 2. `current_full_state_scaled`: The SCALED full state (e.g.,
-        #    [scaled_WD, ..., scaled_SSH]). This is the input for the model.
-        #
-        # The process is:
-        # 1. Model predicts `pred_scaled_delta` from `current_full_state_scaled`.
-        # 2. `pred_scaled_delta` is un-scaled -> `pred_raw_delta`.
-        # 3. `pred_raw_delta` is added to `current_y_t_raw` -> `next_y_t_raw`.
-        # 4. Derived features (e.g., SSH) are calculated in UNCALED space
-        #    using `next_y_t_raw` and `dem_gpu`.
-        # 5. The new `full_state_tensor_raw` (base + derived) is built.
-        # 6. This full tensor is SCALED -> `current_full_state_scaled` for the
-        #    next iteration.
-        # ---
+            current_batch.x[:, state_base_start:state_base_end].clone() * y_std[:num_state]
+        ) + y_mean[:num_state]
 
         for idx in tqdm(range(len(dataset)), desc="Full Rollout"):
-            # 1. Get the *ground truth batch* for this step's *forcing*
-            gt_batch = dataset.get(idx).to(device)
-
-            # 2. Create the *prediction input*
+            # 1. Get Ground Truth Forcing (Scaled)
+            gt_batch = get_scaled_batch(idx)
+            
+            # 2. Create Prediction Input
             pred_input_batch = gt_batch.clone()
-
-            # 3. ...but replace the *full state* with our *predicted* state
-            pred_input_batch.x[:, state_block_start_idx:state_block_end_idx] = (
-                current_full_state_scaled
-            )
-
-            # 4. Run the model to predict the *scaled delta*
+            
+            # 3. Overwrite state with PREVIOUS PREDICTION
+            pred_input_batch.x[:, state_block_start:state_block_end] = current_full_state_scaled
+            
+            # 4. Predict Scaled Delta
             pred_scaled_delta = model.model(pred_input_batch)
-
-            # 5. Un-scale the predicted delta
+            
+            # 5. Unscale Delta
             pred_raw_delta = (pred_scaled_delta * y_delta_std) + y_delta_mean
-
-            # 6. Apply the delta to get the next *base state*
+            
+            # 6. Apply Delta to RAW state
             next_y_t_raw = current_y_t_raw + pred_raw_delta
-
-            # 7. Store the *unscaled predicted base state* (for plotting)
+            
+            # 7. Store Result
             predictions_list.append(next_y_t_raw.cpu().numpy())
-
-            # 8. Prepare for the *next* loop iteration
-
-            # --- 8a. Re-calculate derived features (in UNCALED space) ---
-
-            # 1. We have `next_y_t_raw` (base state) [N, 3] (UNSCALED)
-            y_t_dict_gpu = {
-                var: next_y_t_raw[:, i]
-                for i, var in enumerate(list(features_cfg.state))
-            }
-
-            # 2. Build derived features list
-            derived_state_features_list = []
+            
+            # 8. Prepare for next step: Derived Features & Scaling
+            
+            # a) Calculate Derived Features (in RAW space)
+            y_t_dict_gpu = {var: next_y_t_raw[:, i] for i, var in enumerate(list(features_cfg.state))}
+            derived_list = []
+            
             for derived_spec in features_cfg.derived_state:
                 arg_data = []
                 for arg_name in derived_spec["args"]:
                     if arg_name in y_t_dict_gpu:
-                        arg_data.append(y_t_dict_gpu[arg_name])  # (UNSCALED)
-                    elif arg_name == "DEM":  # HACK: hard-coding static features
-                        arg_data.append(dem_gpu)  # (UNSCALED)
+                        arg_data.append(y_t_dict_gpu[arg_name])
+                    elif arg_name == "DEM":
+                        arg_data.append(dem_gpu)
                     else:
-                        raise ValueError(
-                            f"Rollout: Unknown arg '{arg_name}' for derived feature '{derived_spec['name']}'"
-                        )
-
-                # Perform operation in UNCALED space
-                if derived_spec["op"] == "add":
-                    derived_feat = arg_data[0] + arg_data[1]
-                elif derived_spec["op"] == "subtract":
-                    derived_feat = arg_data[0] - arg_data[1]
-                elif derived_spec["op"] == "magnitude":
-                    derived_feat = torch.sqrt(arg_data[0] ** 2 + arg_data[1] ** 2)
-                else:
-                    raise ValueError(f"Rollout: Unknown op '{derived_spec['op']}'")
-
-                derived_state_features_list.append(derived_feat.unsqueeze(1))
-
-            # 3. Build *full raw state*
-            if derived_state_features_list:
-                full_state_tensor_raw = torch.cat(
-                    [next_y_t_raw] + derived_state_features_list, dim=1
-                )
+                        raise ValueError(f"Unknown arg '{arg_name}'")
+                
+                if derived_spec["op"] == "add": val = arg_data[0] + arg_data[1]
+                elif derived_spec["op"] == "subtract": val = arg_data[0] - arg_data[1]
+                elif derived_spec["op"] == "magnitude": val = torch.sqrt(arg_data[0]**2 + arg_data[1]**2)
+                else: raise ValueError(f"Unknown op {derived_spec['op']}")
+                derived_list.append(val.unsqueeze(1))
+            
+            # b) Concatenate to Full Raw State
+            if derived_list:
+                full_state_raw = torch.cat([next_y_t_raw] + derived_list, dim=1)
             else:
-                full_state_tensor_raw = next_y_t_raw
-
-            # 4. Scale the *full raw state* to be the next input
-            # Note: y_mean/y_std must have shape (num_state + num_derived)
-            current_full_state_scaled = (full_state_tensor_raw - y_mean) / y_std
-
-            # 5. Update the raw state for the *next* loop's delta calculation
+                full_state_raw = next_y_t_raw
+                
+            # c) Scale Full State for next input
+            current_full_state_scaled = (full_state_raw - y_mean) / y_std
+            
+            # d) Update Raw State for next iteration
             current_y_t_raw = next_y_t_raw
 
-            # --- End derived feature logic ---
-
-    # --- BRANCH 2: FIXED-HORIZON ROLLOUT ---
+    # --- BRANCH 2: FIXED HORIZON ---
     else:
-        print(
-            f"Starting {rollout_horizon}-step fixed-horizon rollout (predicting deltas)..."
-        )
-
-        # Loop for each frame we want to generate
-        for idx in tqdm(range(len(dataset)), desc=f"{rollout_horizon}-Step Rollout"):
-
-            # 1. Determine the *start* of this mini-rollout
+        print(f"Starting {rollout_horizon}-step fixed-horizon rollout...")
+        
+        for idx in tqdm(range(len(dataset)), desc=f"{rollout_horizon}-Step"):
             start_idx = max(0, idx - rollout_horizon + 1)
-
-            # 2. Determine how many steps to run
             steps_to_run = idx - start_idx + 1
-
-            # 3. Get the *ground truth* state at the *start* of the mini-rollout
-            gt_batch_start = dataset.get(start_idx).to(device)
-
-            # This is the SCALED full state [scaled_WD, ..., scaled_SSH]
-            current_full_state_scaled = gt_batch_start.x[
-                :, state_block_start_idx:state_block_end_idx
-            ].clone()
-
-            # This is the UNCALED base state [WD, VX, VY]
+            
+            # Initialize from Ground Truth at start_idx
+            gt_batch_start = get_scaled_batch(start_idx)
+            
+            current_full_state_scaled = gt_batch_start.x[:, state_block_start:state_block_end].clone()
             current_y_t_raw = (
-                gt_batch_start.x[:, state_base_start_idx:state_base_end_idx].clone()
-                * y_std[:num_state_features]
-            ) + y_mean[:num_state_features]
-
-            # 4. Run the inner mini-rollout loop
-            # This loop is identical to the one in Branch 1, just for fewer steps
+                gt_batch_start.x[:, state_base_start:state_base_end].clone() * y_std[:num_state]
+            ) + y_mean[:num_state]
+            
+            # Mini-Rollout
             for k in range(steps_to_run):
-                # Get the *forcing data* for step 'k' of this rollout
-                forcing_batch_idx = start_idx + k
-
-                if forcing_batch_idx >= len(dataset):
-                    break  # Should not happen if logic is correct, but safe_guard
-
-                gt_forcing_batch = dataset.get(forcing_batch_idx).to(device)
-
-                # Create input, but swap in our predicted state
-                pred_input_batch = gt_forcing_batch.clone()
-                pred_input_batch.x[:, state_block_start_idx:state_block_end_idx] = (
-                    current_full_state_scaled
-                )
-
-                # 1. Predict scaled delta
-                pred_scaled_delta = model.model(pred_input_batch)
-                # 2. Unscale delta
-                pred_raw_delta = (pred_scaled_delta * y_delta_std) + y_delta_mean
-                # 3. Apply to unscaled base state
+                forcing_idx = start_idx + k
+                if forcing_idx >= len(dataset): break
+                
+                gt_forcing_batch = get_scaled_batch(forcing_idx)
+                
+                pred_input = gt_forcing_batch.clone()
+                pred_input.x[:, state_block_start:state_block_end] = current_full_state_scaled
+                
+                pred_delta = model.model(pred_input)
+                pred_raw_delta = (pred_delta * y_delta_std) + y_delta_mean
                 next_y_t_raw = current_y_t_raw + pred_raw_delta
-
-                # --- 4. Re-compute derived features (in UNCALED space) ---
-                y_t_dict_gpu = {
-                    var: next_y_t_raw[:, i]
-                    for i, var in enumerate(list(features_cfg.state))
-                }
-                derived_state_features_list = []
+                
+                # Derived & Rescale
+                y_t_dict_gpu = {var: next_y_t_raw[:, i] for i, var in enumerate(list(features_cfg.state))}
+                derived_list = []
                 for derived_spec in features_cfg.derived_state:
                     arg_data = []
                     for arg_name in derived_spec["args"]:
-                        if arg_name in y_t_dict_gpu:
-                            arg_data.append(y_t_dict_gpu[arg_name])
-                        elif arg_name == "DEM":
-                            arg_data.append(dem_gpu)
-                        else:
-                            raise ValueError(
-                                f"Rollout: Unknown arg '{arg_name}' for derived feature '{derived_spec['name']}'"
-                            )
-
-                    if derived_spec["op"] == "add":
-                        derived_feat = arg_data[0] + arg_data[1]
-                    elif derived_spec["op"] == "subtract":
-                        derived_feat = arg_data[0] - arg_data[1]
-                    elif derived_spec["op"] == "magnitude":
-                        derived_feat = torch.sqrt(arg_data[0] ** 2 + arg_data[1] ** 2)
-                    else:
-                        raise ValueError(f"Rollout: Unknown op '{derived_spec['op']}'")
-                    derived_state_features_list.append(derived_feat.unsqueeze(1))
-
-                # 5. Build new full UNCALED state
-                if derived_state_features_list:
-                    full_state_tensor_raw = torch.cat(
-                        [next_y_t_raw] + derived_state_features_list, dim=1
-                    )
+                        if arg_name in y_t_dict_gpu: arg_data.append(y_t_dict_gpu[arg_name])
+                        elif arg_name == "DEM": arg_data.append(dem_gpu)
+                        else: raise ValueError(f"Unknown arg '{arg_name}'")
+                    
+                    if derived_spec["op"] == "add": val = arg_data[0] + arg_data[1]
+                    elif derived_spec["op"] == "subtract": val = arg_data[0] - arg_data[1]
+                    elif derived_spec["op"] == "magnitude": val = torch.sqrt(arg_data[0]**2 + arg_data[1]**2)
+                    derived_list.append(val.unsqueeze(1))
+                
+                if derived_list:
+                    full_state_raw = torch.cat([next_y_t_raw] + derived_list, dim=1)
                 else:
-                    full_state_tensor_raw = next_y_t_raw
-
-                # 6. Re-scale full state for next model input
-                current_full_state_scaled = (full_state_tensor_raw - y_mean) / y_std
-                # 7. Update unscaled base state for next delta
+                    full_state_raw = next_y_t_raw
+                    
+                current_full_state_scaled = (full_state_raw - y_mean) / y_std
                 current_y_t_raw = next_y_t_raw
-                # --- End derived features ---
-
-            # 5. After the inner loop, 'current_y_t_raw' holds the
-            # final N-step-ahead prediction. Store it.
+            
             predictions_list.append(current_y_t_raw.cpu().numpy())
 
     print("Rollout complete.")
     return predictions_list
+

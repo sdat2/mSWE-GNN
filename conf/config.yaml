@@ -83,6 +83,7 @@ features:
       args:
         - WD
         - DEM
+  apply_edge_scaling: true
   # convergence and divergence of velocity field.
 
 
