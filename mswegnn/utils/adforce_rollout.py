@@ -2,7 +2,7 @@
 Autoregressive Rollout Utility for ADForce GNN Models.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 import numpy as np
 from tqdm import tqdm
 import torch
