@@ -59,6 +59,8 @@ pip install -e .
         - `adforce_scaling.py`: data normalization and scaling.
         - `adforce_evaluate_models.py`: model evaluation metrics.
         - `adforce_delta_animate.py`: animate delta predictions, and inputs and outputs using dataloader.
+        - `adforce_rollout.py`: perform multi-step rollouts for predictions.
+        - `adforce_loop.py`: Some utility functions for loading models from saved results directories.
         - `adforce_animate.py`: animate adforce inputs and outputs using dataloader (for training and test data).
         - `adforce_predict_animate.py`: predict and animate from a saved model checkpoint (and config.yaml file).
         - `adforce_predict_timeseries.py`: predict timeseries from a saved model checkpoint (and config.yaml file).
