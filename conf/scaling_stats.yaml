@@ -1,4 +1,14 @@
 # these were calculated based on the train.yaml files
+edge_mean: # face_distance, edge_slope, face_relative_distance_x, face_relative_distance_y
+- 0.07818350195884705
+- 0.0
+- 0.0
+- 0.0
+edge_std: # face_distance, edge_slope, face_relative_distance_x, face_relative_distance_y
+- 0.07104173302650452
+- 2267.2978515625
+- 0.08128835260868073
+- 0.06746722757816315
 x_dynamic_mean: # P, WX, WY
 - 10.148262023925781
 - -0.00432929303497076
