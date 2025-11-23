@@ -54,7 +54,15 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 def load_static_data(
     dataset: AdforceLazyDataset,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Loads static coordinates (x, y) and DEM from the dataset cache."""
+    """Loads static coordinates (x, y) and DEM from the dataset cache.
+
+    Args:
+        dataset (AdforceLazyDataset): The dataset to load from.
+
+    Returns:
+        x_coords (np.ndarray): x coordinates.
+        y_coords (np.ndarray): y coordinates.
+        dem (np.ndarray): DEM array."""
     try:
         # Retrieve path from the first entry in the index map
         nc_path = dataset.index_map[0][0]
@@ -79,7 +87,15 @@ def load_static_data(
 
 
 def _get_index_map(features_cfg: Any) -> Dict[str, Dict[str, int]]:
-    """Creates a mapping from variable names to their indices in feature lists."""
+    """Creates a mapping from variable names to their indices in feature lists.
+
+    Args:
+        features_cfg (DictConfig): Configuration object containing 'forcing', 'state', and 'targets' lists.
+
+    Returns:
+        A dictionary with keys 'forcing', 'state', 'target', each mapping variable names to indices.
+
+    """
     try:
         # Convert ListConfig to standard list to avoid indexing errors
         forcing_vars = list(features_cfg.forcing)
@@ -91,6 +107,7 @@ def _get_index_map(features_cfg: Any) -> Dict[str, Dict[str, int]]:
             "state": {v: i for i, v in enumerate(state_vars)},
             "target": {v: i for i, v in enumerate(target_vars)},
         }
+
     except Exception as e:
         print(f"Error creating index map. Ensure config has forcing/state/targets. {e}")
         raise e
@@ -106,6 +123,17 @@ def get_delta_frame_data(
 ) -> Dict[str, np.ndarray]:
     """
     Retrieves Forcing, State, True Delta, and Predicted Delta for a single frame.
+
+    Args:
+        dataset (AdforceLazyDataset): The dataset to sample from.
+        model (LightningModule): The trained model for predictions.
+        idx (int): Index of the frame to retrieve.
+        dem (np.ndarray): DEM array for SSH calculation.
+        idx_map (Dict[str, Dict[str, int]]): Variable to index mapping.
+        device (torch.device): Device to run computations on.
+
+    Returns:
+        Dict[str, np.ndarray]: Dictionary containing data arrays for each variable.
     """
     # 1. Get Batch
     batch = dataset.get(idx).to(device)
@@ -187,6 +215,14 @@ def calculate_global_limits(
 ) -> Dict[str, Tuple[float, float]]:
     """
     Scans the dataset to find global 1st/99th percentiles.
+
+    Args:
+        dataset (AdforceLazyDataset): The dataset to scan.
+        idx_map (Dict[str, Dict[str, int]]): Variable to index mapping.
+        dem (np.ndarray): DEM array for SSH calculation.
+
+    Returns:
+        Dict[str, Tuple[float, float]]: Global min/max limits for each variable.
     """
     print("Calculating global color limits (scanning dataset)...")
 
@@ -280,8 +316,17 @@ def plot_delta_frame(
     coords: Tuple[np.ndarray, np.ndarray],
     timestamp: str,
     save_path: str,
-):
-    """Renders the 4x3 grid."""
+) -> None:
+    """Renders the 4x3 grid.
+
+    Args:
+        idx (int): Frame index.
+        data_dict (Dict[str, np.ndarray]): Data arrays for each variable.
+        climits (Dict[str, Tuple[float, float]]): Color limits for each variable
+        coords (Tuple[np.ndarray, np.ndarray]): x and y coordinates.
+        timestamp (str): Timestamp string for title.
+        save_path (str): Path to save the figure.
+    """
     x_coords, y_coords = coords
 
     # Width = 6 * 1.2 = 7.2

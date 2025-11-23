@@ -40,19 +40,13 @@ import torch
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 import matplotlib.dates as mdates
-
-# --- Imports from your project ---
 import lightning as L
 from mswegnn.utils.adforce_dataset import AdforceLazyDataset
 from sithom.plot import plot_defaults
-
-# --- [UPDATED] Imports from utility scripts ---
 from omegaconf import OmegaConf
 from mswegnn.utils.adforce_misc import model_from_cfg_and_checkpoint
-from mswegnn.utils.adforce_predict_animate import (
-    load_static_data,
-    perform_rollout,
-)
+from mswegnn.utils.adforce_rollout import perform_rollout, load_static_data
+
 
 # Suppress Matplotlib/Numpy warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")

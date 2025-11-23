@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- SLURM Directives (GPU Job for ORCHID) ---
-#SBATCH --job-name=SWE-GNN-K15-P1A-e
+#SBATCH --job-name=SWE-GNN-K15-P1-e
 #SBATCH --account=orchid             # Use ORCHID account
 #SBATCH --partition=orchid           # Use ORCHID partition
 #SBATCH --qos=orchid                 # Use ORCHID QoS
