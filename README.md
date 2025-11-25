@@ -1,8 +1,9 @@
-# Simon's Branch of the mSWE-GNN Repository, for using the same models for storm surge emulation
+# SurgeNet: Graph Neural Network Surrogate Model for Storm Surge Prediction, descended from mSWE-GNN Repository
+
 
 ## Introduction
 
-We created additional training data through forcing the ADCIRC model with storm surge scenarios from the ADFORCE python package using data from IBTraCS.
+We created additional training data through forcing the ADCIRC model with storm surge scenarios from the ADFORCE python package using TC data from IBTraCS.
 
 Look at the `adforce/generate_training_data.py` script for how we generated the training data:
 <https://github.com/sdat2/PotentialHeight/blob/main/adforce/generate_training_data.py>
@@ -136,17 +137,118 @@ python -m adforce_main model_params.model_type=MLP
 
 The following table summarizes the one step ahead SSH performance of various models on the training (158 files), validation (23 files), test (47 files), and extreme test (18 files) datasets, measured in Root Mean Square Error (RMSE) in centimeters.
 
-| Model | Train RMSE (cm) | Val RMSE (cm) | Test RMSE (cm) | Extreme RMSE (cm) |
+### RMSE Results (Lower is better)
+
+**$\Delta$ SSH RMSE [cm]**
+
+| Model | Train | Validation | Test | Extreme PH |
 | :--- | :---: | :---: | :---: | :---: |
+| SWE-GNN-K21-P3-H128 | 1.64 | 1.68 | 1.79 | 5.62 |
+| SWE-GNN-K21-P2-H128 | 1.62 | 1.66 | 1.74 | 5.81 |
+| SWE-GNN-K21-P1-H128 | 1.65 | 1.68 | 1.77 | 6.44 |
+| SWE-GNN-K21-P1-H128-ReLU | 1.61 | **1.64** | **1.73** | 18.01 |
+| SWE-GNN-K18-P1-H128 | 1.70 | 1.71 | 1.85 | 6.74 |
+| SWE-GNN-K15-P3-H128 | 1.67 | 1.69 | 1.86 | **5.52** |
+| SWE-GNN-K15-P1-H128 | 1.63 | 1.69 | 1.81 | 6.72 |
+| SWE-GNN-K12-P1-H128 | **1.55** | 1.76 | 1.83 | 7.04 |
 | SWE-GNN-K9-P1-H128 | 1.65 | 1.84 | 1.99 | 7.21 |
 | SWE-GNN-K6-P1-H128 | 1.67 | 1.86 | 2.00 | 7.29 |
 | SWE-GNN-K3-P1-H128-ReLU | 1.99 | 2.01 | 2.16 | 7.63 |
 | SWE-GNN-K3-P1-H128 | 1.96 | 2.03 | 2.20 | 7.25 |
 | GCN-GNN-P1-H128 | 2.93 | 2.67 | 2.87 | 6.94 |
 | GAT-GNN-P1-H128 | 2.94 | 2.68 | 2.88 | 6.96 |
-| PointWise-MLP-P1-H128 | 3.08 | 2.74 | 3.03 | 6.80 |
+| Pointwise-MLP-P1-H128 | 3.08 | 2.74 | 3.03 | 6.80 |
 | WholeMesh-MLP-P1-H128 | 3.14 | 3.05 | 3.43 | 29.66 |
 
+**$\Delta \mid U \mid$ RMSE [cm s $^{-1}$ ]**
+
+| Model | Train | Validation | Test | Extreme PH |
+| :--- | :---: | :---: | :---: | :---: |
+| SWE-GNN-K21-P3-H128 | 0.76 | **0.88** | 0.87 | 3.94 |
+| SWE-GNN-K21-P2-H128 | 0.75 | 0.88 | **0.85** | 3.96 |
+| SWE-GNN-K21-P1-H128 | 0.81 | 0.93 | 0.93 | 4.35 |
+| SWE-GNN-K21-P1-H128-ReLU | 0.78 | 0.94 | 0.91 | 55.73 |
+| SWE-GNN-K18-P1-H128 | 0.80 | 0.93 | 0.93 | 4.50 |
+| SWE-GNN-K15-P3-H128 | 0.78 | 0.90 | 0.89 | **3.92** |
+| SWE-GNN-K15-P1-H128 | 0.79 | 0.93 | 0.93 | 4.68 |
+| SWE-GNN-K12-P1-H128 | 0.76 | 0.96 | 0.93 | 4.95 |
+| SWE-GNN-K9-P1-H128 | **0.72** | 0.96 | 0.94 | 5.05 |
+| SWE-GNN-K6-P1-H128 | 0.82 | 0.98 | 0.97 | 5.17 |
+| SWE-GNN-K3-P1-H128-ReLU | 0.96 | 1.02 | 1.01 | 4.94 |
+| SWE-GNN-K3-P1-H128 | 0.90 | 1.02 | 1.02 | 5.30 |
+| GCN-GNN-P1-H128 | 1.28 | 1.17 | 1.17 | 4.43 |
+| GAT-GNN-P1-H128 | 1.26 | 1.15 | 1.16 | 4.52 |
+| Pointwise-MLP-P1-H128 | 1.43 | 1.24 | 1.28 | 4.40 |
+| WholeMesh-MLP-P1-H128 | 1.53 | 1.50 | 1.59 | 17.88 |
+
+---
+
+### NSE Results (Higher is better)
+
+**$\Delta$ SSH NSE**
+
+| Model | Train | Validation | Test | Extreme PH |
+| :--- | :---: | :---: | :---: | :---: |
+| SWE-GNN-K21-P3-H128 | 0.731 | 0.639 | 0.664 | 0.395 |
+| SWE-GNN-K21-P2-H128 | 0.735 | 0.643 | **0.679** | 0.346 |
+| SWE-GNN-K21-P1-H128 | 0.721 | 0.628 | 0.664 | 0.188 |
+| SWE-GNN-K21-P1-H128-ReLU | 0.734 | **0.644** | **0.679** | -5.349 |
+| SWE-GNN-K18-P1-H128 | 0.704 | 0.616 | 0.635 | 0.111 |
+| SWE-GNN-K15-P3-H128 | 0.722 | 0.635 | 0.637 | **0.416** |
+| SWE-GNN-K15-P1-H128 | 0.729 | 0.623 | 0.649 | 0.117 |
+| SWE-GNN-K12-P1-H128 | **0.753** | 0.593 | 0.640 | 0.029 |
+| SWE-GNN-K9-P1-H128 | 0.722 | 0.555 | 0.576 | -0.016 |
+| SWE-GNN-K6-P1-H128 | 0.716 | 0.543 | 0.572 | -0.039 |
+| SWE-GNN-K3-P1-H128-ReLU | 0.594 | 0.467 | 0.499 | -0.139 |
+| SWE-GNN-K3-P1-H128 | 0.608 | 0.455 | 0.480 | -0.029 |
+| GCN-GNN-P1-H128 | 0.118 | 0.064 | 0.117 | 0.057 |
+| GAT-GNN-P1-H128 | 0.114 | 0.056 | 0.114 | 0.051 |
+| Pointwise-MLP-P1-H128 | 0.027 | 0.011 | 0.019 | 0.095 |
+| WholeMesh-MLP-P1-H128 | -0.010 | -0.226 | -0.262 | -16.211 |
+
+
+**$\Delta \mid U \mid$ NSE**
+
+| Model | Train | Validation | Test | Extreme PH |
+| :--- | :---: | :---: | :---: | :---: |
+| SWE-GNN-K21-P3-H128 | 0.760 | **0.545** | 0.599 | **0.281** |
+| SWE-GNN-K21-P2-H128 | **0.761** | 0.536 | **0.607** | 0.270 |
+| SWE-GNN-K21-P1-H128 | 0.719 | 0.482 | 0.531 | 0.111 |
+| SWE-GNN-K21-P1-H128-ReLU | 0.739 | 0.474 | 0.550 | -144.710 |
+| SWE-GNN-K18-P1-H128 | 0.725 | 0.480 | 0.525 | 0.052 |
+| SWE-GNN-K15-P3-H128 | 0.746 | 0.528 | 0.580 | 0.291 |
+| SWE-GNN-K15-P1-H128 | 0.735 | 0.477 | 0.532 | -0.025 |
+| SWE-GNN-K12-P1-H128 | 0.755 | 0.448 | 0.525 | -0.149 |
+| SWE-GNN-K9-P1-H128 | 0.775 | 0.447 | 0.518 | -0.198 |
+| SWE-GNN-K6-P1-H128 | 0.713 | 0.418 | 0.489 | -0.254 |
+| SWE-GNN-K3-P1-H128-ReLU | 0.608 | 0.380 | 0.438 | -0.144 |
+| SWE-GNN-K3-P1-H128 | 0.652 | 0.374 | 0.430 | -0.318 |
+| GCN-GNN-P1-H128 | 0.301 | 0.183 | 0.248 | 0.079 |
+| GAT-GNN-P1-H128 | 0.322 | 0.205 | 0.262 | 0.043 |
+| Pointwise-MLP-P1-H128 | 0.121 | 0.079 | 0.107 | 0.093 |
+| WholeMesh-MLP-P1-H128 | -0.007 | -0.358 | -0.383 | -13.998 |
+
+### Performance Analysis
+
+* **Architecture Superiority:** The domain-specific **SWE-GNN** consistently outperforms standard baselines. For $\Delta$SSH prediction, the best SWE-GNN model ($K=21$) achieves a Test RMSE of **1.74 cm**, a **~39% reduction in error** compared to standard GCN (2.87 cm) and GAT (2.88 cm) architectures.
+* **Impact of Context:** Larger kernel sizes ($K=21$) and multi-step temporal context ($P=2$ or $P=3$) generally provide the best generalization. `SWE-GNN-K21-P3` maintains positive NSE scores (**>0.28**) even on the challenging "Extreme PH" dataset, whereas baselines drop near zero.
+* **Generalization vs. Overfitting:** While the ReLU-based variant (`SWE-GNN-K21-P1-H128-ReLU`) performs well on the standard test set (RMSE 1.73 cm), it fails catastrophically on out-of-distribution extreme events (Extreme PH RMSE **18.01 cm**; NSE **-5.35**), indicating significant instability compared to the robust standard SWE-GNN.
+
+### Model Nomenclature
+
+The model identifiers (e.g., `SWE-GNN-K21-P3-H128`) follow this naming convention:
+
+* **Architecture**
+    * **SWE-GNN:** Physics-informed Graph Neural Network based on Shallow Water Equations.
+    * **GCN / GAT:** Standard Graph Convolutional Network and Graph Attention Network baselines.
+    * **MLP:** Baseline Multi-Layer Perceptrons (Pointwise or Whole-Mesh).
+
+* **Hyperparameters**
+    * **$K$ (Kernel Size):** The number of spatial neighbors (stencil size) included in the message passing layer (e.g., $K=21$).
+    * **$P$ (Temporal Context):** The number of historical timesteps used as input features (e.g., $P=3$ uses $t_{-1}, t_{-2}, t_{-3}$).
+    * **$H$ (Hidden Dimension):** The size of the hidden layers in the MLPs (fixed at $H=128$).
+* **Variants**
+    * **ReLU:** Indicates the model uses the ReLU activation function after message passing layers (default is `tanh`).
 
 
 # Old README content:
