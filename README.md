@@ -1,5 +1,7 @@
 # SurgeNet: Graph Neural Network Surrogate Model for Storm Surge Prediction, descended from mSWE-GNN Repository
 
+[![DOI](https://zenodo.org/badge/1084215602.svg)](https://doi.org/10.5281/zenodo.17711455)
+
 
 ## Introduction
 
