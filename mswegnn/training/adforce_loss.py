@@ -4,8 +4,6 @@ from torch_geometric.data import Batch
 
 # from mswegnn.utils.dataset import get_inflow_volume
 
-NUM_WATER_VARS = 3  # water depth and velocity x and velocity y
-
 
 def get_mean_error(diff_rollout, type_loss, nodes_dim=0):
     """Calculates mean error between predictions and real values
@@ -38,10 +36,12 @@ def mask_on_water(diff, water_axis=1):
     return where_water
 
 
-def get_loss_variable_scaler(velocity_scaler=1, device=None):  # <-- MODIFIED
+def get_loss_variable_scaler(num_water_vars, velocity_scaler=1, device=None):
     """Scales loss in velocity terms by a factor velocity_scaler
 
     Parameters:
+    num_water_vars: int
+        number of water variables (e.g., 2 for depth+discharge, 3 for depth+vx+vy)
     velocity_scaler: float (default = 1)
         scales loss in velocity terms by a factor velocity_scaler
     device: torch.device (default = None)
@@ -49,8 +49,8 @@ def get_loss_variable_scaler(velocity_scaler=1, device=None):  # <-- MODIFIED
     """
     # --- MODIFICATION: Create tensor on the specified device ---
     # This is the fix for the torch.dot error.
-    loss_scaler = torch.ones(NUM_WATER_VARS, device=device)
-    loss_scaler[1::NUM_WATER_VARS] = velocity_scaler
+    loss_scaler = torch.ones(num_water_vars, device=device)
+    loss_scaler[1::num_water_vars] = velocity_scaler
 
     return loss_scaler
 
@@ -102,14 +102,19 @@ def loss_function(
     if diff.shape[0] == 0:
         return torch.tensor(0.0, device=diff.device, requires_grad=True)
 
+    # Infer number of water variables from the shape of predictions
+    num_water_vars = diff.shape[1]
+
     loss = get_mean_error(
         diff, type_loss, nodes_dim=0
     )  # get scaled rmse or mae over nodes
 
-    # --- MODIFICATION: Pass the device from `diff` ---
+    # --- MODIFICATION: Pass the device from `diff` and inferred num_water_vars ---
     # This ensures loss_scaler is created on the same device as loss (e.g., cuda:0)
     loss_scaler = get_loss_variable_scaler(
-        velocity_scaler=velocity_scaler, device=diff.device
+        num_water_vars=num_water_vars,
+        velocity_scaler=velocity_scaler,
+        device=diff.device,
     )
     # --- END MODIFICATION ---
 
@@ -120,9 +125,10 @@ def loss_function(
     loss = torch.dot(loss, loss_scaler) / loss_scaler.sum()
 
     if conservation != 0:
-        WD_index = 2
-        input_WD = data.x[:, -WD_index::WD_index]
-        pred_WD = preds[:, 0::WD_index]
+        # Extract water depth at index 0 from each time step
+        # Pattern: [WD, vel_x, vel_y, ...] repeated for each timestep
+        input_WD = data.x[:, -num_water_vars::num_water_vars]
+        pred_WD = preds[:, 0::num_water_vars]
 
         try:
             loss = (
@@ -137,8 +143,9 @@ def loss_function(
 
 def conservation_loss(pred_WD, input_WD, data, BC):
     """
-    Calculates loss for mass conservation...
-    ... (rest of file as before) ...
+    Calculates loss for mass conservation
+
+    
     """
     # This function relies on `get_inflow_volume`, which is not imported
     # and will raise a NameError, caught by loss_function.
