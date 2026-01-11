@@ -43,8 +43,10 @@ data_params:
     test: conf/test.yaml
 
   # --- These paths are now references ---
+  # these are the files where the indices are stored
   train_root_path: ${paths.processed_dir}/train/
   val_root_path: ${paths.processed_dir}/val/
+  # why isn't test_root_path anywhere?
   scaling_stats_path: ${paths.processed_dir}/scaling_stats.yaml
   
   # Set to true to force re-computation of stats from the training files.
@@ -52,8 +54,9 @@ data_params:
   compute_scaling: true
 
 
-# --- 4. Feature Configuration ---
+# ------- 4. Feature Configuration -------
 # The "single source of truth" for all model features.
+# All of these features (or their prerequisites) much be present in each dataset file.
 features:
   static:
     - DEM
@@ -77,10 +80,10 @@ features:
     - WD
     - VX
     - VY
-  derived_state:
+  derived_state: # I replaced SSH with WD when creating dataset, need it back again now.
     - name: SSH
-      op: add
-      args:
+      op: add # operation to derive SSH
+      args: # list of variables to operate on
         - WD
         - DEM
   apply_edge_scaling: true
